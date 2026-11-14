@@ -13,6 +13,7 @@ import (
 	"github.com/godw/godw/internal/pkg/errs"
 	"github.com/godw/godw/internal/pkg/ids"
 	"github.com/godw/godw/internal/scheduler/queue"
+	"github.com/godw/godw/internal/sqlx"
 )
 
 // Trigger 创建并排队一个实例。
@@ -85,6 +86,70 @@ func (s *Service) TriggerByPipelineID(ctx context.Context, workspaceID, pipeline
 		return nil, false, errs.New(errs.CodeNotFound, "管道不存在")
 	}
 	return s.Trigger(ctx, workspaceID, name, bizDate, triggerType, params)
+}
+
+// RetryNode 从指定节点重跑：把该节点及其全部下游打回 pending，再把实例退回队列。
+//
+// 为什么下游必须一起重置：下游写的是「基于上游结果」的数据，只重跑当前节点会让人
+// 以为下游也刷新了，实际读到的是上一次的产物——这比直接报错更难排查。
+// 上游的成功节点保留，执行器本来就会跳过它们，所以不用额外处理。
+func (s *Service) RetryNode(ctx context.Context, instanceID, nodeID string) (*model.Instance, error) {
+	inst, err := s.Repo.GetInstance(ctx, instanceID)
+	if err != nil {
+		return nil, err
+	}
+	if inst.Status == "running" {
+		return nil, errs.New(errs.CodeInstanceConflict, "实例正在运行，请先取消再重跑")
+	}
+	// 用实例创建时的版本快照，不能用当前定义：定义已经改过时，节点可能对不上。
+	spec, err := s.Repo.PipelineVersionSpec(ctx, inst.PipelineID, inst.PipelineVer)
+	if err != nil {
+		return nil, err
+	}
+	found := false
+	for _, n := range spec.Nodes {
+		if n.ID == nodeID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return nil, errs.New(errs.CodeNotFound, "节点不存在于该实例的版本中: "+nodeID)
+	}
+
+	// 下游闭包：依赖关系只会由上游指下游，所以按依赖传播即可。
+	reset := map[string]bool{nodeID: true}
+	for changed := true; changed; {
+		changed = false
+		for _, n := range spec.Nodes {
+			if reset[n.ID] {
+				continue
+			}
+			for _, d := range n.DependsOn {
+				if reset[d] {
+					reset[n.ID] = true
+					changed = true
+					break
+				}
+			}
+		}
+	}
+	ids := make([]string, 0, len(reset))
+	for _, n := range spec.Nodes {
+		if reset[n.ID] {
+			ids = append(ids, n.ID)
+		}
+	}
+
+	if err := s.Repo.ResetTasks(ctx, instanceID, ids); err != nil {
+		return nil, err
+	}
+	if err := s.Repo.RequeueInstance(ctx, instanceID, ""); err != nil {
+		return nil, err
+	}
+	s.AppendLog(instanceID, nodeID, "info",
+		fmt.Sprintf("从节点 %s 重跑，重置 %d 个节点: %s", nodeID, len(ids), strings.Join(ids, ", ")))
+	return s.Repo.GetInstance(ctx, instanceID)
 }
 
 // RunOnce 领取并执行一个实例，返回是否真的干了活。
@@ -315,4 +380,166 @@ func (s *Service) saveQuality(ctx context.Context, inst *model.Instance, n model
 // Recover 回收僵尸实例，由调度循环周期调用。
 func (s *Service) Recover(ctx context.Context) (int, error) {
 	return s.Repo.RequeueStale(ctx, 30*time.Second)
+}
+
+// InstanceSQLNode 是可查看 SQL 的节点摘要，前端用它做节点切换。
+type InstanceSQLNode struct {
+	ID     string `json:"id"`
+	Type   string `json:"type"`
+	Model  string `json:"model,omitempty"`
+	HasSQL bool   `json:"hasSql"`
+	Status string `json:"status,omitempty"`
+}
+
+// InstanceSQLPrev 是「上一次」同节点的渲染结果，用于本次 vs 上次对比。
+type InstanceSQLPrev struct {
+	InstanceID string `json:"instanceId"`
+	BizDate    string `json:"bizDate"`
+	Version    int    `json:"version"`
+	SQL        string `json:"sql"`
+}
+
+// InstanceSQL 是一次节点 SQL 渲染的结果。
+type InstanceSQL struct {
+	InstanceID string            `json:"instanceId"`
+	NodeID     string            `json:"nodeId"`
+	Nodes      []InstanceSQLNode `json:"nodes"`
+	SQL        string            `json:"sql"`
+	Refs       []string          `json:"refs"`
+	Params     map[string]any    `json:"params"`
+	Version    int               `json:"version"`
+	// FromSnapshot=false 表示版本快照已不在库里，退化成当前定义渲染，必须提示。
+	FromSnapshot bool               `json:"fromSnapshot"`
+	Warning      string             `json:"warning,omitempty"`
+	Error        string             `json:"error,omitempty"`
+	Inference    *compile.Inference `json:"inference,omitempty"`
+	Previous     *InstanceSQLPrev   `json:"previous,omitempty"`
+}
+
+// InstanceNodeSQL 用实例创建时的版本快照 + 该实例的参数渲染节点 SQL。
+//
+// 为什么不用当前管道定义：定义改过之后，用户要看的是「这一次到底跑了什么 SQL」，
+// 拿最新定义渲染会给出一个从未执行过的文本，排障时比没有更糟。
+// 渲染规则与真正执行保持一致（sqlx.Render + 模型增量推导的 where），否则「看到的」
+// 和「跑过的」又是两份东西。
+func (s *Service) InstanceNodeSQL(ctx context.Context, workspaceID, instanceID, nodeID string) (*InstanceSQL, error) {
+	inst, err := s.Repo.GetInstance(ctx, instanceID)
+	if err != nil {
+		return nil, err
+	}
+	if inst.WorkspaceID != workspaceID {
+		return nil, errs.New(errs.CodeNotFound, "实例不存在")
+	}
+
+	out := &InstanceSQL{InstanceID: inst.ID, Nodes: []InstanceSQLNode{}, Version: inst.PipelineVer, FromSnapshot: true}
+	spec, err := s.Repo.PipelineVersionSpec(ctx, inst.PipelineID, inst.PipelineVer)
+	if err != nil {
+		// 版本快照可能被清理（早期数据或手工删库），退化为当前定义并显式告警。
+		p, cur, ver, perr := s.Repo.PipelineByName(ctx, workspaceID, inst.PipelineName)
+		if perr != nil || p == nil {
+			return nil, errs.New(errs.CodeNotFound, "实例对应的管道版本已不可读")
+		}
+		spec, out.Version, out.FromSnapshot = cur, ver, false
+		out.Warning = fmt.Sprintf("版本 v%d 的快照已不存在，以下按当前定义 v%d 渲染，可能与当次执行不一致", inst.PipelineVer, ver)
+	}
+
+	tasks := map[string]string{}
+	for _, t := range inst.Tasks {
+		tasks[t.NodeID] = t.Status
+	}
+	for _, n := range spec.Nodes {
+		out.Nodes = append(out.Nodes, InstanceSQLNode{
+			ID: n.ID, Type: n.Type, Model: n.Model,
+			HasSQL: strings.TrimSpace(n.SQL) != "",
+			Status: tasks[n.ID],
+		})
+	}
+
+	target, ok := findNode(spec.Nodes, nodeID)
+	if !ok {
+		// 没指定节点就选第一个真正有 SQL 的节点；质量/分支节点没有 SQL，跳过它们。
+		for i := range spec.Nodes {
+			if strings.TrimSpace(spec.Nodes[i].SQL) != "" {
+				target = &spec.Nodes[i]
+				break
+			}
+		}
+	}
+	if target == nil {
+		out.Error = "该管道没有包含 SQL 的节点"
+		return out, nil
+	}
+	out.NodeID = target.ID
+
+	vars := map[string]any{"biz_date": inst.BizDate, "biz_ts": inst.BizDate + " 00:00:00"}
+	for _, p := range spec.Params {
+		if p.Default != nil {
+			vars[p.Name] = p.Default
+		}
+	}
+	for k, v := range inst.Params {
+		vars[k] = v
+	}
+	out.Params = vars
+
+	if strings.TrimSpace(target.SQL) == "" {
+		out.Error = "节点 " + target.ID + " 没有 SQL（类型 " + target.Type + "）"
+		return out, nil
+	}
+	rendered, rerr := sqlx.Render(target.SQL, vars)
+	if rerr != nil {
+		out.Error = rerr.Error()
+		return out, nil
+	}
+	out.Refs = sqlx.Vars(target.SQL)
+
+	// 与执行器一致：写模型的 SQL 节点要叠加增量 where。推导不出来时保留原 SQL，
+	// 但把原因写进 Error 字段旁边的 warning，避免用户以为「跑的就是全表」。
+	if target.Model != "" && target.Type != model.NodeQuality {
+		if mspec, merr := s.Repo.PublishedModelSpec(ctx, workspaceID, target.Model); merr == nil {
+			explicit := ""
+			if target.Config != nil {
+				explicit, _ = target.Config["where"].(string)
+			}
+			if inf, ierr := compile.InferIncremental(*mspec, inst.BizDate, explicit); ierr == nil {
+				out.Inference = &inf
+				if inf.Where != "" && target.WriteMode != model.WriteOverwrite {
+					rendered = compile.ApplyWhere(rendered, inf)
+				}
+			}
+		}
+	}
+	out.SQL = rendered
+
+	// 上一轮同节点：有就一起返回，前端可以直接左右 diff，不用再发一次请求。
+	if prev, perr := s.Repo.PreviousInstance(ctx, workspaceID, inst.PipelineID, inst.ID, inst.CreatedAt); perr == nil && prev != nil {
+		if pspec, verr := s.Repo.PipelineVersionSpec(ctx, prev.PipelineID, prev.PipelineVer); verr == nil {
+			if pn, pok := findNode(pspec.Nodes, target.ID); pok && strings.TrimSpace(pn.SQL) != "" {
+				pvars := map[string]any{"biz_date": prev.BizDate, "biz_ts": prev.BizDate + " 00:00:00"}
+				for _, p := range pspec.Params {
+					if p.Default != nil {
+						pvars[p.Name] = p.Default
+					}
+				}
+				for k, v := range prev.Params {
+					pvars[k] = v
+				}
+				if txt, err := sqlx.Render(pn.SQL, pvars); err == nil {
+					out.Previous = &InstanceSQLPrev{
+						InstanceID: prev.ID, BizDate: prev.BizDate, Version: prev.PipelineVer, SQL: txt,
+					}
+				}
+			}
+		}
+	}
+	return out, nil
+}
+
+func findNode(nodes []model.NodeSpec, id string) (*model.NodeSpec, bool) {
+	for i := range nodes {
+		if nodes[i].ID == id {
+			return &nodes[i], true
+		}
+	}
+	return nil, false
 }

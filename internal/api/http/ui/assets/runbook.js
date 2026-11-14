@@ -18,6 +18,8 @@ const RUNBOOK = {
   logLevel: 'all',
   logKW: '',
   autoScroll: true,
+  sql: null,
+  sqlDiff: false,
 };
 
 Object.assign(ROUTES, {
@@ -84,7 +86,7 @@ async function loadRunbook(view) {
   host.innerHTML = UI.skeleton(8);
   let list;
   try {
-    list = await api('/instances?limit=200');
+    list = (await api('/instances?limit=200')).items || [];
   } catch (e) { host.innerHTML = UI.error(e, 'reload'); return; }
 
   const pipes = [...new Set(list.map(i => i.pipelineName).filter(Boolean))].sort();
@@ -168,13 +170,24 @@ function batchAction(kind) {
 /** 实例详情抽屉：参数、SQL、日志、节点，一屏看全。 */
 async function openRunDrawer(id) {
   RUNBOOK.drawerId = id;
-  let inst, logs = [];
+  let inst, logs = [], quality = [];
   try {
     // 详情接口返回 {instance, quality}，节点明细已在 instance.tasks 里，不用再单独拉。
     const r = await api('/instances/' + encodeURIComponent(id));
     inst = r.instance || r;
+    quality = r.quality || [];
   } catch (e) { return toast(e.message, 'err'); }
   try { const r = await api('/instances/' + encodeURIComponent(id) + '/logs?limit=200'); logs = r.lines || r || []; } catch (e) { logs = []; }
+  const RANK = { failed: 0, running: 1, blocked: 2, skipped: 3, pending: 4, success: 5 };
+  const tasks = (inst.tasks || []).slice().sort((a, b) => (RANK[a.status] ?? 9) - (RANK[b.status] ?? 9));
+  // 节点耗时条：以最慢节点为基准，一眼看出瓶颈在哪一段
+  const maxDur = Math.max(1, ...tasks.map(t => t.durationMs || 0));
+  // 只有可能带 SQL 的节点才列进下拉：质量/分支节点选了也只会得到「没有 SQL」。
+  const sqlTypes = { source: 1, sql: 1, sink: 1 };
+  const sqlNodes = tasks.filter(t => sqlTypes[t.nodeType]).length
+    ? tasks.filter(t => sqlTypes[t.nodeType])
+    : tasks;
+  const sqlDefault = (sqlNodes.find(t => t.status === 'failed') || sqlNodes[0] || {}).nodeId || '';
 
   document.getElementById('drawer-root').innerHTML = `
     <div class="drawer-mask" data-act="drawer-close"></div>
@@ -192,7 +205,7 @@ async function openRunDrawer(id) {
         <div class="grid c4" style="margin-bottom:16px">
           <div class="stat"><div class="stat-label">耗时</div><div class="stat-value" style="font-size:20px">${instanceDur(inst)}</div></div>
           <div class="stat"><div class="stat-label">触发方式</div><div class="stat-value" style="font-size:20px">${esc(inst.triggerType)}</div></div>
-          <div class="stat"><div class="stat-label">节点</div><div class="stat-value" style="font-size:20px">${(inst.tasks || tasks || []).length}</div></div>
+          <div class="stat"><div class="stat-label">节点</div><div class="stat-value" style="font-size:20px">${tasks.length}</div></div>
           <div class="stat"><div class="stat-label">资源组</div><div class="stat-value" style="font-size:20px">${esc(inst.resourceGroup || 'default')}</div></div>
         </div>
 
@@ -201,17 +214,45 @@ async function openRunDrawer(id) {
         <div class="card-title" style="margin-bottom:8px">参数快照</div>
         <div class="logbox" style="margin-bottom:16px;max-height:140px">${esc(JSON.stringify(inst.params || {}, null, 2))}</div>
 
+        <div class="row" style="margin-bottom:8px;gap:8px;flex-wrap:wrap">
+          <div class="card-title" style="flex:1">渲染 SQL</div>
+          <select id="sql-node" style="width:auto;max-width:230px" title="切换节点">
+            ${sqlNodes.map(n => `<option value="${esc(n.nodeId)}" ${n.nodeId === sqlDefault ? 'selected' : ''}>${esc(n.nodeId)}${n.status === 'failed' ? ' · 失败' : ''}</option>`).join('')}
+          </select>
+          <button class="sm ghost" data-act="sql-copy">复制</button>
+          <button class="sm ghost" data-act="sql-diff" disabled>对比上次</button>
+        </div>
+        <div class="hint" id="sql-meta" style="margin-bottom:6px">加载中…</div>
+        <div id="sql-box"><div class="skel" style="height:80px"></div></div>
+
         <div class="card-title" style="margin-bottom:8px">节点执行</div>
         <div class="table-wrap" style="margin-bottom:16px"><table class="dt">
-          <thead><tr><th>节点</th><th>状态</th><th>行数</th><th>耗时</th><th>错误</th></tr></thead>
-          <tbody>${(inst.tasks || []).map(t => `<tr>
+          <thead><tr><th>节点</th><th>状态</th><th>行数</th><th>耗时</th><th>错误</th><th></th></tr></thead>
+          <tbody>${tasks.map(t => `<tr>
             <td class="mono">${esc(t.nodeId)}</td>
             <td>${statusPill(t.status)}</td>
             <td class="mono small">${t.rowsAffected || 0}</td>
-            <td class="mono small">${fmtDur(t.durationMs)}</td>
+            <td class="mono small">
+              ${fmtDur(t.durationMs)}
+              <div class="dur-bar"><i style="width:${Math.max(2, Math.round((t.durationMs || 0) / maxDur * 100))}%;background:${t.status === 'failed' ? 'var(--err)' : 'var(--accent)'}"></i></div>
+            </td>
             <td class="small wrap" style="color:#ff9b94">${esc((t.error || '').slice(0, 160) || '—')}</td>
-          </tr>`).join('') || '<tr><td colspan="5" class="mute">暂无节点记录</td></tr>'}</tbody>
+            <td>${t.status === 'failed'
+              ? `<button class="sm ghost" data-act="task-retry" data-node="${esc(t.nodeId)}" title="重置该节点及其下游并重跑（上游成功的结果保留）">重跑此节点</button>`
+              : ''}</td>
+          </tr>`).join('') || '<tr><td colspan="6" class="mute">暂无节点记录</td></tr>'}</tbody>
         </table></div>
+
+        ${quality.length ? `<div class="card-title" style="margin-bottom:8px">质量结果</div>
+        <div class="table-wrap" style="margin-bottom:16px"><table class="dt">
+          <thead><tr><th>规则</th><th>结果</th><th>实测</th><th>期望</th></tr></thead>
+          <tbody>${quality.map(q => `<tr>
+            <td class="mono">${esc(q.ruleName)}</td>
+            <td>${q.passed ? '<span class="pill ok">通过</span>' : '<span class="pill err">未通过</span>'}</td>
+            <td class="mono small">${esc(q.observed)}</td>
+            <td class="mono small dim">${esc(q.expected)}</td>
+          </tr>`).join('')}</tbody>
+        </table></div>` : ''}
 
         <div class="row" style="margin-bottom:8px">
           <div class="card-title" style="flex:1">执行日志</div>
@@ -231,7 +272,64 @@ async function openRunDrawer(id) {
     </div>`;
 
   bindDrawer(id, logs);
+  loadNodeSQL(id, sqlDefault);
   startLogStream(id);
+}
+
+/**
+ * 加载并渲染某个节点的 SQL。
+ * 数据来自实例的版本快照 + 该实例参数（后端渲染，规则与执行器一致），
+ * 所以这里看到的就是「这一次真正跑过的 SQL」，不是用最新定义拼出来的近似值。
+ */
+async function loadNodeSQL(id, node) {
+  const box = document.getElementById('sql-box');
+  const meta = document.getElementById('sql-meta');
+  if (!box) return;
+  box.innerHTML = '<div class="skel" style="height:80px"></div>';
+  if (meta) meta.textContent = '加载中…';
+  let d = null;
+  try {
+    d = await api('/instances/' + encodeURIComponent(id) + '/sql' + (node ? '?node=' + encodeURIComponent(node) : ''));
+  } catch (e) {
+    box.innerHTML = `<div class="err-box">${esc(e.message)}</div>`;
+    if (meta) meta.textContent = '';
+    return;
+  }
+  RUNBOOK.sql = d;
+  RUNBOOK.sqlDiff = false;
+  renderSQL();
+}
+
+function renderSQL() {
+  const d = RUNBOOK.sql;
+  const box = document.getElementById('sql-box');
+  const meta = document.getElementById('sql-meta');
+  if (!d || !box) return;
+  const diffBtn = document.querySelector('[data-act="sql-diff"]');
+  if (diffBtn) {
+    diffBtn.disabled = !(d.previous && d.previous.sql);
+    diffBtn.textContent = RUNBOOK.sqlDiff ? '只看本次' : '对比上次';
+  }
+  if (meta) {
+    const bits = [`<span class="mono">${esc(d.nodeId || '—')}</span>`, `v${d.version}`];
+    if (!d.fromSnapshot) bits.push('<span class="pill warn">非快照</span>');
+    if (d.previous) bits.push(`上次 ${esc(d.previous.bizDate)}`);
+    if (d.refs && d.refs.length) bits.push('变量 ' + d.refs.map(r => `<span class="mono">${esc(r)}</span>`).join(' '));
+    if (d.inference && d.inference.describe) bits.push(esc(d.inference.describe));
+    meta.innerHTML = bits.join(' · ');
+  }
+  if (d.error) {
+    box.innerHTML = `<div class="err-box" style="margin-bottom:8px">${esc(d.error)}</div>
+      ${d.sql ? `<pre class="code">${esc(formatSQL(d.sql))}</pre>` : ''}`;
+    return;
+  }
+  if (d.warning) box.innerHTML = `<div class="ok-box" style="margin-bottom:8px">${esc(d.warning)}</div>`;
+  if (RUNBOOK.sqlDiff && d.previous) {
+    box.innerHTML = '<div id="sql-diff-host"></div>';
+    SqlDiff(document.getElementById('sql-diff-host'), formatSQL(d.previous.sql), formatSQL(d.sql));
+    return;
+  }
+  box.innerHTML = `<pre class="code" id="sql-text">${esc(formatSQL(d.sql))}</pre>`;
 }
 
 function renderLogLines(lines) {
@@ -258,7 +356,8 @@ function bindDrawer(id, logs) {
       await api('/instances/' + encodeURIComponent(id) + '/retry', { method: 'POST' });
       toast('已重新触发', 'ok');
       closeDrawer();
-      loadRunbook(document.getElementById('view'));
+      // 从哪个页面打开的就刷新哪个页面，不要硬跳运维页
+      if (typeof render === 'function') await render();
     } catch (e) { toast(e.message, 'err'); }
   });
   root.querySelector('#log-level').addEventListener('change', (e) => {
@@ -270,6 +369,42 @@ function bindDrawer(id, logs) {
     document.getElementById('log-box').innerHTML = renderLogLines(RUNBOOK.logBuf || logs);
   });
   root.querySelector('#log-auto').addEventListener('change', (e) => { RUNBOOK.autoScroll = e.target.checked; });
+
+  // 节点级重跑：只重置这个节点与它的下游，上游成功结果保留。
+  root.querySelectorAll('[data-act="task-retry"]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const node = btn.dataset.node;
+      btn.disabled = true;
+      btn.textContent = '重跑中…';
+      try {
+        await api('/instances/' + encodeURIComponent(id) + '/retry', { method: 'POST', body: { node } });
+        toast(`已从 ${node} 重跑（含下游）`, 'ok');
+        closeDrawer();
+        if (typeof render === 'function') await render();
+      } catch (e) {
+        toast(e.message, 'err');
+        btn.disabled = false;
+        btn.textContent = '重跑此节点';
+      }
+    });
+  });
+  // 节点 SQL：下拉切换节点重新渲染；复制 / 对比上次是排障时最常用的两个动作
+  const sqlSel = root.querySelector('#sql-node');
+  if (sqlSel) sqlSel.addEventListener('change', () => loadNodeSQL(id, sqlSel.value));
+  const copyBtn = root.querySelector('[data-act="sql-copy"]');
+  if (copyBtn) copyBtn.addEventListener('click', async () => {
+    const txt = (RUNBOOK.sql && RUNBOOK.sql.sql) || '';
+    if (!txt) return toast('还没有可复制的 SQL', 'err');
+    try { await navigator.clipboard.writeText(txt); toast('SQL 已复制', 'ok'); }
+    catch (e) { toast('复制失败：浏览器拒绝了剪贴板权限', 'err'); }
+  });
+  const diffBtn = root.querySelector('[data-act="sql-diff"]');
+  if (diffBtn) diffBtn.addEventListener('click', () => {
+    if (!RUNBOOK.sql || !RUNBOOK.sql.previous) return;
+    RUNBOOK.sqlDiff = !RUNBOOK.sqlDiff;
+    renderSQL();
+  });
+
   RUNBOOK.logBuf = logs || [];
 }
 

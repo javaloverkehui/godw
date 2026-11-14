@@ -128,6 +128,16 @@ function closeModal() {
 
 // Esc 关闭当前弹窗（抽屉兜底）。SQL 编辑器自己要用 Esc 收补全弹层，先让给它。
 document.addEventListener('keydown', (ev) => {
+  // 血缘页 Ctrl+F：落到图内搜索。只在血缘路由接管，其他页面保留浏览器原生查找。
+  if ((ev.ctrlKey || ev.metaKey) && !ev.shiftKey && !ev.altKey && (ev.key === 'f' || ev.key === 'F')) {
+    const q = document.getElementById('lg-q');
+    if (q && !document.querySelector('.modal')) {
+      ev.preventDefault();
+      q.focus();
+      q.select();
+    }
+    return;
+  }
   if (ev.key !== 'Escape') return;
   if (document.querySelector('.sqled-pop')) return;
   const ae = document.activeElement;
@@ -186,7 +196,7 @@ async function renderShare(token) {
           ${d.data.cards.map((c, i) => `
             <div class="card" style="${c.span === 2 ? 'grid-column:1 / -1' : ''}">
               <div class="card-head"><div class="card-title">${esc(c.title || c.metric)}</div><div class="hint mono">${esc(c.metric)} · ${c.days}天</div></div>
-              ${c.error ? `<div class="err-box">${esc(c.error)}</div>` : `<svg class="dag" id="sh-${i}" height="220"></svg>`}
+              ${c.error ? `<div class="err-box">${esc(c.error)}</div>` : `<svg class="chart" id="sh-${i}" height="220"></svg>`}
             </div>`).join('')}
         </div>`;
       d.data.cards.forEach((c, i) => {
@@ -198,7 +208,7 @@ async function renderShare(token) {
           <h2 class="page-title">${esc(d.target)}</h2>
           <p class="page-desc">只读分享视图</p>
         </div></div>
-        <div class="card"><svg class="dag" id="sh-metric" height="320"></svg></div>`;
+        <div class="card"><svg class="chart" id="sh-metric" height="320"></svg></div>`;
       drawLineChart(document.getElementById('sh-metric'), d.data.points || [], d.data.unit);
     }
   } catch (e) {
@@ -212,6 +222,14 @@ async function render() {
   document.body.classList.remove('share-mode');
   const route = hash;
   const def = ROUTES[route] || ROUTES.overview;
+  // 切页时收掉抽屉与弹窗：它们挂在 body 上，不跟着 view 一起清，
+  // 否则点侧栏跳转后仍盖在页面上（看起来像没跳成功）。
+  if (typeof closeDrawer === 'function') {
+    const dr = document.getElementById('drawer-root');
+    if (dr && dr.firstElementChild) closeDrawer();
+  }
+  const mr = document.getElementById('modal-root');
+  if (mr && mr.firstElementChild) closeModal();
   S.route = route;
 
   document.querySelectorAll('.nav-item').forEach(el => {
@@ -219,8 +237,15 @@ async function render() {
   });
   document.getElementById('crumb').innerHTML = esc(def.title) + `<span>${esc(def.sub)}</span>`;
 
-  const view = document.getElementById('view');
+  // 每次渲染换一个新的 #view 容器：上一轮 render 的异步请求还持有旧容器引用，
+  // 它晚到的 innerHTML 会落在已脱离文档的节点上，不会把新页面盖掉。
+  // （快速连点侧栏时，慢查询的上一页曾经会在新页面上「闪回」。）
+  const prev = document.getElementById('view');
+  const view = document.createElement('main');
+  view.id = 'view';
+  view.className = prev.className;
   view.innerHTML = '<div class="empty">加载中…</div>';
+  prev.replaceWith(view);
   try {
     await def.render(view);
   } catch (err) {
@@ -231,7 +256,7 @@ async function render() {
 /* ---------------- 工作台 ---------------- */
 
 async function pageOverview(view) {
-  const [ov, insts] = await Promise.all([api('/overview'), api('/instances?limit=12')]);
+  const [ov, insts] = await Promise.all([api('/overview'), (await api('/instances?limit=12')).items || []]);
   const success = (insts || []).filter(i => i.status === 'success').length;
   const rate = insts.length ? Math.round(success * 100 / insts.length) : 0;
 
@@ -364,6 +389,8 @@ async function newDatasourceModal() {
 }
 
 /* ---------------- 表结构 ---------------- */
+/* 实际页面由 designer.js 的 pageTables 接管（三栏：树 / 字段 / 采集信息），
+ * 这里保留一个平铺列表版本：designer.js 未加载时仍能浏览表，不至于白屏。 */
 
 async function pageDatasets(view) {
   const ds = await api('/datasources');
@@ -394,28 +421,13 @@ async function pageDatasets(view) {
             <td class="mono dim">${(t.columns || []).length}</td>
             <td class="dim small">${fmtTime(t.collectedAt)}</td>
           </tr>`).join('')}
-        </tbody></table></div>` : `<div class="empty"><b>还没有采集到表</b>在「数据源」页点一次「采集」</div>`}
+        </tbody></table></div>` : UI.empty({ icon: '▦', title: '还没有采集到表', desc: '在「数据源」页点一次「采集」' })}
     </div>`;
   S.cache.datasets = page.items;
 
   const sel = document.getElementById('ds-filter');
   if (sel) sel.onchange = () => { S.selected.datasource = sel.value; render(); };
 }
-
-function openTable(id) {
-  const t = (S.cache.datasets || []).find(x => x.id === id);
-  if (!t) return;
-  modal(`${t.schema}.${t.name}`, `
-    <div class="hint" style="margin-bottom:12px">${esc(t.comment || '无注释')} · ${(t.rowCount || 0).toLocaleString()} 行 · ${fmtBytes(t.sizeBytes)}</div>
-    <div class="table-wrap"><table>
-      <thead><tr><th>#</th><th>列名</th><th>类型</th><th>可空</th><th>注释</th></tr></thead>
-      <tbody>${(t.columns || []).map((c, i) => `<tr>
-        <td class="mono mute">${i + 1}</td><td class="mono">${esc(c.name)}</td>
-        <td class="mono dim">${esc(c.type)}</td><td>${c.nullable ? '是' : '否'}</td>
-        <td class="dim small">${esc(c.comment || '')}</td></tr>`).join('')}
-      </tbody></table></div>`);
-}
-
 /* ---------------- 模型 ---------------- */
 
 const MODEL_TPL = `kind: Model
@@ -471,10 +483,15 @@ async function pageModels(view) {
           <div class="list-item ${x.name === cur ? 'active' : ''}" data-act="sel-model" data-name="${esc(x.name)}">
             <div class="name">${esc(x.name)}</div>
             <div class="meta">${esc(x.layer)} · ${x.activeVersion ? 'v' + x.activeVersion : '未发布'}</div>
-          </div>`).join('') : '<div class="empty"><b>暂无模型</b></div>'}
+          </div>`).join('') : UI.empty({ icon: '◇', title: '还没有模型', desc: '从 ODS 开始，一层层建上去。', action: { act: 'new-model', label: '新建模型' } })}
       </div>
       <div>
-        ${m ? modelDetail(m) : `<div class="card"><div class="empty"><b>选择或新建一个模型</b>建议顺序：ODS → DWD → DWS → ADS</div></div>`}
+        ${m ? modelDetail(m) : `<div class="card">${UI.empty({
+          icon: '▤',
+          title: '选择或新建一个模型',
+          desc: '推荐顺序：ODS（原样落地）→ DWD（清洗明细）→ DWS（主题汇总）→ ADS（对外口径）。左侧点一个已有模型，或直接新建。',
+          action: { act: 'new-model', label: '新建模型' },
+        })}</div>`}
       </div>
     </div>`;
 
@@ -622,13 +639,14 @@ function pipelineDetail(p) {
           <div class="hint" style="margin-top:4px">${esc(p.description || '无描述')} · cron <span class="mono">${esc(p.schedule || '手动')}</span> · ${esc(p.timezone)}</div>
         </div>
         <div class="row">
+          <button class="sm ghost" data-act="open-canvas" data-name="${esc(p.name)}">可视化编排</button>
           <button class="sm ghost" data-act="toggle-pl" data-name="${esc(p.name)}" data-enabled="${p.enabled}">${p.enabled ? '停用' : '启用'}</button>
           <button class="sm ghost" data-act="edit-pipeline" data-name="${esc(p.name)}">编辑</button>
           <button class="sm primary" data-act="trigger-pl" data-name="${esc(p.name)}">立即运行</button>
         </div>
       </div>
       <div class="hint" style="margin-bottom:8px">执行图（同层并发）</div>
-      <svg class="dag" id="dag-${esc(p.name)}" height="240"></svg>
+      <div class="dag-wrap"><svg class="dag" id="dag-${esc(p.name)}"></svg></div>
     </div>
     <div class="card">
       <div class="card-head"><div class="card-title">节点</div></div>
@@ -673,8 +691,12 @@ function drawDAG(svg, nodes) {
   const width = padX * 2 + (maxLevel + 1) * w + maxLevel * gapX;
   const height = Math.max(120, padY * 2 + maxRows * h + (maxRows - 1) * gapY);
 
+  // 真实像素：与血缘图同一套做法，容器窄了由 .dag-wrap 横向滚动，不整体缩放字号
   svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
+  svg.setAttribute('width', width);
   svg.setAttribute('height', height);
+  svg.style.width = width + 'px';
+  svg.style.height = height + 'px';
   svg.innerHTML = '';
 
   const pos = {};
@@ -702,7 +724,7 @@ function drawDAG(svg, nodes) {
 
   const defs = document.createElementNS(ns, 'defs');
   defs.innerHTML = `<marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-    <path d="M 0 0 L 10 5 L 0 10 z" fill="#33465c"></path></marker>`;
+    <path d="M 0 0 L 10 5 L 0 10 z" style="fill:var(--edge)"></path></marker>`;
   svg.appendChild(defs);
   edges.forEach(e => svg.appendChild(e));
 
@@ -723,7 +745,7 @@ function drawDAG(svg, nodes) {
 
     const t2 = document.createElementNS(ns, 'text');
     t2.setAttribute('x', p.x + 12); t2.setAttribute('y', p.y + 34);
-    t2.setAttribute('style', 'fill:#6b7887;font-size:10px');
+    t2.setAttribute('style', 'fill:var(--text-mute);font-size:10.5px');
     t2.textContent = n.type + (n.model ? ' · ' + n.model : '');
     g.appendChild(t2);
 
@@ -745,66 +767,159 @@ function pipelineEditor(yaml) {
 
 /* ---------------- 实例 ---------------- */
 
+// 筛选与分页状态挂在 S.selected 上：切换页面回来还停在原来的筛选条件。
+function instQuery() {
+  if (!S.selected.instQuery) {
+    S.selected.instQuery = { pipeline: '', status: '', from: '', to: '', limit: 20, offset: 0 };
+  }
+  return S.selected.instQuery;
+}
+
+function instSelected() {
+  if (!S.selected.instIds) S.selected.instIds = new Set();
+  return S.selected.instIds;
+}
+
 async function pageInstances(view) {
-  const insts = await api('/instances?limit=80');
+  const q = instQuery();
+  const sel = instSelected();
+  const pipes = S.cache.pipelines || (S.cache.pipelines = await api('/pipelines').catch(() => []));
+
+  const qs = new URLSearchParams({ limit: String(q.limit), offset: String(q.offset) });
+  if (q.pipeline) qs.set('pipeline', q.pipeline);
+  if (q.status) qs.set('status', q.status);
+  if (q.from) qs.set('from', q.from);
+  if (q.to) qs.set('to', q.to);
+
+  const res = await api('/instances?' + qs.toString());
+  const insts = res.items || [];
+  const total = res.total || 0;
+  const filtered = !!(q.pipeline || q.status || q.from || q.to);
+  const start = total === 0 ? 0 : q.offset + 1;
+  const end = q.offset + insts.length;
+
   view.innerHTML = `
     <div class="page-head">
       <div>
         <h2 class="page-title">运行实例</h2>
-        <p class="page-desc">一次调度对应一个实例。重跑复用原版本快照与业务日期，已成功的节点会跳过。</p>
+        <p class="page-desc">一次调度对应一个实例。重跑复用原版本快照与业务日期，已成功的节点会跳过；失败可只重跑单个节点。</p>
       </div>
-      <button class="primary" data-act="run-once">执行一轮</button>
+      <div class="row">
+        <button class="ghost" data-act="inst-refresh">刷新</button>
+        <button class="primary" data-act="run-once">执行一轮</button>
+      </div>
     </div>
+
+    <div class="card" style="padding:10px 12px;margin-bottom:14px">
+      <div class="filter-bar">
+        <select id="fq-pipeline">
+          <option value="">全部管道</option>
+          ${pipes.map(p => `<option value="${esc(p.name)}" ${p.name === q.pipeline ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}
+        </select>
+        <select id="fq-status">
+          <option value="">全部状态</option>
+          ${[['failed', '失败'], ['success', '成功'], ['running', '运行中'], ['queued', '排队中'], ['pending', '待执行'], ['canceled', '已取消']]
+            .map(([v, t]) => `<option value="${v}" ${v === q.status ? 'selected' : ''}>${t}</option>`).join('')}
+        </select>
+        <label class="hint" style="margin:0">业务日期</label>
+        <input id="fq-from" type="date" value="${esc(q.from)}" style="width:150px" />
+        <span class="hint">→</span>
+        <input id="fq-to" type="date" value="${esc(q.to)}" style="width:150px" />
+        ${filtered ? `<button class="sm ghost" data-act="inst-reset">清除筛选</button>` : ''}
+        <span class="spacer"></span>
+        <span class="hint">共 ${total} 条</span>
+      </div>
+    </div>
+
+    ${sel.size ? `<div class="card" style="padding:8px 12px;margin-bottom:14px;border-color:var(--accent-dim)">
+      <div class="filter-bar">
+        <b style="font-size:12.5px">已选 ${sel.size} 条</b>
+        <span class="spacer"></span>
+        <button class="sm ghost" data-act="inst-clear-sel">清空选择</button>
+        <button class="sm ghost" data-act="batch-cancel">取消所选</button>
+        <button class="sm primary" data-act="batch-retry">重跑所选</button>
+      </div>
+    </div>` : ''}
+
     <div class="card">
       ${insts.length ? `<div class="table-wrap"><table>
-        <thead><tr><th>实例</th><th>管道</th><th>业务日期</th><th>触发</th><th>状态</th><th>开始</th><th>耗时</th><th></th></tr></thead>
-        <tbody>${insts.map(i => `<tr>
+        <thead><tr>
+          <th style="width:34px"><input type="checkbox" id="inst-ck-all" ${insts.every(i => sel.has(i.id)) ? 'checked' : ''} /></th>
+          <th>实例</th><th>管道</th><th>业务日期</th><th>触发</th><th>状态</th><th>开始</th><th>耗时</th><th></th>
+        </tr></thead>
+        <tbody>${insts.map(i => `<tr data-id="${esc(i.id)}" class="inst-row">
+          <td><input type="checkbox" class="inst-ck" data-id="${esc(i.id)}" ${sel.has(i.id) ? 'checked' : ''} /></td>
           <td class="mono">${esc(i.id.slice(-10))}</td>
           <td>${esc(i.pipelineName || '—')}</td>
           <td class="mono">${esc(i.bizDate)}</td>
           <td><span class="pill mute">${esc(i.triggerType)}</span></td>
-          <td>${statusPill(i.status)}</td>
+          <td>
+            ${statusPill(i.status)}
+            ${i.error ? `<details style="margin-top:4px"><summary class="hint" style="cursor:pointer">错误</summary>
+              <div class="small" style="color:var(--err);max-width:420px;word-break:break-all">${esc(i.error)}</div></details>` : ''}
+          </td>
           <td class="dim small">${fmtTime(i.startedAt || i.createdAt)}</td>
           <td class="dim small">${i.startedAt && i.finishedAt ? fmtDur(new Date(i.finishedAt) - new Date(i.startedAt)) : '—'}</td>
-          <td><button class="sm ghost" data-act="open-instance" data-id="${esc(i.id)}">详情</button></td>
-        </tr>`).join('')}</tbody></table></div>` : `<div class="empty"><b>还没有实例</b>触发一条管道即可看到节点级执行过程</div>`}
+          <td>
+            <div class="row" style="gap:6px;justify-content:flex-end">
+              <button class="sm ghost" data-act="open-instance" data-id="${esc(i.id)}">详情</button>
+              <button class="sm ghost" data-act="retry-inst" data-id="${esc(i.id)}" title="新建一次运行">重跑</button>
+            </div>
+          </td>
+        </tr>`).join('')}</tbody></table></div>
+        <div class="filter-bar" style="padding:10px 12px;border-top:1px solid var(--line-soft)">
+          <span class="hint">第 ${start}-${end} 条 / 共 ${total}</span>
+          <span class="spacer"></span>
+          <select id="pg-size" style="width:auto">
+            ${[10, 20, 50, 100].map(n => `<option value="${n}" ${n === q.limit ? 'selected' : ''}>每页 ${n}</option>`).join('')}
+          </select>
+          <button class="sm ghost" data-act="pg-prev" ${q.offset === 0 ? 'disabled' : ''}>上一页</button>
+          <button class="sm ghost" data-act="pg-next" ${end >= total ? 'disabled' : ''}>下一页</button>
+        </div>`
+      : `<div class="empty"><b>${filtered ? '没有符合条件的实例' : '还没有实例'}</b>${filtered ? '换个状态或日期范围再试' : '触发一条管道即可看到节点级执行过程'}</div>`}
     </div>`;
 }
 
+// 筛选变化：重置到第一页，避免停在越界页码上看到空白
+function instApplyFilter(patch) {
+  const q = instQuery();
+  Object.assign(q, patch);
+  q.offset = 0;
+  return render();
+}
+
+async function instBatch(action) {
+  const ids = Array.from(instSelected());
+  if (!ids.length) return toast('先选择实例', 'err');
+  const label = action === 'retry' ? '重跑' : '取消';
+  try {
+    const r = await api('/instances/batch', { method: 'POST', body: { action, ids } });
+    const okN = (r.succeeded || []).length;
+    const failed = Object.keys(r.failed || {}).length;
+    toast(`${label}完成：成功 ${okN}${failed ? `，失败 ${failed}` : ''}`, failed ? 'err' : 'ok');
+    instSelected().clear();
+    await render();
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+/**
+ * 实例详情统一走运维中心那个抽屉：参数快照、节点耗时条、质量结果、实时日志一屏看全。
+ * 旧的模态框只有节点表和状态，看不到日志，属于「点进去还得再点一次」。
+ */
 async function openInstance(id) {
+  if (typeof openRunDrawer === 'function') return openRunDrawer(id);
   const data = await api('/instances/' + encodeURIComponent(id));
   const inst = data.instance;
-  const tasks = inst.tasks || [];
-  const qs = data.quality || [];
 
   modal('实例 ' + inst.id.slice(-10), `
     <dl class="kv" style="margin-bottom:16px">
       <dt>状态</dt><dd>${statusPill(inst.status)}</dd>
       <dt>业务日期</dt><dd class="mono">${esc(inst.bizDate)}</dd>
       <dt>触发方式</dt><dd>${esc(inst.triggerType)}</dd>
-      <dt>版本</dt><dd class="mono">v${inst.pipelineVer}</dd>
+      <dt>版本</dt><dd class="mono">v${inst.pipelineVersion || 0}</dd>
       <dt>开始 / 结束</dt><dd class="small">${fmtTime(inst.startedAt)} → ${fmtTime(inst.finishedAt)}</dd>
       ${inst.error ? `<dt>错误</dt><dd><div class="err-box">${esc(inst.error)}</div></dd>` : ''}
     </dl>
-    <div class="card-title" style="margin-bottom:8px">节点</div>
-    <div class="table-wrap"><table>
-      <thead><tr><th>节点</th><th>类型</th><th>状态</th><th>影响行数</th><th>耗时</th></tr></thead>
-      <tbody>${tasks.length ? tasks.map(t => `<tr>
-        <td class="mono">${esc(t.nodeId)}</td>
-        <td class="dim">${esc(t.nodeType)}</td>
-        <td>${statusPill(t.status)}${t.error ? `<div class="mute small">${esc(t.error.slice(0, 90))}</div>` : ''}</td>
-        <td class="mono">${t.rowsAffected || 0}</td>
-        <td class="mono dim">${fmtDur(t.durationMs)}</td>
-      </tr>`).join('') : '<tr><td colspan="5" class="mute">尚无节点记录</td></tr>'}</tbody>
-    </table></div>
-    ${qs.length ? `<div class="card-title" style="margin:18px 0 8px">质量结果</div>
-      <div class="table-wrap"><table>
-        <thead><tr><th>规则</th><th>结果</th><th>实测</th><th>期望</th></tr></thead>
-        <tbody>${qs.map(q => `<tr>
-          <td class="mono">${esc(q.ruleName)}</td>
-          <td>${q.passed ? '<span class="pill ok">通过</span>' : '<span class="pill err">未通过</span>'}</td>
-          <td class="mono">${esc(q.observed)}</td><td class="mono dim">${esc(q.expected)}</td>
-        </tr>`).join('')}</tbody></table></div>` : ''}
     <div class="row" style="margin-top:18px;justify-content:flex-end">
       <button class="ghost" data-act="close-modal">关闭</button>
       <button class="primary" data-act="retry-inst" data-id="${esc(inst.id)}">重跑</button>
@@ -856,16 +971,24 @@ async function pageLineage(view) {
     </div>
 
     <div class="card">
-      <div class="card-head">
+      <div class="card-head" style="gap:10px;flex-wrap:wrap">
         <div class="card-title">表级依赖</div>
-        <div class="row">
+        <div class="row" style="gap:8px;flex-wrap:wrap">
+          <input id="lg-q" placeholder="搜索表名（Ctrl+F）" value="${esc(S.selected.lineageQuery || '')}" style="width:170px;padding:5px 8px;font-size:12.5px" />
+          <select id="lg-depth" style="width:auto;font-size:12.5px;padding:4px 8px" title="聚焦时显示的跳数">
+            ${[1, 2, 3].map(d => `<option value="${d}" ${(S.selected.lineageDepth || 2) === d ? 'selected' : ''}>${d} 跳</option>`).join('')}
+          </select>
           <label class="hint" style="display:flex;align-items:center;gap:6px;margin:0">
             <input type="checkbox" id="lg-ds" ${S.selected.lineageShowDS ? 'checked' : ''} style="width:auto" /> 显示数据源
           </label>
-          <div class="hint">${g.nodes.length} 个节点 · ${g.edges.length} 条边${anchor ? '' : ' · 点击节点可下钻'}</div>
+          <button class="sm ghost" data-act="lg-export" title="把当前视图导出为 PNG">导出 PNG</button>
+          <div class="hint" id="lg-count"></div>
         </div>
       </div>
-      ${g.edges.length ? `<svg class="dag" id="lineage-svg" height="360"></svg>` : `<div class="empty"><b>暂无血缘</b>发布带 depends_on 的管道后自动生成</div>`}
+      <div class="lg-legend" id="lg-legend"></div>
+      <div class="hint" id="lg-focus" style="display:none;margin-bottom:8px"></div>
+      ${g.edges.length ? `<div class="dag-wrap"><svg class="dag" id="lineage-svg"></svg></div>` : `<div class="empty"><b>暂无血缘</b>发布带 depends_on 的管道后自动生成</div>`}
+      <div class="hint" style="margin-top:8px">双击节点聚焦其上下游，双击空白复原；${anchor ? '' : '单击节点可下钻到该表的字段血缘。'}</div>
     </div>
 
     ${err ? `<div class="card"><div class="err-box">${esc(err)}</div></div>` : ''}
@@ -884,7 +1007,8 @@ async function pageLineage(view) {
           <button class="${dir === 'down' ? 'primary' : 'ghost'}" data-dir="down" style="padding:4px 10px">只看下游</button>
         </div>
         <div class="spacer"></div>
-        ${cg ? `<div class="hint">聚焦 <span class="mono">${esc(focusLabel)}</span> · 上游 ${cg.upstreamCount} 列 · 下游 ${cg.downstreamCount} 列${cg.truncated ? ' · 已达节点上限' : ''}</div>` : ''}
+        ${cg ? `<div class="hint">聚焦 <span class="mono">${esc(focusLabel)}</span> · 上游 ${cg.upstreamCount} 列 · 下游 ${cg.downstreamCount} 列${cg.truncated ? ' · 已达节点上限' : ''}</div>
+          <button class="sm ghost" data-act="lg-export-col" title="导出为 PNG">导出 PNG</button>` : ''}
       </div>
       ${focusTable && focusTable !== anchor ? `<div class="hint" style="margin-bottom:8px">
           入口 <span class="mono">${esc(anchor)}</span> → 当前 <span class="mono">${esc(focusTable)}</span>
@@ -933,32 +1057,127 @@ async function pageLineage(view) {
     gv.nodes = g.nodes.filter(n => !dsNodes.has(n));
     gv.edges = g.edges.filter(e => !dsNodes.has(e.source) && !dsNodes.has(e.target));
   }
-  if (gv.edges.length) drawLineage(document.getElementById('lineage-svg'), gv, anchor);
-  else if (g.edges.length) {
-    const svg = document.getElementById('lineage-svg');
-    if (svg) svg.outerHTML = '<div class="empty">只记录了数据源依赖，勾选上方「显示数据源」查看</div>';
+  S.cache.lineageFull = gv;
+
+  // 血缘图重绘：搜索、聚焦、跳数变化都只重画 SVG，不整页刷新 —— 页面重渲染会丢滚动位置，
+  // 用户刚缩放到想看的位置就被弹回去，比不能搜索还烦。
+  const paint = () => {
+    const svgEl = document.getElementById('lineage-svg');
+    if (!svgEl) return;
+    const full = S.cache.lineageFull;
+    const focused = S.selected.lineageFocusNode || '';
+    const depth = S.selected.lineageDepth || 2;
+    let view = full;
+    let focusedOK = focused && full.nodes.includes(focused);
+    if (focusedOK) view = lineageNeighborhood(full, focused, depth);
+    S.cache.lineageView = view;
+    drawLineage(svgEl, view, {
+      highlight: anchor,
+      query: (S.selected.lineageQuery || '').trim().toLowerCase(),
+      focused: focusedOK ? focused : '',
+    });
+    const cnt = document.getElementById('lg-count');
+    if (cnt) {
+      cnt.textContent = focusedOK
+        ? `${view.nodes.length}/${full.nodes.length} 个节点 · ${view.edges.length}/${full.edges.length} 条边`
+        : `${full.nodes.length} 个节点 · ${full.edges.length} 条边`;
+    }
+    renderLineageLegend(full);
+    const chip = document.getElementById('lg-focus');
+    if (chip) {
+      chip.style.display = focusedOK ? '' : 'none';
+      if (focusedOK) {
+        chip.innerHTML = `已聚焦 <span class="mono">${esc(focused)}</span> · ${depth} 跳
+          <a href="#" id="lg-unfocus" style="margin-left:8px">复原</a>`;
+        const un = document.getElementById('lg-unfocus');
+        if (un) un.onclick = ev => { ev.preventDefault(); S.selected.lineageFocusNode = ''; paint(); };
+      }
+    }
+  };
+
+  if (g.edges.length) {
+    if (gv.edges.length) paint();
+    else {
+      const svg = document.getElementById('lineage-svg');
+      if (svg) svg.outerHTML = '<div class="empty">只记录了数据源依赖，勾选上方「显示数据源」查看</div>';
+    }
   }
 
   const t = document.getElementById('lg-table');
   if (t) t.onchange = () => {
     S.selected.lineageTable = t.value;
     S.selected.lineageFocus = '';
+    S.selected.lineageFocusNode = '';
     render();
   };
   const cb = document.getElementById('lg-ds');
   if (cb) cb.onchange = () => { S.selected.lineageShowDS = cb.checked; render(); };
 
+  const qBox = document.getElementById('lg-q');
+  if (qBox) {
+    qBox.oninput = () => { S.selected.lineageQuery = qBox.value; paint(); };
+    // Ctrl+F / ⌘F 落到图内搜索，而不是浏览器自带的整页查找：用户要找的通常是图上的表
+    qBox.onkeydown = ev => { if (ev.key === 'Escape') { qBox.value = ''; S.selected.lineageQuery = ''; paint(); qBox.blur(); } };
+  }
+  const depthSel = document.getElementById('lg-depth');
+  if (depthSel) depthSel.onchange = () => { S.selected.lineageDepth = Number(depthSel.value); paint(); };
+
   const chart = document.getElementById('lineage-svg');
   if (chart && gv.edges.length) {
+    // 单击下钻 / 双击聚焦共用同一个元素，所以单击必须延迟 240ms 再执行：
+    // 否则第一次 click 立刻整页重渲染，dblclick 永远等不到第二次 click。
     chart.onclick = ev => {
       const hit = ev.target.closest('[data-node]');
-      if (!hit) return;
-      const id = hit.getAttribute('data-node');
+      const id0 = hit ? hit.getAttribute('data-node') : '';
+      // 空白处连点两下 = 复原。和节点一样自己数连击，不赌浏览器合成 dblclick。
+      if (!id0) {
+        const now0 = Date.now();
+        const last0 = chart.__lastClick;
+        if (last0 && last0.id === '' && now0 - last0.t < 320) {
+          chart.__lastClick = null;
+          if (S.selected.lineageFocusNode) { S.selected.lineageFocusNode = ''; paint(); }
+          return;
+        }
+        chart.__lastClick = { id: '', t: now0 };
+        return;
+      }
+      const id = id0;
       // 数据源节点没有模型定义，点它没有可下钻的字段，直接忽略。
-      if (!id || id.startsWith('datasource.')) return;
-      S.selected.lineageTable = id;
-      S.selected.lineageFocus = '';
-      render();
+      if (id.startsWith('datasource.')) return;
+      // 自己数连击：不依赖浏览器是否合成 dblclick（触控板 / 合成事件的 clickCount 并不可靠）
+      const now = Date.now();
+      const last = chart.__lastClick;
+      if (last && last.id === id && now - last.t < 320) {
+        chart.__lastClick = null;
+        clearTimeout(chart.__clickTimer);
+        S.selected.lineageFocusNode = id;
+        paint();
+        return;
+      }
+      chart.__lastClick = { id, t: now };
+      clearTimeout(chart.__clickTimer);
+      chart.__clickTimer = setTimeout(() => {
+        if (!chart.isConnected) return;
+        S.selected.lineageTable = id;
+        S.selected.lineageFocus = '';
+        S.selected.lineageFocusNode = '';
+        render();
+      }, 240);
+    };
+    // 双击节点聚焦 N 跳邻域；双击空白复原（比再去找一个「复原」按钮快）
+    chart.ondblclick = ev => {
+      clearTimeout(chart.__clickTimer);
+      const hit = ev.target.closest('[data-node]');
+      const id = hit && hit.getAttribute('data-node');
+      if (id && !id.startsWith('datasource.')) {
+        S.selected.lineageFocusNode = id;
+      } else if (!hit) {
+        S.selected.lineageFocusNode = '';
+      } else {
+        return;
+      }
+      ev.preventDefault();
+      paint();
     };
   }
 
@@ -1047,9 +1266,9 @@ function drawColumnLineage(svg, g) {
   svg.setAttribute('width', width);
   svg.setAttribute('height', height);
   svg.innerHTML = `<defs><marker id="col-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto">
-      <path d="M0,0 L8,4 L0,8 z" fill="#3d5169"/></marker>
+      <path d="M0,0 L8,4 L0,8 z" style="fill:var(--edge)"/></marker>
     <marker id="col-arrow-hl" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto">
-      <path d="M0,0 L8,4 L0,8 z" fill="#58a6ff"/></marker></defs>`;
+      <path d="M0,0 L8,4 L0,8 z" style="fill:var(--accent)"/></marker></defs>`;
 
   const pos = {};
   Object.keys(byLevel).forEach(l => {
@@ -1141,10 +1360,77 @@ function drawColumnLineage(svg, g) {
   });
 }
 
-function drawLineage(svg, g, highlight) {
+/* 血缘图：分层着色 + 图内搜索 + 聚焦邻域 + 导出 PNG。
+ *
+ * 参照 DataWorks 数据地图的读图方式：层色是第一识别信号（ODS/DWD/DWS/ADS），
+ * 所以每个节点左侧 4px 色条 + 小号层名，比只按深度排布更容易「一眼定位」。
+ * 尺寸用真实像素（viewBox 宽 = 节点实际占宽），容器窄了横向滚动而不是整体缩小 ——
+ * 早先固定 viewBox 宽度会被 CSS 缩到 0.56 倍，11.5px 的字渲染成 6.5px。
+ */
+const LINEAGE_LAYERS = {
+  ods: { label: 'ODS', color: 'var(--layer-ods)' },
+  dwd: { label: 'DWD', color: 'var(--layer-dwd)' },
+  dws: { label: 'DWS', color: 'var(--layer-dws)' },
+  ads: { label: 'ADS', color: 'var(--layer-ads)' },
+  src: { label: '源', color: 'var(--layer-src)' },
+  other: { label: '—', color: 'var(--layer-other)' },
+};
+
+function lineageLayer(id) {
+  const s = String(id || '');
+  if (s.startsWith('datasource.')) return 'src';
+  const p = s.split(/[_.]/)[0].toLowerCase();
+  return LINEAGE_LAYERS[p] ? p : 'other';
+}
+
+// 以某个节点为中心取 N 跳邻域（上下游都算），用于双击聚焦。
+function lineageNeighborhood(g, center, depth) {
+  const adj = {};
+  (g.edges || []).forEach(e => {
+    (adj[e.source] = adj[e.source] || []).push(e.target);
+    (adj[e.target] = adj[e.target] || []).push(e.source);
+  });
+  const keep = new Set([center]);
+  let frontier = [center];
+  for (let d = 0; d < Math.max(1, depth); d++) {
+    const next = [];
+    frontier.forEach(n => (adj[n] || []).forEach(nx => {
+      if (keep.has(nx)) return;
+      keep.add(nx);
+      next.push(nx);
+    }));
+    if (!next.length) break;
+    frontier = next;
+  }
+  return {
+    nodes: (g.nodes || []).filter(n => keep.has(n)),
+    edges: (g.edges || []).filter(e => keep.has(e.source) && keep.has(e.target)),
+  };
+}
+
+// 图例：层色 + 数量。没有图例的分层着色等于让用户猜颜色含义。
+function renderLineageLegend(g) {
+  const box = document.getElementById('lg-legend');
+  if (!box) return;
+  const cnt = {};
+  (g.nodes || []).forEach(n => { const k = lineageLayer(n); cnt[k] = (cnt[k] || 0) + 1; });
+  const order = ['src', 'ods', 'dwd', 'dws', 'ads', 'other'].filter(k => cnt[k]);
+  box.innerHTML = order.map(k => `<span class="lg-chip">
+      <i style="background:${LINEAGE_LAYERS[k].color}"></i>${LINEAGE_LAYERS[k].label}<b>${cnt[k]}</b>
+    </span>`).join('');
+}
+
+function drawLineage(svg, g, opts) {
+  // 第三个参数历史上是「高亮节点名」，这里兼容字符串与对象两种调用。
+  opts = typeof opts === 'string' ? { highlight: opts } : (opts || {});
+  const highlight = opts.highlight || '';
+  const query = (opts.query || '').trim();
+  const focused = opts.focused || '';
   // 后端空图曾经返回 "edges":null，这里不能假设数组一定存在。
   const nodes = (g && g.nodes) || [];
   const edges = (g && g.edges) || [];
+  if (!nodes.length) { svg.innerHTML = ''; return; }
+
   const inDeg = {}, adj = {};
   nodes.forEach(n => { inDeg[n] = 0; adj[n] = []; });
   edges.forEach(e => { adj[e.source] = adj[e.source] || []; adj[e.source].push(e.target); inDeg[e.target] = (inDeg[e.target] || 0) + 1; });
@@ -1164,14 +1450,18 @@ function drawLineage(svg, g, highlight) {
 
   const groups = {};
   nodes.forEach(n => (groups[level[n]] = groups[level[n]] || []).push(n));
-  if (!nodes.length) { svg.innerHTML = ''; return; }
   const maxL = Math.max.apply(null, Object.keys(groups).map(Number));
   const maxR = Math.max.apply(null, Object.values(groups).map(x => x.length));
-  const w = 150, h = 34, gx = 60, gy = 18, pad = 24;
+  const w = 172, h = 42, gx = 78, gy = 20, pad = 26;
   const width = pad * 2 + (maxL + 1) * w + maxL * gx;
-  const height = Math.max(200, pad * 2 + maxR * h + (maxR - 1) * gy);
+  const height = Math.max(140, pad * 2 + maxR * h + (maxR - 1) * gy);
+
+  // 真实像素：viewBox 与属性同尺寸，CSS 不再缩放，字号所见即所得。
   svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
+  svg.setAttribute('width', width);
   svg.setAttribute('height', height);
+  svg.style.width = width + 'px';
+  svg.style.height = height + 'px';
   svg.innerHTML = '';
 
   const pos = {};
@@ -1186,33 +1476,118 @@ function drawLineage(svg, g, highlight) {
   });
 
   const ns = 'http://www.w3.org/2000/svg';
+  // 正交折线而不是贝塞尔：多上游汇聚时曲线会互相穿，折线一眼能看出「从哪来、到哪去」。
   edges.forEach(e => {
     const a = pos[e.source], b = pos[e.target];
     if (!a || !b) return;
     const path = document.createElementNS(ns, 'path');
     path.setAttribute('class', 'edge');
     const x1 = a.x + w, y1 = a.y + h / 2, x2 = b.x, y2 = b.y + h / 2, mx = (x1 + x2) / 2;
-    path.setAttribute('d', `M ${x1} ${y1} C ${mx} ${y1}, ${mx} ${y2}, ${x2} ${y2}`);
+    path.setAttribute('d', `M ${x1} ${y1} L ${mx} ${y1} L ${mx} ${y2} L ${x2} ${y2}`);
     svg.appendChild(path);
   });
 
   nodes.forEach(n => {
     const p = pos[n];
     if (!p) return;
+    const layer = lineageLayer(n);
+    const meta = LINEAGE_LAYERS[layer];
+    const hit = !!query && String(n).toLowerCase().includes(query);
+
+    const grp = document.createElementNS(ns, 'g');
+    grp.setAttribute('data-node', n);
+    // 搜索时非命中项淡出，命中项保持满不透明 —— 比给命中项加圈更快找到
+    if (query && !hit) grp.setAttribute('opacity', '0.22');
+
     const rect = document.createElementNS(ns, 'rect');
-    rect.setAttribute('class', 'node-rect' + (highlight && n === highlight ? ' focus' : ''));
+    rect.setAttribute('class', 'node-rect'
+      + (highlight && n === highlight ? ' focus' : '')
+      + (hit ? ' hit' : '')
+      + (focused && n === focused ? ' centered' : ''));
     rect.setAttribute('x', p.x); rect.setAttribute('y', p.y);
     rect.setAttribute('width', w); rect.setAttribute('height', h);
-    rect.setAttribute('rx', 7);
+    rect.setAttribute('rx', 8);
     rect.setAttribute('data-node', n);
-    svg.appendChild(rect);
+    grp.appendChild(rect);
+
+    const bar = document.createElementNS(ns, 'rect');
+    bar.setAttribute('x', p.x); bar.setAttribute('y', p.y + 1);
+    bar.setAttribute('width', 4); bar.setAttribute('height', h - 2);
+    bar.setAttribute('rx', 2);
+    bar.setAttribute('fill', meta.color);
+    bar.setAttribute('data-node', n);
+    grp.appendChild(bar);
 
     const t = document.createElementNS(ns, 'text');
-    t.setAttribute('x', p.x + 11); t.setAttribute('y', p.y + 21);
+    t.setAttribute('class', 'node-title');
+    t.setAttribute('x', p.x + 13); t.setAttribute('y', p.y + 18);
     t.setAttribute('data-node', n);
-    t.textContent = n.length > 20 ? n.slice(0, 19) + '…' : n;
-    svg.appendChild(t);
+    t.textContent = n.length > 21 ? n.slice(0, 20) + '…' : n;
+    grp.appendChild(t);
+
+    const sub = document.createElementNS(ns, 'text');
+    sub.setAttribute('class', 'node-sub');
+    sub.setAttribute('x', p.x + 13); sub.setAttribute('y', p.y + 32);
+    sub.setAttribute('data-node', n);
+    sub.textContent = meta.label;
+    sub.setAttribute('style', `fill:${meta.color}`);
+    grp.appendChild(sub);
+
+    svg.appendChild(grp);
   });
+}
+
+/* 把 SVG 导出成 PNG。
+ * 关键点：页面上的 SVG 依赖外部 CSS（.node-rect 之类），序列化后样式全丢，
+ * 所以先把每个元素的计算样式内联进克隆体，再画到 canvas 上。
+ * 2 倍像素密度保证放大看仍清晰。
+ */
+function exportSVGAsPNG(svg, filename) {
+  if (!svg) return;
+  const clone = svg.cloneNode(true);
+  const src = svg.querySelectorAll('*');
+  const dst = clone.querySelectorAll('*');
+  const props = ['fill', 'stroke', 'stroke-width', 'stroke-dasharray', 'opacity', 'font-size', 'font-family', 'font-weight', 'text-anchor'];
+  for (let i = 0; i < src.length; i++) {
+    const cs = getComputedStyle(src[i]);
+    for (const p of props) {
+      const v = cs.getPropertyValue(p);
+      if (v) dst[i].style.setProperty(p, v);
+    }
+  }
+  const w = Number(svg.getAttribute('width')) || svg.clientWidth || 800;
+  const h = Number(svg.getAttribute('height')) || svg.clientHeight || 400;
+  clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+  // 透明底在图上看不清，垫一层当前主题背景
+  const bg = getComputedStyle(document.body).backgroundColor || '#ffffff';
+  const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+  rect.setAttribute('x', 0); rect.setAttribute('y', 0);
+  rect.setAttribute('width', w); rect.setAttribute('height', h);
+  rect.setAttribute('fill', bg);
+  clone.insertBefore(rect, clone.firstChild);
+
+  const xml = new XMLSerializer().serializeToString(clone);
+  const img = new Image();
+  img.onload = () => {
+    const scale = 2;
+    const cv = document.createElement('canvas');
+    cv.width = Math.round(w * scale); cv.height = Math.round(h * scale);
+    const ctx = cv.getContext('2d');
+    ctx.scale(scale, scale);
+    ctx.drawImage(img, 0, 0);
+    cv.toBlob(blob => {
+      if (!blob) return toast('导出失败：浏览器不支持 canvas 导出', 'err');
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+      toast('已导出 ' + filename, 'ok');
+    }, 'image/png');
+  };
+  img.onerror = () => toast('导出失败：SVG 序列化异常', 'err');
+  img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(xml);
 }
 
 
@@ -1284,7 +1659,7 @@ async function pageMetrics(view) {
         <div class="spacer"></div>
         <div class="hint">${m.unit ? '单位：' + esc(m.unit) : ''}</div>
       </div>
-      ${qerr ? `<div class="err-box">${esc(qerr)}</div>` : `<svg class="dag" id="metric-chart" height="320"></svg>`}
+      ${qerr ? `<div class="err-box">${esc(qerr)}</div>` : `<svg class="chart" id="metric-chart" height="320"></svg>`}
       ${series && series.points.length ? `<div class="hint mono" style="margin-top:10px">${series.points.length} 个数据点 · ${esc(series.sql.split('\n')[0])} …</div>` : ''}
       ${series && !series.points.length && !qerr ? '<div class="hint" style="margin-top:10px">所选区间没有数据，换个时间范围或先跑一轮管道</div>' : ''}
     </div>
@@ -1313,133 +1688,6 @@ async function pageMetrics(view) {
   if (dm) dm.onchange = () => { S.selected.metricDim = dm.value; render(); };
 }
 
-function drawLineChart(svg, points, unit) {
-  if (!svg) return;
-  const ns = 'http://www.w3.org/2000/svg';
-  const W = 960, H = 320, padL = 64, padR = 18, padT = 18, padB = 46;
-
-  const dims = {};
-  points.forEach(p => (dims[p.dim || ''] = dims[p.dim || ''] || []).push(p));
-  const keys = Object.keys(dims);
-  const colors = ['#4f8cff', '#3fb950', '#d29922', '#f85149', '#a371f7', '#39c5cf'];
-
-  let maxV = 0, minV = 0;
-  points.forEach(p => { maxV = Math.max(maxV, p.value); minV = Math.min(minV, p.value); });
-  if (maxV === minV) maxV = minV + 1;
-
-  // 刻度对齐到 1/2/5×10^n：否则会出现 5.36、21 这种刻度，
-  // 读图的人要在脑子里做除法才能估出中间值。
-  const step = niceStep(maxV - minV, 5);
-  maxV = Math.ceil(maxV / step) * step;
-  minV = minV < 0 ? Math.floor(minV / step) * step : 0;
-  if (maxV === minV) maxV = minV + step;
-
-  const xs = {};
-  const tsList = Array.from(new Set(points.map(p => p.ts))).sort();
-  tsList.forEach((t, i) => { xs[t] = i; });
-
-  const x = i => padL + (tsList.length <= 1 ? 0 : (W - padL - padR) * i / (tsList.length - 1));
-  const y = v => padT + (H - padT - padB) * (1 - (v - minV) / (maxV - minV));
-
-  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
-  svg.setAttribute('height', H);
-  svg.innerHTML = '';
-
-  // 网格与 Y 轴刻度：按 step 步进，保证每条网格线都落在整数刻度上。
-  const tickCount = Math.max(1, Math.round((maxV - minV) / step));
-  for (let i = 0; i <= tickCount; i++) {
-    const v = minV + step * i;
-    const yy = y(v);
-    const line = document.createElementNS(ns, 'line');
-    line.setAttribute('x1', padL); line.setAttribute('x2', W - padR);
-    line.setAttribute('y1', yy); line.setAttribute('y2', yy);
-    line.setAttribute('stroke', '#1c232c'); line.setAttribute('stroke-width', '1');
-    svg.appendChild(line);
-
-    const t = document.createElementNS(ns, 'text');
-    t.setAttribute('x', padL - 10); t.setAttribute('y', yy + 4);
-    t.setAttribute('text-anchor', 'end');
-    t.setAttribute('style', 'fill:#6b7887;font-size:10.5px');
-    // 小量级保留两位：退款率这类 0~20 的指标，toFixed(0) 会把 0.4/0.8 全抹成 0 和 1。
-    t.textContent = Math.abs(v) >= 10000 ? (v / 10000).toFixed(1) + '万'
-                  : Math.abs(v) < 10 ? v.toFixed(2).replace(/\.00$/, '')
-                  : v.toFixed(0);
-    svg.appendChild(t);
-  }
-
-  // X 轴标签：首、中、尾
-  [0, Math.floor(tsList.length / 2), tsList.length - 1].forEach((i, k) => {
-    if (i < 0 || !tsList[i]) return;
-    if (k === 1 && tsList.length < 3) return;
-    const t = document.createElementNS(ns, 'text');
-    t.setAttribute('x', x(i)); t.setAttribute('y', H - 28);
-    t.setAttribute('text-anchor', k === 0 ? 'start' : (k === 2 ? 'end' : 'middle'));
-    t.setAttribute('style', 'fill:#6b7887;font-size:10.5px');
-    t.textContent = tsList[i];
-    svg.appendChild(t);
-  });
-
-  keys.forEach((k, idx) => {
-    const arr = dims[k].slice().sort((a, b) => a.ts < b.ts ? -1 : 1);
-    const color = colors[idx % colors.length];
-    let d = '';
-    arr.forEach((p, i) => {
-      const px = x(xs[p.ts]), py = y(p.value);
-      d += (i === 0 ? 'M ' : ' L ') + px + ' ' + py;
-    });
-
-    // 只在单系列时填充面积。多系列各填一层会叠成一片灰，线也被盖住，
-    // 而多系列本来就是要比较彼此走势的。
-    if (arr.length > 1 && keys.length === 1) {
-      const area = document.createElementNS(ns, 'path');
-      area.setAttribute('d', d + ` L ${x(xs[arr[arr.length - 1].ts])} ${H - padB} L ${x(xs[arr[0].ts])} ${H - padB} Z`);
-      area.setAttribute('fill', color); area.setAttribute('opacity', '0.08');
-      svg.appendChild(area);
-    }
-
-    const path = document.createElementNS(ns, 'path');
-    path.setAttribute('d', d);
-    path.setAttribute('fill', 'none');
-    path.setAttribute('stroke', color);
-    path.setAttribute('stroke-width', '1.8');
-    path.setAttribute('stroke-linejoin', 'round');
-    svg.appendChild(path);
-
-    if (arr.length === 1) {
-      const dot = document.createElementNS(ns, 'circle');
-      dot.setAttribute('cx', x(xs[arr[0].ts])); dot.setAttribute('cy', y(arr[0].value));
-      dot.setAttribute('r', '3'); dot.setAttribute('fill', color);
-      const title = document.createElementNS(ns, 'title');
-      title.textContent = `${arr[0].ts}${k ? ' · ' + k : ''}: ${arr[0].value}${unit || ''}`;
-      dot.appendChild(title);
-      svg.appendChild(dot);
-    }
-  });
-
-  // 图例：按文字宽度累加位置。固定 110px 间距在标签长短不一（中文/英文混排）
-  // 时会重叠，而系列名恰恰是判断「哪条线是谁」的唯一线索。
-  if (keys.length > 1 || keys[0]) {
-    let gx = padL;
-    keys.forEach((k, idx) => {
-      const rect = document.createElementNS(ns, 'rect');
-      rect.setAttribute('x', gx); rect.setAttribute('y', H - 14);
-      rect.setAttribute('width', 8); rect.setAttribute('height', 8);
-      rect.setAttribute('rx', 2);
-      rect.setAttribute('fill', colors[idx % colors.length]);
-      svg.appendChild(rect);
-      const t = document.createElementNS(ns, 'text');
-      t.setAttribute('x', gx + 13); t.setAttribute('y', H - 6);
-      t.setAttribute('style', 'fill:#9aa7b4;font-size:10.5px');
-      // 空维度是数据问题（status 为空串），不能显示成「全部」——
-      // 那会让人以为是合计，把脏数据当成正常汇总。
-      const label = k || '(空值)';
-      t.textContent = label;
-      svg.appendChild(t);
-      gx += 13 + label.length * 10 + 16;
-    });
-  }
-}
-
 function metricEditor() {
   modal('指标定义', `
     <div class="stack">
@@ -1466,6 +1714,22 @@ cards:
     days: 30
 `;
 
+/* ---------------- 看板 ---------------- */
+
+// 卡片宽度是「看」的偏好，不是看板定义的一部分，所以存 localStorage 而不是改 YAML
+function dashPrefs() {
+  try { return JSON.parse(localStorage.getItem('godw.dashPrefs') || '{}'); } catch (e) { return {}; }
+}
+function dashSpan(name, metric, fallback) {
+  const v = dashPrefs()[name + '::' + metric];
+  return v === 1 || v === 2 ? v : (fallback || 1);
+}
+function dashSetSpan(name, metric, span) {
+  const p = dashPrefs();
+  p[name + '::' + metric] = span;
+  try { localStorage.setItem('godw.dashPrefs', JSON.stringify(p)); } catch (e) { /* 隐私模式 */ }
+}
+
 async function pageDashboards(view) {
   const list = await api('/dashboards');
   if (!list.length) {
@@ -1482,9 +1746,27 @@ async function pageDashboards(view) {
   }
 
   const cur = S.selected.dashboard || list[0].name;
+  const days = S.selected.dashDays || 0;
+  const dim = S.selected.dashDim || '';
+
+  const qs = [];
+  if (days) qs.push('days=' + days);
+  if (dim) qs.push('dim=' + encodeURIComponent(dim));
+
   let data = null, err = '';
-  try { data = await api('/dashboards/' + encodeURIComponent(cur)); }
+  try { data = await api('/dashboards/' + encodeURIComponent(cur) + (qs.length ? '?' + qs.join('&') : '')); }
   catch (e) { err = e.message; }
+  S.cache.dashCur = data;
+
+  // 维度候选值：只在「未筛选」时采集。筛选后返回的点只剩一个值，会把候选项塌缩掉。
+  if (data && !dim) {
+    const set = new Set();
+    (data.cards || []).forEach(c => (c.points || []).forEach(p => { if (p.dim) set.add(p.dim); }));
+    if (set.size) S.cache.dashDims = Array.from(set).sort();
+  }
+  const dims = S.cache.dashDims || [];
+  const hasDim = dims.length > 0 || !!(data && (data.cards || []).some(c => c.dimension));
+  const picker = list.map(d => `<option value="${esc(d.name)}" ${d.name === cur ? 'selected' : ''}>${esc(d.name)}</option>`).join('');
 
   view.innerHTML = `
     <div class="page-head">
@@ -1493,22 +1775,45 @@ async function pageDashboards(view) {
         <p class="page-desc">${data ? esc(data.description || '') : ''}</p>
       </div>
       <div class="row">
-        <select id="d-pick" style="width:200px">
-          ${list.map(d => `<option value="${esc(d.name)}" ${d.name === cur ? 'selected' : ''}>${esc(d.name)}</option>`).join('')}
-        </select>
+        <select id="d-pick" style="width:200px">${picker}</select>
         <button class="primary" data-act="new-dashboard">新建看板</button>
       </div>
     </div>
+
+    <div class="card" style="padding:9px 12px;margin-bottom:14px">
+      <div class="filter-bar">
+        <span class="hint">时间范围</span>
+        ${[[0, '跟随卡片'], [7, '7 天'], [14, '14 天'], [30, '30 天'], [90, '90 天']]
+          .map(([v, t]) => `<button class="sm ${days === v ? 'primary' : 'ghost'}" data-act="dash-days" data-days="${v}">${t}</button>`).join('')}
+        ${hasDim ? `<span class="hint" style="margin-left:8px">维度</span>
+          <select id="d-dim" style="width:auto">
+            <option value="">全部</option>
+            ${dims.map(v => `<option value="${esc(v)}" ${v === dim ? 'selected' : ''}>${esc(v)}</option>`).join('')}
+          </select>` : ''}
+        <span class="spacer"></span>
+        ${(days || dim) ? `<button class="sm ghost" data-act="dash-reset-filter">清除筛选</button>` : ''}
+        <button class="sm ghost" data-act="dash-refresh">刷新</button>
+      </div>
+    </div>
+
     ${err ? `<div class="card"><div class="err-box">${esc(err)}</div></div>` : ''}
     <div class="grid c2" id="dash-grid">
-      ${data ? data.cards.map((c, i) => `
-        <div class="card" style="${c.span === 2 ? 'grid-column: 1 / -1;' : ''}">
-          <div class="card-head">
-            <div class="card-title">${esc(c.title || c.metric)} ${c.unit ? `<span class="mute small">${esc(c.unit)}</span>` : ''}</div>
-            <div class="hint mono">${esc(c.metric)} · ${c.days}天${c.dimension ? ' · ' + esc(c.dimension) : ''}</div>
+      ${data ? data.cards.map((c, i) => {
+        const span = dashSpan(cur, c.metric, c.span || 1);
+        const empty = !c.points || !c.points.length;
+        return `
+        <div class="card" style="${span === 2 ? 'grid-column: 1 / -1;' : ''}">
+          <div class="card-head" style="gap:8px;flex-wrap:wrap">
+            <div class="card-title" style="flex:1">${esc(c.title || c.metric)}${c.unit ? ` <span class="mute small">${esc(c.unit)}</span>` : ''}</div>
+            <span class="hint mono">${esc(c.metric)} · ${c.days}天${c.dimension ? ' · ' + esc(c.dimension) : ''}</span>
+            <button class="sm ghost" data-act="dash-full" data-i="${i}" title="放大查看">全屏</button>
+            <button class="sm ghost" data-act="dash-span" data-i="${i}" title="切换卡片宽度">${span === 2 ? '半宽' : '整行'}</button>
           </div>
-          ${c.error ? `<div class="err-box">${esc(c.error)}</div>` : `<svg class="dag" id="dc-${i}" height="220"></svg>`}
-        </div>`).join('') : ''}
+          ${c.error ? `<div class="err-box">${esc(c.error)}</div>`
+            : empty ? `<div class="empty" style="padding:34px 0"><b>${dim ? '该维度值下没有数据' : '这段时间没有数据'}</b>换个时间范围或维度再试</div>`
+            : `<svg class="chart" id="dc-${i}" height="220"></svg>`}
+        </div>`;
+      }).join('') : ''}
     </div>`;
 
   if (data) {
@@ -1518,8 +1823,29 @@ async function pageDashboards(view) {
     });
   }
   const pick = document.getElementById('d-pick');
-  if (pick) pick.onchange = () => { S.selected.dashboard = pick.value; render(); };
+  if (pick) pick.onchange = () => {
+    S.selected.dashboard = pick.value;
+    S.selected.dashDim = '';
+    render();
+  };
+  const dimSel = document.getElementById('d-dim');
+  if (dimSel) dimSel.onchange = () => {
+    S.selected.dashDim = dimSel.value;
+    render();
+  };
 }
+
+// 单卡片全屏：用同一份数据重画一张大图，缩放与图例交互都还在
+function dashFullscreen(i) {
+  const d = S.cache.dashCur;
+  const c = d && d.cards && d.cards[Number(i)];
+  if (!c) return toast('图表数据还没加载', 'err');
+  modal((c.title || c.metric) + ' · ' + c.days + ' 天', `
+    <div class="chart-wrap"><svg class="chart" id="fs-chart" height="420"></svg></div>
+    <div class="hint" style="margin-top:10px">拖拽选择时间区间可缩放，双击复位；点图例可只看某条线。</div>`);
+  drawLineChart(document.getElementById('fs-chart'), c.points, c.unit);
+}
+
 
 function dashboardEditor() {
   modal('看板定义', `
@@ -1542,7 +1868,7 @@ async function pageQuality(view) {
   const rate = totalRules ? (totalPassed / totalRules * 100).toFixed(1) : '—';
   const failing = overview.filter(r => r.failed > 0);
 
-  const insts = await api('/instances?limit=30');
+  const insts = (await api('/instances?limit=30')).items || [];
   const done = insts.filter(i => i.status === 'success' || i.status === 'failed');
   if (!done.length) {
     view.innerHTML = `<div class="card"><div class="empty"><b>暂无质量数据</b>在管道中加入 quality 节点后，每轮运行都会留下校验结果</div></div>`;
@@ -1567,8 +1893,14 @@ async function pageQuality(view) {
       <div class="stat"><div class="stat-label">近 14 天</div><div class="stat-value">${trend.length ? (trend[trend.length - 1].passRate * 100).toFixed(0) + '%' : '—'}</div><div class="stat-sub">最近一次 ${trend.length ? trend[trend.length - 1].date : '—'}</div></div>
     </div>
 
-    ${trend.length ? `<div class="card"><div class="card-head"><div class="card-title">通过率趋势</div></div>
-      <svg class="dag" id="q-trend" height="180"></svg></div>` : ''}
+    ${trend.length >= 2 ? `<div class="card"><div class="card-head"><div class="card-title">通过率趋势</div></div>
+      <svg class="dag" id="q-trend" height="180"></svg></div>`
+      : `<div class="card"><div class="card-head"><div class="card-title">通过率趋势</div></div>
+        ${UI.empty({
+          icon: '～',
+          title: '采样点还不够画趋势',
+          desc: `近 14 天只有 ${trend.length} 天有校验结果（至少需要 2 天）。先让管道多跑几轮，趋势才有意义——只有一个点的折线图看不出任何变化。`,
+        })}</div>`}
 
     <div class="card">
       <div class="card-head">
@@ -1597,63 +1929,14 @@ async function pageQuality(view) {
           <td><span class="pill ${q.severity === 'error' ? 'err' : 'warn'}">${esc(q.severity)}</span></td>
         </tr>`).join('')}</tbody></table></div>` : `<div class="empty">该实例没有质量结果</div>`}
     </div>`;
-  if (trend.length) drawQualityTrend(document.getElementById('q-trend'), trend);
+  if (trend.length >= 2) drawQualityTrend(document.getElementById('q-trend'), trend);
   const sel = document.getElementById('q-inst');
   if (sel) sel.onchange = () => { S.selected.qualityInstance = sel.value; render(); };
 }
 
 function drawQualityTrend(svg, trend) {
-  if (!svg || !trend.length) return;
-  const ns = 'http://www.w3.org/2000/svg';
-  const W = 960, H = 180, padL = 48, padR = 16, padT = 14, padB = 26;
-  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
-  svg.setAttribute('height', H);
-  svg.innerHTML = '';
-  const n = trend.length;
-  const x = i => padL + (W - padL - padR) * (n <= 1 ? 0 : i / (n - 1));
-  const y = v => padT + (H - padT - padB) * (1 - v);
-  for (let i = 0; i <= 4; i++) {
-    const v = i / 4, yy = y(v);
-    const line = document.createElementNS(ns, 'line');
-    line.setAttribute('x1', padL); line.setAttribute('x2', W - padR);
-    line.setAttribute('y1', yy); line.setAttribute('y2', yy);
-    line.setAttribute('stroke', '#1c232c');
-    svg.appendChild(line);
-    const t = document.createElementNS(ns, 'text');
-    t.setAttribute('x', padL - 8); t.setAttribute('y', yy + 4);
-    t.setAttribute('text-anchor', 'end');
-    t.setAttribute('style', 'fill:#6b7887;font-size:10px');
-    t.textContent = (v * 100).toFixed(0) + '%';
-    svg.appendChild(t);
-  }
-  let d = '';
-  trend.forEach((p, i) => { d += (i ? ' L ' : 'M ') + x(i) + ' ' + y(p.passRate); });
-  const path = document.createElementNS(ns, 'path');
-  path.setAttribute('d', d);
-  path.setAttribute('fill', 'none');
-  path.setAttribute('stroke', '#3fb950');
-  path.setAttribute('stroke-width', '1.8');
-  svg.appendChild(path);
-  trend.forEach((p, i) => {
-    const dot = document.createElementNS(ns, 'circle');
-    dot.setAttribute('cx', x(i)); dot.setAttribute('cy', y(p.passRate)); dot.setAttribute('r', '2.6');
-    dot.setAttribute('fill', p.passRate === 1 ? '#3fb950' : '#d29922');
-    const tip = document.createElementNS(ns, 'title');
-    tip.textContent = `${p.date} 通过率 ${(p.passRate * 100).toFixed(1)}%（${p.passed}/${p.total}）`;
-    dot.appendChild(tip);
-    svg.appendChild(dot);
-  });
-  // 去重后再画刻度，否则两个点时中间与末尾会重叠
-  const idxs = Array.from(new Set([0, Math.floor(n / 2), n - 1])).sort((a, b) => a - b);
-  idxs.forEach((i, k) => {
-    if (!trend[i]) return;
-    const t = document.createElementNS(ns, 'text');
-    t.setAttribute('x', x(i)); t.setAttribute('y', H - 8);
-    t.setAttribute('text-anchor', k === 0 ? 'start' : k === idxs.length - 1 ? 'end' : 'middle');
-    t.setAttribute('style', 'fill:#6b7887;font-size:10px');
-    t.textContent = trend[i].date;
-    svg.appendChild(t);
-  });
+  // 复用统一图表引擎：hover 能看到具体日期与通过率，颜色也跟随主题
+  drawLineChart(svg, trend.map(p => ({ ts: p.date, value: Math.round(p.passRate * 1000) / 10 })), '%');
 }
 
 function profileModal() {
@@ -1783,6 +2066,20 @@ document.addEventListener('click', async (ev) => {
 
       case 'open-table': openTable(el.dataset.id); break;
 
+      case 'lg-export': {
+        const svg = document.getElementById('lineage-svg');
+        if (!svg) break;
+        const tag = (S.selected.lineageFocusNode || S.selected.lineageTable || 'all');
+        exportSVGAsPNG(svg, `lineage-${tag}-${ymd(new Date())}.png`);
+        break;
+      }
+      case 'lg-export-col': {
+        const svg = document.getElementById('col-svg');
+        if (!svg) break;
+        exportSVGAsPNG(svg, `column-lineage-${S.selected.lineageTable || 'all'}-${ymd(new Date())}.png`);
+        break;
+      }
+
       case 'do-login': {
         el.disabled = true;
         const r = await api('/auth/login', { method: 'POST', body: { email: val('lg-email'), password: val('lg-pass') } });
@@ -1811,6 +2108,31 @@ document.addEventListener('click', async (ev) => {
       case 'run-profile': el.disabled = true; await runProfile(); el.disabled = false; break;
       case 'new-metric': metricEditor(); break;
       case 'new-dashboard': dashboardEditor(); break;
+
+      /* ---- 看板：全局筛选 / 卡片宽度 / 全屏 ---- */
+      case 'dash-days': {
+        S.selected.dashDays = Number(el.dataset.days) || 0;
+        await render();
+        break;
+      }
+      case 'dash-reset-filter': {
+        S.selected.dashDays = 0;
+        S.selected.dashDim = '';
+        await render();
+        break;
+      }
+      case 'dash-refresh': await render(); break;
+      case 'dash-full': dashFullscreen(el.dataset.i); break;
+      case 'dash-span': {
+        const d = S.cache.dashCur;
+        const c = d && d.cards && d.cards[Number(el.dataset.i)];
+        if (!c) break;
+        const name = d.name;
+        const next = dashSpan(name, c.metric, c.span || 1) === 2 ? 1 : 2;
+        dashSetSpan(name, c.metric, next);
+        await render();
+        break;
+      }
       case 'save-dashboard': {
         const yaml = document.getElementById('dash-yaml').value;
         el.disabled = true;
@@ -1896,10 +2218,43 @@ document.addEventListener('click', async (ev) => {
       }
 
       case 'open-instance': await openInstance(el.dataset.id); break;
+      case 'open-canvas': {
+        S.selected.canvasPipe = el.dataset.name || '';
+        go('canvas');
+        break;
+      }
       case 'retry-inst': {
         el.disabled = true;
-        await api('/instances/' + encodeURIComponent(el.dataset.id) + '/retry', { method: 'POST' });
-        closeModal(); toast('已创建重跑实例', 'ok'); await render();
+        // data-node 存在时表示「只重跑这个节点」，否则是整条实例重跑
+        const nodeID = el.dataset.node || '';
+        await api('/instances/' + encodeURIComponent(el.dataset.id) + '/retry', {
+          method: 'POST', body: nodeID ? { node: nodeID } : {},
+        });
+        if (nodeID) {
+          toast('已从节点 ' + nodeID + ' 重跑（含下游）', 'ok');
+          await render();
+        } else {
+          closeModal(); toast('已创建重跑实例', 'ok'); await render();
+        }
+        break;
+      }
+
+      /* ---- 实例列表：筛选 / 分页 / 批量 ---- */
+      case 'inst-refresh': await render(); break;
+      case 'inst-reset': instApplyFilter({ pipeline: '', status: '', from: '', to: '' }); break;
+      case 'inst-clear-sel': instSelected().clear(); await render(); break;
+      case 'batch-retry': await instBatch('retry'); break;
+      case 'batch-cancel': await instBatch('cancel'); break;
+      case 'pg-prev': {
+        const q = instQuery();
+        q.offset = Math.max(0, q.offset - q.limit);
+        await render();
+        break;
+      }
+      case 'pg-next': {
+        const q = instQuery();
+        q.offset = q.offset + q.limit;
+        await render();
         break;
       }
     }
@@ -1908,6 +2263,42 @@ document.addEventListener('click', async (ev) => {
     el.disabled = false;
     if (el.tagName === 'BUTTON') el.textContent = el.textContent.replace('中…', '');
   }
+});
+
+/* 实例列表：筛选 / 分页 / 行选择。用委托，避免每次 render 重新绑事件。 */
+document.addEventListener('change', async (ev) => {
+  const t = ev.target;
+  if (t.id === 'fq-pipeline') return instApplyFilter({ pipeline: t.value });
+  if (t.id === 'fq-status') return instApplyFilter({ status: t.value });
+  if (t.id === 'fq-from') return instApplyFilter({ from: t.value });
+  if (t.id === 'fq-to') return instApplyFilter({ to: t.value });
+  if (t.id === 'pg-size') {
+    const q = instQuery();
+    q.limit = Number(t.value) || 20;
+    q.offset = 0;
+    return render();
+  }
+  if (t.classList && t.classList.contains('inst-ck')) {
+    const sel = instSelected();
+    t.checked ? sel.add(t.dataset.id) : sel.delete(t.dataset.id);
+    return render();
+  }
+  if (t.id === 'inst-ck-all') {
+    const sel = instSelected();
+    document.querySelectorAll('.inst-ck').forEach(ck => {
+      ck.checked = t.checked;
+      t.checked ? sel.add(ck.dataset.id) : sel.delete(ck.dataset.id);
+    });
+    return render();
+  }
+});
+
+/* 点整行打开详情抽屉；按钮、复选框、折叠摘要不拦截。 */
+document.addEventListener('click', (ev) => {
+  const row = ev.target.closest('.inst-row');
+  if (!row) return;
+  if (ev.target.closest('button, input, summary, details, a')) return;
+  openInstance(row.dataset.id);
 });
 
 function pipelineYamlFrom(s) {
@@ -1979,16 +2370,4 @@ window.addEventListener('DOMContentLoaded', async () => {
   await render();
 });
 
-/**
- * niceStep 把原始步长收敛到 1/2/5×10^n。
- * 例：range=21、5 条刻度 → 4.2 → 5；range=74113 → 14822 → 20000。
- */
-function niceStep(range, ticks) {
-  if (!(range > 0)) return 1;
-  const raw = range / Math.max(1, ticks);
-  const exp = Math.floor(Math.log10(raw));
-  const base = Math.pow(10, exp);
-  const n = raw / base;
-  const mult = n <= 1 ? 1 : n <= 2 ? 2 : n <= 5 ? 5 : 10;
-  return mult * base;
-}
+

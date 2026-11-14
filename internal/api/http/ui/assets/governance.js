@@ -121,7 +121,7 @@ async function govShares() {
 
 async function pageOps(view) {
   const [exports, subs, cache, insts] = await Promise.all([
-    api('/exports?limit=20'), api('/subscriptions'), api('/cache/stats'), api('/instances?limit=50'),
+    api('/exports?limit=20'), api('/subscriptions'), api('/cache/stats'), api('/instances?limit=50').then(r => r.items || []),
   ]);
   const failed = insts.filter(i => i.status === 'failed').length;
   view.innerHTML = `

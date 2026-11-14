@@ -23,7 +23,14 @@ const Theme = {
     document.documentElement.setAttribute('data-theme', name === 'light' ? 'light' : 'dark');
     try { localStorage.setItem(this.KEY, name); } catch (e) { /* 隐私模式 */ }
     const btn = document.getElementById('theme-btn');
-    if (btn) btn.textContent = name === 'light' ? '☾ 暗色' : '☀ 亮色';
+    if (btn) {
+      // 按钮内有「图标 + 文字」两段，窄屏时 CSS 只留图标，所以分别更新
+      const ico = btn.querySelector('.ico');
+      const lbl = btn.querySelector('.lbl');
+      if (ico) ico.textContent = name === 'light' ? '☾' : '☀';
+      if (lbl) lbl.textContent = name === 'light' ? '暗色' : '亮色';
+      btn.title = name === 'light' ? '切换到暗色主题' : '切换到亮色主题';
+    }
   },
   toggle() {
     this.apply(this.get() === 'light' ? 'dark' : 'light');

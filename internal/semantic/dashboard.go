@@ -71,9 +71,17 @@ type DashboardData struct {
 	Cards []CardSeries `json:"cards"`
 }
 
+// RunOptions 是看板级的全局筛选，作用到每一张卡片上。
+// Days>0 覆盖卡片自带的窗口（用户在页头切了 7/14/30/90 天）。
+// Dim 非空时只保留该维度值的序列（等价于「只看 paid」这类切片）。
+type RunOptions struct {
+	Days int
+	Dim  string
+}
+
 // RunCards 逐个渲染卡片。单个卡片失败不影响整页，错误挂在卡片上。
 // 串行执行：卡片数量少（≤12），并发带来的连接争抢不划算。
-func RunCards(ctx context.Context, resolve func(string) (Metric, model.ModelSpec, connector.Connector, error), d Dashboard) DashboardData {
+func RunCards(ctx context.Context, resolve func(string) (Metric, model.ModelSpec, connector.Connector, error), d Dashboard, opt RunOptions) DashboardData {
 	out := DashboardData{Dashboard: d}
 	for _, c := range d.Cards {
 		cs := CardSeries{Card: c}
@@ -83,7 +91,10 @@ func RunCards(ctx context.Context, resolve func(string) (Metric, model.ModelSpec
 			out.Cards = append(out.Cards, cs)
 			continue
 		}
-		days := c.Days
+		days := opt.Days
+		if days <= 0 {
+			days = c.Days
+		}
 		if days <= 0 {
 			days = 30
 		}
@@ -101,8 +112,24 @@ func RunCards(ctx context.Context, resolve func(string) (Metric, model.ModelSpec
 			continue
 		}
 		cs.Unit = m.Unit
-		cs.Points = series.Points
+		// 回写实际生效的窗口：页面切了「7 天」而卡片仍标 30 天，会让人以为筛选没生效
+		cs.Days = days
+		cs.Points = filterByDim(series.Points, opt.Dim)
 		out.Cards = append(out.Cards, cs)
+	}
+	return out
+}
+
+// filterByDim 只保留指定维度值的点；维度不匹配时返回空，由前端显示「该筛选下无数据」。
+func filterByDim(points []Point, dim string) []Point {
+	if dim == "" {
+		return points
+	}
+	out := make([]Point, 0, len(points))
+	for _, p := range points {
+		if p.Dim == dim {
+			out = append(out, p)
+		}
 	}
 	return out
 }

@@ -16,6 +16,9 @@ const DESIGN = {
   datasources: [],
   dsMap: {},
   curTable: '',
+  // 表结构树：系统表默认收起，名称排序（这两项是「看」的偏好，不写进后端）
+  showSys: false,
+  sortKey: 'name',
   models: [],
   curModel: '',
   spec: null,
@@ -40,13 +43,23 @@ async function pageTables(view) {
     </div>
     <div class="row">
       <select id="tb-ds" style="width:auto;min-width:150px"><option value="">全部数据源</option></select>
+      <select id="tb-sort" style="width:auto" title="树的排序方式">
+        <option value="name">按名称</option>
+        <option value="rowCount">按行数</option>
+        <option value="sizeBytes">按大小</option>
+        <option value="collectedAt">最近采集</option>
+      </select>
       <button class="sm ghost" data-act="tb-collect">采集元数据</button>
       <button class="sm ghost" data-act="tb-pii">识别敏感字段</button>
     </div>
   </div>
   <div class="split3">
     <div class="card" style="padding:12px">
-      <input id="tb-search" placeholder="搜索表名或注释" style="margin-bottom:10px">
+      <input id="tb-search" placeholder="搜索表名或注释" style="margin-bottom:8px">
+      <label class="hint" id="tb-sys-wrap" style="display:none;align-items:center;gap:6px;margin:0 0 8px">
+        <input type="checkbox" id="tb-sys" style="width:auto" />
+        <span id="tb-sys-label">显示系统表</span>
+      </label>
       <div class="tree" id="tb-tree">${UI.skeleton(8)}</div>
     </div>
     <div class="card" id="tb-detail">${UI.empty({ title: '选择一张表', desc: '从左侧挑一张表查看字段明细' })}</div>
@@ -65,6 +78,14 @@ async function pageTables(view) {
     const sel = view.querySelector('#tb-ds');
     sel.innerHTML = '<option value="">全部数据源</option>' +
       DESIGN.datasources.map(d => `<option value="${esc(d.id)}">${esc(d.name)}</option>`).join('');
+    // 系统表（public 下平台自己的 45 张表）默认收起：它们和业务表混在一棵树里，
+    // 「找 order 表」要先翻过 alert_event / audit_log 一大串，这是审计里点名的脏数据问题。
+    const sysN = DESIGN.tables.filter(isSystemTable).length;
+    const wrap = view.querySelector('#tb-sys-wrap');
+    if (sysN) {
+      wrap.style.display = 'flex';
+      view.querySelector('#tb-sys-label').textContent = `显示系统表（${sysN}）`;
+    }
   } catch (e) {
     view.querySelector('#tb-tree').innerHTML = UI.error(e, 'reload');
     return;
@@ -73,6 +94,9 @@ async function pageTables(view) {
   renderTree(view);
   view.querySelector('#tb-search').addEventListener('input', () => renderTree(view));
   view.querySelector('#tb-ds').addEventListener('change', () => renderTree(view));
+  view.querySelector('#tb-sort').addEventListener('change', (ev) => { DESIGN.sortKey = ev.target.value; renderTree(view); });
+  const sysBox = view.querySelector('#tb-sys');
+  if (sysBox) sysBox.addEventListener('change', (ev) => { DESIGN.showSys = ev.target.checked; renderTree(view); });
   view.querySelector('[data-act="tb-collect"]').addEventListener('click', () => collectModal());
   view.querySelector('[data-act="tb-pii"]').addEventListener('click', () => piiModal());
 
@@ -85,15 +109,31 @@ async function pageTables(view) {
   }
 }
 
+// 系统表判定：采集会把元数据库自己的表带进来（alert_event / app_user / audit_log …）
+const SYS_SCHEMAS = { public: 1, information_schema: 1, pg_catalog: 1 };
+function isSystemTable(t) {
+  return !!SYS_SCHEMAS[t.schema] || String(t.name || '').startsWith('_godw');
+}
+
+function sortTables(list) {
+  const key = DESIGN.sortKey || 'name';
+  const arr = list.slice();
+  if (key === 'name') return arr.sort((a, b) => a.name.localeCompare(b.name));
+  if (key === 'collectedAt') return arr.sort((a, b) => String(b.collectedAt || '').localeCompare(String(a.collectedAt || '')));
+  return arr.sort((a, b) => (b[key] || 0) - (a[key] || 0));
+}
+
 function renderTree(view) {
   const kw = (view.querySelector('#tb-search').value || '').trim().toLowerCase();
   const dsFilter = view.querySelector('#tb-ds').value;
   const tree = view.querySelector('#tb-tree');
+  let hiddenSys = 0;
 
   const groups = {};
   DESIGN.tables.forEach(t => {
     if (dsFilter && t.datasourceId !== dsFilter) return;
     if (kw && !(t.name.toLowerCase().includes(kw) || (t.comment || '').toLowerCase().includes(kw))) return;
+    if (!DESIGN.showSys && isSystemTable(t)) { hiddenSys++; return; }
     const dsName = DESIGN.dsMap[t.datasourceId] || t.datasourceId || 'unknown';
     const key = dsName + ' / ' + (t.schema || 'public');
     (groups[key] = groups[key] || []).push(t);
@@ -103,12 +143,14 @@ function renderTree(view) {
   if (!keys.length) {
     tree.innerHTML = UI.empty({
       title: DESIGN.tables.length ? '没有匹配的表' : '还没有采集到表',
-      desc: DESIGN.tables.length ? '换个关键词试试' : '先在数据源页点「采集元数据」',
+      desc: hiddenSys
+        ? `已隐藏 ${hiddenSys} 张系统表；要找 alert_event / app_user 这类表，勾选上方「显示系统表」。`
+        : (DESIGN.tables.length ? '换个关键词试试' : '先在数据源页点「采集元数据」'),
     });
     return;
   }
   tree.innerHTML = keys.map(k => {
-    const list = groups[k].sort((a, b) => a.name.localeCompare(b.name));
+    const list = sortTables(groups[k]);
     return `<div class="tree-group" data-g="${esc(k)}">
       <div class="tree-node tree-l1" data-toggle="${esc(k)}">
         <span class="tw">▾</span><span class="ti">▤</span>
@@ -252,7 +294,11 @@ async function pageModelDesign(view) {
         <input id="m-search" placeholder="搜索模型" style="margin-bottom:10px">
         <div class="tree" id="m-tree">${UI.skeleton(8)}</div>
       </div>
-      <div class="card" id="m-main">${UI.empty({ title: '选择一个模型', desc: '左侧按分层分组列出全部模型' })}</div>
+      <div class="card" id="m-main">${UI.empty({
+        icon: '▤',
+        title: '选择一个模型开始',
+        desc: '分层顺序：ODS 原样落地 → DWD 清洗明细 → DWS 主题汇总 → ADS 对外口径。左侧点一个模型，或右上角「新建模型」。',
+      })}</div>
       <div class="card" id="m-side">${UI.empty({ title: '属性', desc: '选中模型后可编辑分区、TTL、物化方式' })}</div>
     </div>`;
 
@@ -615,7 +661,7 @@ function renderModelLineage(body, name) {
       });
       return;
     }
-    box.innerHTML = head + `<svg class="dag" id="m-lin-svg" height="220"></svg>`;
+    box.innerHTML = head + `<div class="dag-wrap"><svg class="dag" id="m-lin-svg"></svg></div>`;
     drawLineage(document.getElementById('m-lin-svg'), { nodes, edges }, name);
   }).catch(e => { body.innerHTML = UI.error(e); });
 }

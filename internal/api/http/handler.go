@@ -90,8 +90,12 @@ func (h *Handler) routes() *Router {
 	r.PUT("/api/v1/pipelines/{name}/enabled", h.togglePipeline)
 
 	r.GET("/api/v1/instances", h.listInstances)
+	// 批量动作必须注册在 /instances/{id} 之前：两者都是 2 段路径，
+	// 路由是前缀顺序匹配，靠后的 {id} 会把 "batch" 当成实例 ID 吞掉。
+	r.POST("/api/v1/instances/batch", h.batchInstances)
 	r.GET("/api/v1/instances/{id}", h.getInstance)
 	r.GET("/api/v1/instances/{id}/events", h.instanceEvents)
+	r.GET("/api/v1/instances/{id}/sql", h.instanceNodeSQL)
 	r.POST("/api/v1/instances/{id}/retry", h.retryInstance)
 
 	r.GET("/api/v1/metrics", h.listMetrics)
@@ -568,12 +572,23 @@ func (h *Handler) togglePipeline(w http.ResponseWriter, r *http.Request, _ map[s
 // ---------- instance ----------
 
 func (h *Handler) listInstances(w http.ResponseWriter, r *http.Request, _ map[string]string) {
-	items, err := h.Svc.Repo.ListInstances(r.Context(), workspaceOf(r.Context()), queryInt(r, "limit", 50))
+	q := r.URL.Query()
+	limit := queryInt(r, "limit", 50)
+	offset := queryInt(r, "offset", 0)
+	items, total, err := h.Svc.Repo.ListInstancesPage(r.Context(), workspaceOf(r.Context()), model.InstanceQuery{
+		Pipeline: q.Get("pipeline"),
+		Status:   q.Get("status"),
+		From:     q.Get("from"),
+		To:       q.Get("to"),
+		Limit:    limit,
+		Offset:   offset,
+	})
 	if err != nil {
 		fail(w, r, err)
 		return
 	}
-	ok(w, r, items)
+	// total 与分页信息一起返回：前端要画「1-20 / 137」，只给 items 是画不出来的。
+	ok(w, r, map[string]any{"items": items, "total": total, "limit": limit, "offset": offset})
 }
 
 func (h *Handler) getInstance(w http.ResponseWriter, r *http.Request, _ map[string]string) {
@@ -587,11 +602,41 @@ func (h *Handler) getInstance(w http.ResponseWriter, r *http.Request, _ map[stri
 	ok(w, r, map[string]any{"instance": inst, "quality": q})
 }
 
+// instanceNodeSQL 返回某个实例里某节点「当次实际执行」的渲染 SQL。
+// 只读接口，viewer 也能看：排障时最常见的就是「我只有只读权限但要确认跑了什么」。
+func (h *Handler) instanceNodeSQL(w http.ResponseWriter, r *http.Request, _ map[string]string) {
+	id := paramsFrom(r.Context())["id"]
+	node := r.URL.Query().Get("node")
+	res, err := h.Svc.InstanceNodeSQL(r.Context(), workspaceOf(r.Context()), id, node)
+	if err != nil {
+		fail(w, r, err)
+		return
+	}
+	ok(w, r, res)
+}
+
 func (h *Handler) retryInstance(w http.ResponseWriter, r *http.Request, _ map[string]string) {
 	if !requireRole(w, r, "admin", "editor") {
 		return
 	}
 	id := paramsFrom(r.Context())["id"]
+	var body struct {
+		// Node 非空表示「从该节点重跑」：原地重置该节点与下游，不新建实例。
+		Node string `json:"node"`
+	}
+	_ = decodeBody(r, &body)
+
+	if body.Node != "" {
+		inst, err := h.Svc.RetryNode(r.Context(), id, body.Node)
+		if err != nil {
+			fail(w, r, err)
+			return
+		}
+		h.audit(r, "instance.retry_node", id, map[string]any{"node": body.Node})
+		ok(w, r, map[string]any{"instance": inst, "node": body.Node})
+		return
+	}
+
 	inst, err := h.Svc.Repo.GetInstance(r.Context(), id)
 	if err != nil {
 		fail(w, r, err)
@@ -605,6 +650,60 @@ func (h *Handler) retryInstance(w http.ResponseWriter, r *http.Request, _ map[st
 	}
 	h.audit(r, "instance.retry", id, map[string]any{"newInstance": newInst.ID})
 	ok(w, r, newInst)
+}
+
+// batchInstances 批量重跑 / 取消：运维一次要处理十几条失败实例，逐条点太慢。
+// 单个失败不影响其余：逐条收集结果，最后如实返回成功与失败的清单。
+func (h *Handler) batchInstances(w http.ResponseWriter, r *http.Request, _ map[string]string) {
+	if !requireRole(w, r, "admin", "editor") {
+		return
+	}
+	var body struct {
+		Action string   `json:"action"` // retry | cancel
+		IDs    []string `json:"ids"`
+	}
+	if err := decodeBody(r, &body); err != nil {
+		fail(w, r, err)
+		return
+	}
+	if len(body.IDs) == 0 {
+		fail(w, r, errs.New(errs.CodeInvalidArgument, "至少选择一条实例"))
+		return
+	}
+	if len(body.IDs) > 100 {
+		fail(w, r, errs.New(errs.CodeInvalidArgument, "单次最多处理 100 条"))
+		return
+	}
+
+	ctx := r.Context()
+	ws := workspaceOf(r.Context())
+	var okIDs []string
+	failed := map[string]string{}
+	for _, id := range body.IDs {
+		var err error
+		switch body.Action {
+		case "cancel":
+			_, err = h.Svc.Repo.CancelQueuedInstance(ctx, id)
+		case "retry":
+			var inst *model.Instance
+			inst, err = h.Svc.Repo.GetInstance(ctx, id)
+			if err == nil {
+				_, _, err = h.Svc.TriggerByPipelineID(ctx, ws, inst.PipelineID, inst.BizDate, "retry", inst.Params)
+			}
+		default:
+			fail(w, r, errs.New(errs.CodeInvalidArgument, "不支持的动作: "+body.Action))
+			return
+		}
+		if err != nil {
+			failed[id] = err.Error()
+			continue
+		}
+		okIDs = append(okIDs, id)
+	}
+	h.audit(r, "instance.batch_"+body.Action, "", map[string]any{
+		"total": len(body.IDs), "succeeded": len(okIDs), "failed": len(failed),
+	})
+	ok(w, r, map[string]any{"succeeded": okIDs, "failed": failed})
 }
 
 // instanceEvents 用 SSE 推送节点状态，前端无需轮询。
@@ -736,7 +835,11 @@ func (h *Handler) applyDashboard(w http.ResponseWriter, r *http.Request, _ map[s
 }
 
 func (h *Handler) queryDashboard(w http.ResponseWriter, r *http.Request, p map[string]string) {
-	data, err := h.Svc.QueryDashboard(r.Context(), workspaceOf(r.Context()), p["name"])
+	// days / dim 是页面级全局筛选；不传就按看板定义原样渲染。
+	data, err := h.Svc.QueryDashboardWith(r.Context(), workspaceOf(r.Context()), p["name"], semantic.RunOptions{
+		Days: queryInt(r, "days", 0),
+		Dim:  r.URL.Query().Get("dim"),
+	})
 	if err != nil {
 		fail(w, r, err)
 		return

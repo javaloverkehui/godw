@@ -82,13 +82,16 @@ bash scripts/smoke.sh
 | 增量 | 分区优先 → 时间列 → 明确报错，不猜 | `compile.InferIncremental` |
 | 试跑 | dry-run 只渲染不连库；sample-run 强制 LIMIT、绝不写表 | `service.DryRun/SampleRun` |
 | 调度 | 5 段 cron、T-1 派发、幂等键、两段式队列、资源组配额、租约心跳、僵尸回收 | `internal/scheduler`、`instance` 状态机 |
+| 运维 | 实例按管道/状态/日期筛选 + 服务端分页、批量重跑/取消、**节点级重跑**（重置该节点与下游）、失败行展开错误、实例抽屉（参数/耗时条/质量/实时日志）、**渲染 SQL 按版本快照还原并可对比上次** | `ListInstancesPage`、`Service.RetryNode`、`Service.InstanceNodeSQL`、`GET /instances/{id}/sql` |
 | 触发 | file/table/http 传感器 + 事件去重 | `node/sensor` |
 | 观测 | 环形日志缓冲 + 批量落库 + 脱敏 + SSE 断点续传；6 类告警 + 去重 + 静默窗口 | `obs/logstore`、`obs/alert` |
 | 质量 | 9 类规则 DSL、按分区收窄作用域、error 阻断 / warn 记录、强制放行、隔离表 | `internal/quality` |
-| 血缘 | SQL 解析（失败降级）、表级图、**列级下钻**（按表泳道 / 逐列聚焦 / 上下游切换）、Focus/Paths/DOT、LRU 缓存 | `internal/lineage`、`lineage_edge`、`lineage_column` |
+| 血缘 | SQL 解析（失败降级）、表级图、**列级下钻**（按表泳道 / 逐列聚焦 / 上下游切换）、Focus/Paths/DOT、LRU 缓存；图内**分层着色**（ODS/DWD/DWS/ADS）、搜索、双击聚焦 N 跳、导出 PNG | `internal/lineage`、`lineage_edge`、`lineage_column`、`assets/app.js` |
 | 语义层 | 数据集（禁 ODS/禁无 on join）、全参数化查询构建、9 种图表编码校验 | `internal/semantic` |
+| 图表 | 自研交互式折线（hover 多系列 tooltip、图例开关、刷选缩放）、看板全局时间/维度筛选、卡片全屏 | `assets/chart.js`、`RunCards` |
 | 治理 | JWT、角色等级矩阵、凭证 AES-GCM、审计、保留策略、删除权、导出审批 | `internal/auth`、`service/compliance.go` |
-| 界面 | 内嵌控制台：工作台、数据源、表结构、模型、管道、指标、BI、看板、运维、血缘、质量、治理、审计 | `internal/api/http/ui`（零构建，`go:embed`） |
+| 界面 | 内嵌控制台：工作台、数据源、表结构、模型、管道、**编排画布**、指标、BI、看板、运维、血缘、质量、治理、审计 | `internal/api/http/ui`（零构建，`go:embed`） |
+| 编排画布 | 视口缩放/平移、框选多选、节点面板拖入、属性面板实时编辑、撤销重做、正交连边、成环拦截、小地图、**实例运行态叠加**（状态点/耗时/失败角标） | `assets/canvas.js`、`/pipelines/dry-run` |
 | 交付 | 单二进制、CLI（migrate/doctor/apply/run/seed/collect/backfill/lineage/profile）、Compose、Helm、多阶段镜像 | `cmd/`、`deploy/` |
 
 ### 界面
@@ -99,21 +102,37 @@ bash scripts/smoke.sh
 |---|---|
 | ![](docs/screenshots/overview.png) | ![](docs/screenshots/pipelines.png) |
 
+编排画布：左节点面板、中视口、右属性面板；选中实例后节点叠加运行状态（右下角为失败链路）。
+
+| 编排画布 | 运行态叠加 |
+|---|---|
+| ![](docs/screenshots/canvas.png) | ![](docs/screenshots/canvas-run.png) |
+
+运行实例：筛选、分页、批量重跑；抽屉里按失败优先排序并支持只重跑某个节点。
+
+| 运行实例 | 实例抽屉 |
+|---|---|
+| ![](docs/screenshots/instances.png) | ![](docs/screenshots/instance-drawer.png) |
+
 | 模型与 DDL | 指标趋势 |
 |---|---|
 | ![](docs/screenshots/models.png) | ![](docs/screenshots/metrics.png) |
 
-| 看板 | 实例运维 |
+| 看板（全局时间/维度筛选 + hover tooltip） | 实例运维 |
 |---|---|
 | ![](docs/screenshots/dashboards.png) | ![](docs/screenshots/instances.png) |
 
-| 表结构（含 PII 与标签） | 质量门禁 |
+| 表结构（系统表默认收起 + 四档排序） | 质量门禁 |
 |---|---|
-| ![](docs/screenshots/metadata.png) | ![](docs/screenshots/quality.png) |
+| ![](docs/screenshots/datasets.png) | ![](docs/screenshots/quality.png) |
 
-| 血缘下钻（表 → 字段） | 治理与审计 |
+| 血缘：分层着色 + 图内搜索（Ctrl+F） | 双击聚焦 N 跳 |
 |---|---|
-| ![](docs/screenshots/lineage.png) | ![](docs/screenshots/governance.png) |
+| ![](docs/screenshots/lineage.png) | ![](docs/screenshots/lineage-focus.png) |
+
+| 血缘（亮色主题，层色不再被深色写死） | 治理与审计 |
+|---|---|
+| ![](docs/screenshots/lineage-light.png) | ![](docs/screenshots/governance.png) |
 
 ### 进度
 

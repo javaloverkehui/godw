@@ -517,6 +517,12 @@ func (s *Service) ApplyDashboard(ctx context.Context, workspaceID string, d sema
 
 // QueryDashboard 一次性返回看板所有卡片的数据，减少前端请求数。
 func (s *Service) QueryDashboard(ctx context.Context, workspaceID, name string) (*semantic.DashboardData, error) {
+	return s.QueryDashboardWith(ctx, workspaceID, name, semantic.RunOptions{})
+}
+
+// QueryDashboardWith 支持看板级全局筛选（时间窗口 / 维度切片）。
+// 分享、导出、订阅走上面的三参版本：它们要的是看板定义时的原貌，不该被页面筛选影响。
+func (s *Service) QueryDashboardWith(ctx context.Context, workspaceID, name string, opt semantic.RunOptions) (*semantic.DashboardData, error) {
 	d, err := s.Repo.DashboardByName(ctx, workspaceID, name)
 	if err != nil {
 		return nil, err
@@ -540,6 +546,6 @@ func (s *Service) QueryDashboard(ctx context.Context, workspaceID, name string) 
 		}
 		return *m, *spec, c, nil
 	}
-	data := semantic.RunCards(ctx, resolve, *d)
+	data := semantic.RunCards(ctx, resolve, *d, opt)
 	return &data, nil
 }

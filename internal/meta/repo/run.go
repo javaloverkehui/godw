@@ -211,6 +211,101 @@ func (r *Repo) Tasks(ctx context.Context, instanceID string) ([]model.TaskInstan
 	return out, rows.Err()
 }
 
+const instanceCols = `i.id,i.workspace_id,i.pipeline_id,COALESCE(p.name,''),i.pipeline_ver,i.biz_date::text,
+	i.trigger_type,i.status,i.idempotency_key,i.params,i.error,i.worker_owner,
+	i.lease_until,i.started_at,i.finished_at,i.created_at`
+
+// ListInstancesPage 返回筛选后的实例与总数（总数用于前端分页，不受 LIMIT 影响）。
+func (r *Repo) ListInstancesPage(ctx context.Context, workspaceID string, q model.InstanceQuery) ([]model.Instance, int, error) {
+	if q.Limit <= 0 || q.Limit > 500 {
+		q.Limit = 50
+	}
+	if q.Offset < 0 {
+		q.Offset = 0
+	}
+
+	args := []any{workspaceID}
+	where := "i.workspace_id=$1"
+	if q.Pipeline != "" {
+		args = append(args, q.Pipeline)
+		where += fmt.Sprintf(" AND p.name=$%d", len(args))
+	}
+	if q.Status != "" {
+		args = append(args, q.Status)
+		where += fmt.Sprintf(" AND i.status=$%d", len(args))
+	}
+	if q.From != "" {
+		args = append(args, q.From)
+		where += fmt.Sprintf(" AND i.biz_date >= $%d::date", len(args))
+	}
+	if q.To != "" {
+		args = append(args, q.To)
+		where += fmt.Sprintf(" AND i.biz_date <= $%d::date", len(args))
+	}
+
+	var total int
+	if err := r.DB.Pool.QueryRow(ctx,
+		`SELECT count(*) FROM instance i LEFT JOIN pipeline p ON p.id=i.pipeline_id WHERE `+where,
+		args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	if total == 0 {
+		return []model.Instance{}, 0, nil
+	}
+
+	args = append(args, q.Limit, q.Offset)
+	rows, err := r.DB.Pool.Query(ctx,
+		`SELECT `+instanceCols+`
+		 FROM instance i LEFT JOIN pipeline p ON p.id=i.pipeline_id
+		 WHERE `+where+`
+		 ORDER BY i.created_at DESC LIMIT $`+fmt.Sprint(len(args)-1)+` OFFSET $`+fmt.Sprint(len(args)), args...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	out := []model.Instance{}
+	for rows.Next() {
+		var i model.Instance
+		var params []byte
+		if err := rows.Scan(&i.ID, &i.WorkspaceID, &i.PipelineID, &i.PipelineName, &i.PipelineVer, &i.BizDate,
+			&i.TriggerType, &i.Status, &i.IdempotencyKey, &params, &i.Error,
+			&i.WorkerOwner, &i.LeaseUntil, &i.StartedAt, &i.FinishedAt, &i.CreatedAt); err != nil {
+			return nil, 0, err
+		}
+		_ = json.Unmarshal(params, &i.Params)
+		out = append(out, i)
+	}
+	return out, total, rows.Err()
+}
+
+// ResetTasks 把指定节点打回 pending，供「从某个节点重跑」使用。
+// 不清工作簿之外的任何东西：上游的成功状态保留，执行器会跳过它们。
+func (r *Repo) ResetTasks(ctx context.Context, instanceID string, nodeIDs []string) error {
+	if len(nodeIDs) == 0 {
+		return nil
+	}
+	if _, err := r.DB.Pool.Exec(ctx,
+		`UPDATE task_instance SET status='pending', error='', rows_affected=0, duration_ms=0,
+		        started_at=NULL, finished_at=NULL, lease_owner='', lease_until=NULL
+		 WHERE instance_id=$1 AND node_id = ANY($2)`, instanceID, nodeIDs); err != nil {
+		return err
+	}
+	// 质量结果按 (实例, 节点) 追加写入，重跑前必须清掉，否则同一规则会出现两条记录。
+	_, err := r.DB.Pool.Exec(ctx,
+		`DELETE FROM quality_result WHERE instance_id=$1 AND node_id = ANY($2)`, instanceID, nodeIDs)
+	return err
+}
+
+// RequeueInstance 把实例退回队列，由 worker 重新领取（原地重跑，不新建实例）。
+func (r *Repo) RequeueInstance(ctx context.Context, instanceID, reason string) error {
+	_, err := r.DB.Pool.Exec(ctx,
+		`UPDATE instance SET status='queued', error=$2, finished_at=NULL, started_at=NULL,
+		        worker_owner='', lease_until=NULL, queued_at=now()
+		 WHERE id=$1`, instanceID, reason)
+	return err
+}
+
 func (r *Repo) ListInstances(ctx context.Context, workspaceID string, limit int) ([]model.Instance, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 50
@@ -238,6 +333,29 @@ func (r *Repo) ListInstances(ctx context.Context, workspaceID string, limit int)
 		out = append(out, i)
 	}
 	return out, rows.Err()
+}
+
+// PreviousInstance 取同管道里「上一轮」实例，用于渲染 SQL 与本次对比。
+// 只按创建时间往前找一条：同一业务日期手动重跑多次时，最近一次才是有效的对比基准。
+func (r *Repo) PreviousInstance(ctx context.Context, workspaceID, pipelineID, instanceID string, before time.Time) (*model.Instance, error) {
+	inst := &model.Instance{}
+	var params []byte
+	err := r.DB.Pool.QueryRow(ctx,
+		`SELECT `+instanceCols+`
+		 FROM instance i LEFT JOIN pipeline p ON p.id=i.pipeline_id
+		 WHERE i.workspace_id=$1 AND i.pipeline_id=$2 AND i.id<>$3 AND i.created_at < $4
+		 ORDER BY i.created_at DESC LIMIT 1`, workspaceID, pipelineID, instanceID, before).
+		Scan(&inst.ID, &inst.WorkspaceID, &inst.PipelineID, &inst.PipelineName, &inst.PipelineVer, &inst.BizDate,
+			&inst.TriggerType, &inst.Status, &inst.IdempotencyKey, &params, &inst.Error,
+			&inst.WorkerOwner, &inst.LeaseUntil, &inst.StartedAt, &inst.FinishedAt, &inst.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	_ = json.Unmarshal(params, &inst.Params)
+	return inst, nil
 }
 
 // RequeueStale 把租约超时的实例退回 queued，由下一轮重新领取。

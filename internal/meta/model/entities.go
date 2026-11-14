@@ -177,6 +177,17 @@ type PipelineVersion struct {
 	CreatedAt  time.Time    `json:"createdAt"`
 }
 
+// InstanceQuery 是实例列表的筛选条件。
+// 管道按名字筛，是因为前端拿到的是 pipelineName；状态与业务日期区间用于运维定位。
+type InstanceQuery struct {
+	Pipeline string
+	Status   string
+	From     string
+	To       string
+	Limit    int
+	Offset   int
+}
+
 type Instance struct {
 	ID             string         `json:"id"`
 	WorkspaceID    string         `json:"workspaceId"`
