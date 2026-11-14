@@ -25,7 +25,8 @@ type ScaffoldOptions struct {
 	PrimaryKey []string
 	// Engine 用于类型映射，默认 postgres。
 	Engine string
-	// BizDateColumn 上游的日期列名，用于推分区。
+	// BizDateColumn 上游的日期列名，用于推分区；为空时分区列取 dt。
+	// 无论取哪一列，产物里都会有 dt（分层规范的必填列），不会出现「补了分区列、缺了 dt」的半成品。
 	BizDateColumn string
 }
 
@@ -112,24 +113,29 @@ func Scaffold(opt ScaffoldOptions) (ScaffoldResult, error) {
 		spec.Columns = append(spec.Columns, nc)
 	}
 
-	// 分区列：优先用上游日期列，其次补一个 dt。
-	bizCol := opt.BizDateColumn
-	if bizCol == "" {
-		for _, c := range spec.Columns {
-			if c.Type == dialect.LDate || c.Type == dialect.LDatetime {
-				bizCol = c.Name
-				break
-			}
-		}
-	}
-	if bizCol == "" {
-		bizCol = "dt"
-	}
-	if !seen[bizCol] {
+	// 分区列与必填日期列。
+	//
+	// 分层规范对每一层都要求 dt 这一列（分区日期的统一叫法），所以脚手架必须保证它存在。
+	// 这里曾经的做法是「优先用上游第一个日期列当分区，没有才补 dt」——结果遇到
+	// 只有 created_at 的表，产出的模型缺 dt，用户看到的是一条
+	// 「层 ods 缺少必填列 dt」的告警，而且照着建一定发布失败。
+	// 脚手架应该兜住自己那部分：规则要求的列，直接给出来。
+	bizCol := strings.TrimSpace(opt.BizDateColumn)
+	if bizCol != "" && !seen[bizCol] {
+		// 显式指定但上游没有这一列：仍然补出来，调用方明确要它当分区。
 		spec.Columns = append([]model.ColumnSpec{{
 			Name: bizCol, Type: dialect.LDate, Nullable: false, Comment: "分区日期",
 		}}, spec.Columns...)
 		seen[bizCol] = true
+	}
+	if bizCol == "" {
+		bizCol = "dt"
+	}
+	if !seen["dt"] {
+		spec.Columns = append([]model.ColumnSpec{{
+			Name: "dt", Type: dialect.LDate, Nullable: false, Comment: "分区日期",
+		}}, spec.Columns...)
+		seen["dt"] = true
 	}
 	spec.PartitionBy = []string{bizCol}
 

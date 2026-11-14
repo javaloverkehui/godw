@@ -109,7 +109,15 @@ func TestCollectWithDiffRecordsAddColumn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListSchemaChanges 失败: %v", err)
 	}
-	if len(changes) == 0 || changes[0].Table != "diff_t" {
+	// 物理表在用例之间不会清理，列表里可能混有其他用例留下的变更，
+	// 这里只要求本次的 diff_t.amount 出现在结果里，不假设它排第一。
+	found = false
+	for _, c := range changes {
+		if c.Table == "diff_t" && c.Kind == "add_column" && c.Column == "amount" {
+			found = true
+		}
+	}
+	if !found {
 		t.Fatalf("结构变更应落库: %+v", changes)
 	}
 }

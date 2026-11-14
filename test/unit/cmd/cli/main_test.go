@@ -1,4 +1,4 @@
-package main
+package cli_test
 
 import (
 	"bytes"
@@ -8,18 +8,25 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/godw/godw/cmd/internal/testenv"
+	"github.com/godw/godw/internal/cli"
 	"github.com/godw/godw/internal/config"
+	"github.com/godw/godw/test/testenv"
 )
 
-// captureOutput 把 run 的标准输出/错误收进同一缓冲区，用例结束后恢复。
+// testVersion 是命令层用例统一使用的版本号，与 main 的默认值保持一致。
+const testVersion = "1.0.0"
+
+// run 是 cli.Run 的薄垫片：把版本号固定下来，用例只关心参数与退出码。
+func run(args []string) int { return cli.Run(args, testVersion) }
+
+// captureOutput 把 Run 的标准输出/错误收进同一缓冲区，用例结束后恢复。
 // 命令层大量直接打印进度，不接管的话测试输出会被刷屏，也无法断言。
 func captureOutput(t *testing.T) *bytes.Buffer {
 	t.Helper()
 	buf := &bytes.Buffer{}
-	oldOut, oldErr := stdout, stderr
-	stdout, stderr = buf, buf
-	t.Cleanup(func() { stdout, stderr = oldOut, oldErr })
+	oldOut, oldErr := cli.Stdout, cli.Stderr
+	cli.Stdout, cli.Stderr = buf, buf
+	t.Cleanup(func() { cli.Stdout, cli.Stderr = oldOut, oldErr })
 	return buf
 }
 
@@ -32,7 +39,7 @@ func newEnv(t *testing.T, migrate bool, mutate ...func(*config.Config)) (*testen
 
 // examplesPath 返回仓库内示例文件的绝对路径：示例本身就是最贴近真实的夹具。
 func examplesPath(parts ...string) string {
-	return filepath.Join(append([]string{"..", "..", "examples"}, parts...)...)
+	return filepath.Join(append([]string{"..", "..", "..", "..", "examples"}, parts...)...)
 }
 
 // writeFile 在临时目录写一个文件，返回路径。
@@ -75,7 +82,7 @@ func TestRunVersion(t *testing.T) {
 		if code := run([]string{alias}); code != 0 {
 			t.Fatalf("%s 应返回 0，实际 %d", alias, code)
 		}
-		if got := buf.String(); got != "godw-cli "+version+"\n" {
+		if got := buf.String(); got != "godw-cli "+testVersion+"\n" {
 			t.Fatalf("%s 输出不符: %q", alias, got)
 		}
 	}
@@ -148,7 +155,7 @@ func TestDetectKind(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got, err := detectKind([]byte(c.raw))
+			got, err := cli.DetectKind([]byte(c.raw))
 			if c.wantErr {
 				if err == nil {
 					t.Fatalf("应返回错误，实际 %q", got)
@@ -179,8 +186,8 @@ func TestToFloat(t *testing.T) {
 		{nil, 0},
 	}
 	for _, c := range cases {
-		if got := toFloat(c.in); got != c.want {
-			t.Errorf("toFloat(%#v)=%v，期望 %v", c.in, got, c.want)
+		if got := cli.ToFloat(c.in); got != c.want {
+			t.Errorf("cli.ToFloat(%#v)=%v，期望 %v", c.in, got, c.want)
 		}
 	}
 }

@@ -93,6 +93,7 @@ bash scripts/smoke.sh
 | 自助查询 | 只读 SQL 控制台：SELECT/WITH 白名单、单语句、写关键字黑名单、15s 超时、行数上限、结果值归一化、列级脱敏按输出列名匹配；审计存指纹 | `internal/sqlx/guard.go`、`#/sql` |
 | 治理 | JWT、角色等级矩阵、凭证 AES-GCM、审计、保留策略、删除权、导出审批 | `internal/auth`、`service/compliance.go` |
 | 界面 | 内嵌控制台：工作台、数据源、表结构、模型、管道、**编排画布**、指标、BI、看板、**数据文档**、运维、血缘、质量、治理、审计 | `internal/api/http/ui`（零构建，`go:embed`） |
+| 开发向导 | 四类「选 → 看 → 确认」向导，全程不写 YAML：**接入 ODS**（源表前 8 行真实数据 + 字段映射 + DDL 实时预览）、**派生模型**（继承列与主键、可选聚合、自动生成 SQL）、**管道**（按同后缀猜上游、人话选调度、执行图预览、可发布即试跑）、**指标**（聚合与维度点选、保存前用真实数据试算曲线）。必填列由 `layer-rules` 前置锁定，YAML 退为「编辑定义 · 高级」 | `assets/wizard.js`、`POST /models|/pipelines` 的 `spec` 入参、`POST /metrics/preview` |
 | 数据文档 | `#/catalog` 三栏文档站：字段（分级/脱敏）、质量规则与最近结果、上下游、版本历史、最近运行与新鲜度；可导出单文件 HTML（断网可读） | `Service.CatalogDocs`、`Service.CatalogHTML`、`assets/catalog.js` |
 | 选择器 | `model+` / `+model` / `+model+` / `tag:` / `layer:` / `pipeline:` 与通配，CLI / 接口 / 运维弹窗共用；解析结果同时给出模型与管道（不隐藏「整条管道」的放大效应） | `service/selector.go`、`/api/v1/runs/select` |
 | 编排画布 | 视口缩放/平移、框选多选、节点面板拖入、属性面板实时编辑、撤销重做、正交连边、成环拦截、小地图、**实例运行态叠加**（状态点/耗时/失败角标） | `assets/canvas.js`、`/pipelines/dry-run` |

@@ -83,7 +83,21 @@ key := ...
 | 改迁移 | `migrate --check` 在两个版本间往返验证 |
 | 改前端 | 截图对比，确认布局无回归 |
 
-测试文件与实现同目录，`_test.go` 结尾。集成测试用 `-short` 跳过。
+测试统一放在根目录 `test/` 下，目录按被测包镜像，包名用 `<pkg>_test` 黑盒：
+
+```
+test/unit/internal/meta/repo/     ← internal/meta/repo
+test/unit/internal/meta/service/  ← internal/meta/service
+test/unit/internal/api/           ← internal/api/http
+test/unit/cmd/cli/                ← internal/cli（命令实现与入口分离）
+test/testenv/                     命令层夹具（独占 schema + 临时配置）
+```
+
+源码包内不再放 `_test.go`；需要驱动未导出的逻辑时，优先从导出的公开入口构造场景，
+确有必要再把该能力提升为导出函数，而不是把测试放回源码目录。
+
+覆盖率门禁：`bash scripts/cover.sh`（需要本机 PostgreSQL），整体语句覆盖率 ≥ 95%；
+逐块定位缺口用 `PKG=internal/meta/repo bash scripts/cover-gaps.sh cover.out`。
 
 ## 5. 提交信息
 

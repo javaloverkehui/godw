@@ -105,6 +105,8 @@ func (h *Handler) routes() *Router {
 
 	r.GET("/api/v1/metrics", h.listMetrics)
 	r.POST("/api/v1/metrics", h.applyMetric)
+	// 指标向导要在「保存前」看到曲线，否则用户得先落一个写错的口径再回头改。
+	r.POST("/api/v1/metrics/preview", h.previewMetric)
 	r.GET("/api/v1/metrics/{name}/query", h.queryMetric)
 
 	r.GET("/api/v1/datasets/semantic", h.listDatasetsSemantic)
@@ -439,17 +441,29 @@ func (h *Handler) applyModel(w http.ResponseWriter, r *http.Request, _ map[strin
 		return
 	}
 	var body struct {
-		YAML    string `json:"yaml"`
-		Publish bool   `json:"publish"`
-		Apply   bool   `json:"apply"`
-		Force   bool   `json:"force"`
-		Reason  string `json:"reason"`
+		YAML string `json:"yaml"`
+		// Spec 与 YAML 二选一。图形化向导走 Spec，避免前端手拼 YAML 字符串——
+		// 那里的引号/换行转义一旦出错，报错会指向「第 N 行」而不是「哪个选择错了」。
+		Spec    *model.ModelSpec `json:"spec"`
+		Publish bool             `json:"publish"`
+		Apply   bool             `json:"apply"`
+		Force   bool             `json:"force"`
+		Reason  string           `json:"reason"`
 	}
 	if err := decodeBody(r, &body); err != nil {
 		fail(w, r, err)
 		return
 	}
-	m, err := h.Svc.ApplyModel(r.Context(), workspaceOf(r.Context()), actorOf(r.Context()), []byte(body.YAML), body.Publish, body.Apply, body.Force)
+	raw := []byte(body.YAML)
+	if body.Spec != nil {
+		b, merr := yaml.Marshal(body.Spec)
+		if merr != nil {
+			fail(w, r, errs.Wrap(errs.CodeInvalidArgument, merr, "模型定义序列化失败"))
+			return
+		}
+		raw = b
+	}
+	m, err := h.Svc.ApplyModel(r.Context(), workspaceOf(r.Context()), actorOf(r.Context()), raw, body.Publish, body.Apply, body.Force)
 	if err != nil {
 		fail(w, r, err)
 		return
@@ -528,14 +542,26 @@ func (h *Handler) applyPipeline(w http.ResponseWriter, r *http.Request, _ map[st
 		return
 	}
 	var body struct {
-		YAML    string `json:"yaml"`
-		Publish bool   `json:"publish"`
+		YAML string `json:"yaml"`
+		// Spec 与 YAML 二选一。管道向导用 Spec：节点、依赖、调度都是表单里选的，
+		// 让前端把结构体再拼回 YAML 只是多了一处可能拼错的地方。
+		Spec    *model.PipelineSpec `json:"spec"`
+		Publish bool                `json:"publish"`
 	}
 	if err := decodeBody(r, &body); err != nil {
 		fail(w, r, err)
 		return
 	}
-	p, err := h.Svc.ApplyPipeline(r.Context(), workspaceOf(r.Context()), actorOf(r.Context()), []byte(body.YAML), body.Publish)
+	raw := []byte(body.YAML)
+	if body.Spec != nil {
+		b, merr := yaml.Marshal(body.Spec)
+		if merr != nil {
+			fail(w, r, errs.Wrap(errs.CodeInvalidArgument, merr, "管道定义序列化失败"))
+			return
+		}
+		raw = b
+	}
+	p, err := h.Svc.ApplyPipeline(r.Context(), workspaceOf(r.Context()), actorOf(r.Context()), raw, body.Publish)
 	if err != nil {
 		fail(w, r, err)
 		return
@@ -804,6 +830,26 @@ func (h *Handler) applyMetric(w http.ResponseWriter, r *http.Request, _ map[stri
 	}
 	h.audit(r, "metric.apply", saved.Name, nil)
 	created(w, r, saved)
+}
+
+// previewMetric 用未保存的指标定义直接跑一次聚合。语义校验与正式保存一致，
+// 只是不落库——向导里每改一个口径就能看到曲线。
+func (h *Handler) previewMetric(w http.ResponseWriter, r *http.Request, _ map[string]string) {
+	var body struct {
+		Metric semantic.Metric `json:"metric"`
+		Query  semantic.Query  `json:"query"`
+	}
+	if err := decodeBody(r, &body); err != nil {
+		fail(w, r, err)
+		return
+	}
+	series, err := h.Svc.PreviewMetric(r.Context(), workspaceOf(r.Context()), body.Metric, body.Query,
+		actorOf(r.Context()), roleOf(r.Context()))
+	if err != nil {
+		fail(w, r, err)
+		return
+	}
+	ok(w, r, series)
 }
 
 func (h *Handler) queryMetric(w http.ResponseWriter, r *http.Request, p map[string]string) {

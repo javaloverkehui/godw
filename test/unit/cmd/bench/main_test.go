@@ -1,9 +1,10 @@
-package main
+package bench_test
 
 import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"github.com/godw/godw/internal/bench"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -22,15 +23,17 @@ var okRe = regexp.MustCompile(`成功=(\d+)`)
 func captureStdout(t *testing.T) *bytes.Buffer {
 	t.Helper()
 	buf := &bytes.Buffer{}
-	old := stdout
-	stdout = buf
-	t.Cleanup(func() { stdout = old })
+	old := bench.Stdout
+	bench.Stdout = buf
+	t.Cleanup(func() { bench.Stdout = old })
 	return buf
 }
 
 // TestPct 校验分位计算：空切片、边界 p=0/1、以及常规中位数。
+func run(args []string) int { return bench.Run(args) }
+
 func TestPct(t *testing.T) {
-	if got := pct(nil, 0.5); got != 0 {
+	if got := bench.Pct(nil, 0.5); got != 0 {
 		t.Fatalf("空切片应返回 0，实际 %v", got)
 	}
 	lats := []time.Duration{1 * time.Millisecond, 2 * time.Millisecond, 3 * time.Millisecond, 4 * time.Millisecond}
@@ -44,15 +47,15 @@ func TestPct(t *testing.T) {
 		{1, 4 * time.Millisecond},
 	}
 	for _, c := range cases {
-		if got := pct(lats, c.p); got != c.want {
-			t.Errorf("pct(p=%v)=%v，期望 %v", c.p, got, c.want)
+		if got := bench.Pct(lats, c.p); got != c.want {
+			t.Errorf("bench.Pct(p=%v)=%v，期望 %v", c.p, got, c.want)
 		}
 	}
 }
 
 // TestPick 校验三种场景的接口选择，mixed 与 read 依赖 worker 序号轮转。
 func TestPick(t *testing.T) {
-	if path, method, body := pick("write", 0); method != http.MethodPost ||
+	if path, method, body := bench.Pick("write", 0); method != http.MethodPost ||
 		!strings.Contains(path, "/pipelines/order_daily/run") {
 		t.Errorf("write 场景应打触发接口，实际 %s %s", method, path)
 	} else if m, ok := body.(map[string]any); !ok || m["bizDate"] == nil {
@@ -60,17 +63,17 @@ func TestPick(t *testing.T) {
 	}
 
 	// mixed：worker%5==0 走总览，否则走指标查询。
-	if path, method, _ := pick("mixed", 0); method != http.MethodGet || !strings.Contains(path, "/overview") {
+	if path, method, _ := bench.Pick("mixed", 0); method != http.MethodGet || !strings.Contains(path, "/overview") {
 		t.Errorf("mixed 场景 worker=0 应打总览，实际 %s %s", method, path)
 	}
-	if path, _, _ := pick("mixed", 1); !strings.Contains(path, "/metrics/gmv/query") {
+	if path, _, _ := bench.Pick("mixed", 1); !strings.Contains(path, "/metrics/gmv/query") {
 		t.Errorf("mixed 场景 worker=1 应打指标查询，实际 %s", path)
 	}
 
 	// read（默认分支）：worker%3 轮流打三个接口。
 	want := []string{"/api/v1/models", "/api/v1/instances?limit=20", "/api/v1/lineage/impact?table=ods_order&column=amount&depth=5"}
 	for i, w := range want {
-		path, method, body := pick("read", i)
+		path, method, body := bench.Pick("read", i)
 		if method != http.MethodGet || path != w {
 			t.Errorf("read 场景 worker=%d 期望 %s，实际 %s %s", i, w, method, path)
 		}
@@ -79,7 +82,7 @@ func TestPick(t *testing.T) {
 		}
 	}
 	// 未知场景退回 read 分支，保证压测不会因为场景拼错而空转。
-	if path, _, _ := pick("unknown", 0); path != "/api/v1/models" {
+	if path, _, _ := bench.Pick("unknown", 0); path != "/api/v1/models" {
 		t.Errorf("未知场景应退回 read，实际 %s", path)
 	}
 }
@@ -104,7 +107,7 @@ func TestDo(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	status, err := do(context.Background(), srv.Client(), srv.URL, "tk", http.MethodPost, "/x", map[string]any{"bizDate": "2026-01-01"})
+	status, err := bench.Do(context.Background(), srv.Client(), srv.URL, "tk", http.MethodPost, "/x", map[string]any{"bizDate": "2026-01-01"})
 	if err != nil {
 		t.Fatalf("请求不该失败: %v", err)
 	}
@@ -128,7 +131,7 @@ func TestDo(t *testing.T) {
 	}
 
 	// body 为 nil 时不设 Content-Type，也不带鉴权头。
-	if _, err := do(context.Background(), srv.Client(), srv.URL, "", http.MethodGet, "/y", nil); err != nil {
+	if _, err := bench.Do(context.Background(), srv.Client(), srv.URL, "", http.MethodGet, "/y", nil); err != nil {
 		t.Fatalf("GET 请求不该失败: %v", err)
 	}
 	mu.Lock()
@@ -139,7 +142,7 @@ func TestDo(t *testing.T) {
 	}
 
 	// 非法 URL 应在构造阶段就报错。
-	if _, err := do(context.Background(), srv.Client(), "://bad", "", http.MethodGet, "/z", nil); err == nil {
+	if _, err := bench.Do(context.Background(), srv.Client(), "://bad", "", http.MethodGet, "/z", nil); err == nil {
 		t.Error("非法 URL 应返回错误")
 	}
 }

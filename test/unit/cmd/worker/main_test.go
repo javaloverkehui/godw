@@ -1,22 +1,27 @@
-package main
+package worker_test
 
 import (
 	"bytes"
+	"github.com/godw/godw/internal/worker"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/godw/godw/cmd/internal/testenv"
+	"github.com/godw/godw/test/testenv"
 )
+
+const testVersion = "1.0.0"
+
+func run(args []string) int { return worker.Run(args, testVersion) }
 
 // captureOutput 接管 stdout/stderr，避免测试输出被版本号/错误信息刷屏。
 func captureOutput(t *testing.T) *bytes.Buffer {
 	t.Helper()
 	buf := &bytes.Buffer{}
-	oldOut, oldErr := stdout, stderr
-	stdout, stderr = buf, buf
-	t.Cleanup(func() { stdout, stderr = oldOut, oldErr })
+	oldOut, oldErr := worker.Stdout, worker.Stderr
+	worker.Stdout, worker.Stderr = buf, buf
+	t.Cleanup(func() { worker.Stdout, worker.Stderr = oldOut, oldErr })
 	return buf
 }
 
@@ -27,7 +32,7 @@ func TestRunVersion(t *testing.T) {
 		if code := run([]string{arg}); code != 0 {
 			t.Fatalf("%s 应返回 0，实际 %d", arg, code)
 		}
-		if got := buf.String(); got != "godw-worker "+version+"\n" {
+		if got := buf.String(); got != "godw-worker "+testVersion+"\n" {
 			t.Fatalf("%s 输出不符: %q", arg, got)
 		}
 	}

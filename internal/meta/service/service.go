@@ -447,6 +447,37 @@ func (s *Service) QueryMetric(ctx context.Context, workspaceID, name string, q s
 	return s.QueryMetricFor(ctx, workspaceID, name, q, "", "")
 }
 
+// PreviewMetric 用未保存的定义跑一次聚合。与 QueryMetricFor 的区别只有两点：
+// 不落库、不读写缓存——草稿口径不该污染别人看到的缓存。
+func (s *Service) PreviewMetric(ctx context.Context, workspaceID string, m semantic.Metric, q semantic.Query, user, role string) (*semantic.Series, error) {
+	if err := semantic.Validate(m); err != nil {
+		return nil, err
+	}
+	if m.TimeColumn == "" {
+		m.TimeColumn = "dt"
+	}
+	spec, err := s.Repo.PublishedModelSpec(ctx, workspaceID, m.ModelName)
+	if err != nil {
+		return nil, errs.New(errs.CodeInvalidArgument, "模型未发布，无法试算: "+m.ModelName)
+	}
+	if role != "" {
+		if filters, ferr := s.Repo.RowFiltersFor(ctx, workspaceID, m.ModelName, role); ferr == nil && len(filters) > 0 {
+			if cond := ApplyRowFilters(filters, user, role); cond != "" {
+				q.ExtraWhere = append(q.ExtraWhere, cond)
+			}
+		}
+	}
+	ds, err := s.DatasourceSpec(ctx, workspaceID, spec.Datasource)
+	if err != nil {
+		return nil, err
+	}
+	c, err := s.Pool.Acquire(ctx, ds)
+	if err != nil {
+		return nil, err
+	}
+	return semantic.Run(ctx, c, m, *spec, q)
+}
+
 // QueryMetricFor 在 QueryMetric 基础上注入行级权限并启用结果缓存。
 //
 // 顺序很重要：先拼行过滤再算缓存键，否则不同用户会命中同一份缓存，

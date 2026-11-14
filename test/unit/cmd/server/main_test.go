@@ -1,26 +1,31 @@
-package main
+package server_test
 
 import (
 	"bytes"
 	"context"
+	"github.com/godw/godw/internal/server"
 	"net"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
-	"github.com/godw/godw/cmd/internal/testenv"
 	"github.com/godw/godw/internal/config"
 	"github.com/godw/godw/internal/obs/log"
+	"github.com/godw/godw/test/testenv"
 )
+
+const testVersion = "1.0.0"
+
+func run(args []string) int { return server.Run(args, testVersion) }
 
 // captureOutput 把 run 的标准输出/错误收进缓冲区，避免污染测试输出。
 func captureOutput(t *testing.T) *bytes.Buffer {
 	t.Helper()
 	buf := &bytes.Buffer{}
-	oldOut, oldErr := stdout, stderr
-	stdout, stderr = buf, buf
-	t.Cleanup(func() { stdout, stderr = oldOut, oldErr })
+	oldOut, oldErr := server.Stdout, server.Stderr
+	server.Stdout, server.Stderr = buf, buf
+	t.Cleanup(func() { server.Stdout, server.Stderr = oldOut, oldErr })
 	return buf
 }
 
@@ -30,7 +35,7 @@ func TestRunVersion(t *testing.T) {
 	if code := run([]string{"--version"}); code != 0 {
 		t.Fatalf("--version 应返回 0，实际 %d", code)
 	}
-	if got := buf.String(); got != "godw-server "+version+"\n" {
+	if got := buf.String(); got != "godw-server "+testVersion+"\n" {
 		t.Fatalf("版本输出不符: %q", got)
 	}
 }
@@ -120,7 +125,7 @@ func TestRunPortInUse(t *testing.T) {
 	}
 }
 
-// TestWorkerLoopCanceled ctx 已取消时 workerLoop 应立即返回，不做任何轮询。
+// TestWorkerLoopCanceled ctx 已取消时 server.WorkerLoop 应立即返回，不做任何轮询。
 func TestWorkerLoopCanceled(t *testing.T) {
 	env := testenv.New(t, true)
 	svc := env.Service(t)
@@ -129,17 +134,17 @@ func TestWorkerLoopCanceled(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		workerLoop(ctx, svc, log.New(env.Config.Log), env.Config)
+		server.WorkerLoop(ctx, svc, log.New(env.Config.Log), env.Config)
 		close(done)
 	}()
 	select {
 	case <-done:
 	case <-time.After(10 * time.Second):
-		t.Fatal("ctx 取消后 workerLoop 应立即返回")
+		t.Fatal("ctx 取消后 server.WorkerLoop 应立即返回")
 	}
 }
 
-// TestWorkerLoopIdle 队列为空时 workerLoop 应进入退避，并在 ctx 到期后返回。
+// TestWorkerLoopIdle 队列为空时 server.WorkerLoop 应进入退避，并在 ctx 到期后返回。
 func TestWorkerLoopIdle(t *testing.T) {
 	env := testenv.New(t, true)
 	svc := env.Service(t)
@@ -148,12 +153,12 @@ func TestWorkerLoopIdle(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		workerLoop(ctx, svc, log.New(env.Config.Log), env.Config)
+		server.WorkerLoop(ctx, svc, log.New(env.Config.Log), env.Config)
 		close(done)
 	}()
 	select {
 	case <-done:
 	case <-time.After(10 * time.Second):
-		t.Fatal("ctx 到期后 workerLoop 应返回")
+		t.Fatal("ctx 到期后 server.WorkerLoop 应返回")
 	}
 }

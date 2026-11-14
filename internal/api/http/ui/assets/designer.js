@@ -233,45 +233,9 @@ async function selectTable(view, id) {
   view.querySelector('[data-act="tb-tag"]').addEventListener('click', () => tagModal('dataset', t.name));
 }
 
-/** 一键生成 ODS 模型：把表结构喂给脚手架，推断结果连同告警一起展示。 */
+/** 一键生成 ODS 模型：走接入向导（看数据 → 挑字段 → 定分区），不再甩一段 YAML。 */
 async function genODS(t) {
-  let res;
-  try {
-    res = await api('/models/scaffold', {
-      method: 'POST',
-      body: {
-        Layer: 'ods',
-        Name: 'ods_' + t.name.replace(/[^A-Za-z0-9_]/g, '_'),
-        SourceName: t.name,
-        Datasource: DESIGN.dsMap[t.datasourceId] || '',
-        Schema: t.schema,
-        Upstream: t.columns || [],
-      },
-    });
-  } catch (e) {
-    toast(e.message, 'err');
-    return;
-  }
-  modal('生成 ODS 模型', `
-    <div class="hint" style="margin-bottom:10px">
-      已按源表结构生成列；主键取自源表声明，源表没有主键时才按列名推断。${(res.keyCandidates || []).length
-        ? '候选主键：<b class="mono">' + res.keyCandidates.map(esc).join(', ') + '</b>' : '源表未声明主键，请手工指定。'}
-    </div>
-    ${(res.warnings || []).length ? `<div class="err-box" style="margin-bottom:12px">${res.warnings.map(esc).join('\n')}</div>` : ''}
-    <textarea id="gen-yaml" rows="16" style="font-family:var(--mono);font-size:12px">${esc(res.yaml)}</textarea>
-    <div class="row" style="justify-content:flex-end;margin-top:14px">
-      <button class="ghost" data-act="close-modal">取消</button>
-      <button class="primary" id="gen-go">创建并进入设计器</button>
-    </div>`);
-  document.getElementById('gen-go').addEventListener('click', async () => {
-    try {
-      await api('/models', { method: 'POST', body: { yaml: val('gen-yaml'), publish: false } });
-      closeModal();
-      toast('已创建，进入设计器', 'ok');
-      sessionStorage.setItem('godw.openModel', 'ods_' + t.name.replace(/[^A-Za-z0-9_]/g, '_'));
-      go('models');
-    } catch (e) { toast(e.message, 'err'); }
-  });
+  return odsWizard(t);
 }
 
 /* ============================== 模型设计器（T0904） ============================== */
@@ -834,43 +798,8 @@ async function publishCurrentModel() {
 }
 
 function newModelModal(view) {
-  modal('新建模型', `<div id="nm-form"></div>
-    <div class="row" style="justify-content:flex-end;margin-top:14px">
-      <button class="ghost" data-act="close-modal">取消</button>
-      <button class="primary" id="nm-go">创建</button>
-    </div>`);
-  const form = SchemaForm(document.getElementById('nm-form'), {
-    fields: [
-      { key: 'name', label: '模型名', required: true, placeholder: 'dwd_order_detail',
-        pattern: '^[a-z]{2,4}_[a-z0-9_]+$', patternMsg: '需以层前缀开头，如 dwd_、dws_' },
-      { key: 'layer', label: '分层', type: 'select', required: true, options: ['dwd', 'dws', 'ads', 'dim', 'ods'] },
-      { key: 'datasource', label: '数据源', placeholder: 'pg_dw' },
-      { key: 'description', label: '描述', type: 'textarea', rows: 2 },
-    ],
-  }, { name: '', layer: 'dwd', datasource: '', description: '' });
-
-  document.getElementById('nm-go').addEventListener('click', async () => {
-    if (!form.validate()) return;
-    const v = form.value();
-    const spec = {
-      kind: 'Model', name: v.name, layer: v.layer, datasource: v.datasource,
-      description: v.description,
-      columns: [
-        { name: 'dt', type: 'date', nullable: false, comment: '业务日期' },
-        { name: 'id', type: 'string', nullable: false, comment: '主键' },
-      ],
-      primaryKey: ['dt', 'id'],
-      partitionBy: ['dt'],
-    };
-    try {
-      await api('/models', { method: 'POST', body: { yaml: m_specToYAML(spec), publish: false } });
-      closeModal();
-      toast('已创建', 'ok');
-      const view2 = document.getElementById('view');
-      await loadModels(view2);
-      openModel(view2, v.name);
-    } catch (e) { toast(e.message, 'err'); }
-  });
+  // 空表单已被「选来源」向导取代：先决定从哪张表/哪个模型来，再填字段。
+  return newModelWizard();
 }
 
 /** spec → YAML。控制台不引 js-yaml，模型结构固定，手写序列化更可控。 */

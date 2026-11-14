@@ -1,8 +1,8 @@
-package main
+package cli
 
 import "strings"
 
-// splitSQLScript 把多语句 SQL 脚本切成可逐条执行的语句。
+// SplitSQLScript 把多语句 SQL 脚本切成可逐条执行的语句。
 //
 // 为什么要自己写而不用 strings.Split(s, ";"):
 //  1. 前置注释会让整条语句被判定为「注释行」而跳过——曾经因此静默丢掉
@@ -12,7 +12,7 @@ import "strings"
 //
 // 这里用一个小状态机：注释直接丢弃，字符串与美元引用（$$ / $tag$）原样保留，
 // 只有它们之外的分号才是语句边界。
-func splitSQLScript(s string) []string {
+func SplitSQLScript(s string) []string {
 	var (
 		out  []string
 		b    strings.Builder
@@ -45,9 +45,9 @@ func splitSQLScript(s string) []string {
 			}
 			b.WriteByte(' ')
 
-		case s[i] == '$' && dollarTag(s[i:]) != "":
+		case s[i] == '$' && DollarTag(s[i:]) != "":
 			// 美元引用：DO $$ ... $$ 里的分号不能切。整段原样复制。
-			tag := dollarTag(s[i:])
+			tag := DollarTag(s[i:])
 			b.WriteString(tag)
 			i += len(tag)
 			end := strings.Index(s[i:], tag)
@@ -91,9 +91,9 @@ func splitSQLScript(s string) []string {
 	return out
 }
 
-// dollarTag 识别 PostgreSQL 的美元引用起始标记，返回 "$tag$" 形式；
+// DollarTag 识别 PostgreSQL 的美元引用起始标记，返回 "$tag$" 形式；
 // 不是美元引用时返回空串。只接受 ASCII 标识符，避免把 $1 这类占位符当成引用。
-func dollarTag(s string) string {
+func DollarTag(s string) string {
 	if len(s) < 2 || s[0] != '$' {
 		return ""
 	}

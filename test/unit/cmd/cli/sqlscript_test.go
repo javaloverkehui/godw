@@ -1,6 +1,7 @@
-package main
+package cli_test
 
 import (
+	"github.com/godw/godw/internal/cli"
 	"strings"
 	"testing"
 )
@@ -59,7 +60,7 @@ func TestSplitSQLScript(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := splitSQLScript(c.in)
+			got := cli.SplitSQLScript(c.in)
 			if len(got) != len(c.want) {
 				t.Fatalf("语句数 %d != %d：%q", len(got), len(c.want), got)
 			}
@@ -78,7 +79,7 @@ BEGIN
   IF to_regclass('dwd.t') IS NOT NULL THEN TRUNCATE dwd.t; END IF;
 END $$;
 SELECT 1;`
-	got := splitSQLScript(in)
+	got := cli.SplitSQLScript(in)
 	if len(got) != 2 {
 		t.Fatalf("应为 2 条语句，实际 %d：%q", len(got), got)
 	}
@@ -93,8 +94,8 @@ SELECT 1;`
 func TestDollarTag(t *testing.T) {
 	cases := map[string]string{"$$": "$$", "$body$": "$body$", "$1": "", "$": "", "abc": ""}
 	for in, want := range cases {
-		if got := dollarTag(in); got != want {
-			t.Fatalf("dollarTag(%q)=%q want %q", in, got, want)
+		if got := cli.DollarTag(in); got != want {
+			t.Fatalf("cli.DollarTag(%q)=%q want %q", in, got, want)
 		}
 	}
 }

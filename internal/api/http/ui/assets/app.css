@@ -936,3 +936,168 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
 /* 质量实测值可能很长（例如「2026-11-09 00:00（8004 分钟前）」）：单行截断 + title 看全，
    否则一个单元格撑成三行，整张表的行高参差不齐。 */
 .doc-obs { display: inline-block; max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
+
+/* ============================== 图形化向导 ==============================
+ * 开发菜单下的「新建」全部走这里：一个宽弹窗，分步骤，每步都有可看的产物。
+ * 宽度给到 1040px 是因为字段映射表要有 6 列——塞进 560px 的普通弹窗里，
+ * 类型下拉会窄到看不见完整单词，等于没可视化。
+ */
+.modal.wiz {
+  width: min(1040px, 96vw); padding: 0; max-height: 90vh;
+  display: flex; flex-direction: column; overflow: hidden;
+}
+.wiz-head { padding: var(--sp-4) var(--sp-5) var(--sp-3); border-bottom: 1px solid var(--line); }
+.wiz-titlebar { display: flex; align-items: flex-start; gap: var(--sp-3); }
+.wiz-titlebar h3 { flex: 1; margin: 0 0 2px; }
+.wiz-steps { display: flex; align-items: center; gap: 6px; margin-top: var(--sp-3); flex-wrap: wrap; }
+.wiz-step { display: flex; align-items: center; gap: 6px; padding: 3px 10px 3px 4px; border-radius: 999px; border: 1px solid transparent; }
+.wiz-step-n {
+  width: 19px; height: 19px; border-radius: 50%; display: grid; place-items: center;
+  font-size: var(--fs-1); background: var(--bg-elev2); color: var(--text-mute); border: 1px solid var(--line);
+}
+.wiz-step-t { font-size: var(--fs-2); color: var(--text-mute); }
+.wiz-step.on { background: var(--nav-active); border-color: var(--nav-active-line); }
+.wiz-step.on .wiz-step-n { background: var(--accent); color: #08101c; border-color: var(--accent); font-weight: 700; }
+.wiz-step.on .wiz-step-t { color: var(--nav-active-text); font-weight: 600; }
+.wiz-step.done .wiz-step-n { background: transparent; color: var(--ok-text); border-color: var(--ok-line); }
+.wiz-step.done .wiz-step-t { color: var(--text-dim); }
+.wiz-step-line { width: 18px; height: 1px; background: var(--line); }
+
+.wiz-body { flex: 1; overflow: auto; padding: var(--sp-4) var(--sp-5); min-height: 260px; }
+.wiz-foot {
+  display: flex; align-items: center; gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-5); border-top: 1px solid var(--line); background: var(--bg-elev);
+}
+.wiz-loading { color: var(--text-mute); font-size: var(--fs-2); padding: 28px 0; text-align: center; }
+
+.wiz-split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--sp-4); }
+.wiz-pane { min-width: 0; }
+.wiz-pane-title {
+  font-size: var(--fs-2); font-weight: 600; color: var(--text-dim);
+  margin-bottom: var(--sp-2); letter-spacing: .2px;
+}
+
+.wiz-src-card { border: 1px solid var(--line); border-radius: var(--r-md); background: var(--bg-elev2); padding: 10px 12px; }
+.wiz-src-name { font-size: var(--fs-3); font-weight: 600; }
+.wiz-src-meta { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.wz-chip {
+  font-size: var(--fs-1); color: var(--text-dim); background: var(--bg);
+  border: 1px solid var(--line); border-radius: 999px; padding: 1px 8px; line-height: 1.6;
+}
+.wz-chip.warn { color: var(--warn-text); background: var(--warn-bg); border-color: var(--warn-line); }
+
+.wiz-preview { border: 1px solid var(--line); border-radius: var(--r-md); overflow: hidden; }
+.wiz-preview-scroll { max-height: 220px; overflow: auto; }
+.wiz-preview-scroll table.dt { font-size: var(--fs-1); }
+.wiz-preview-scroll table.dt td, .wiz-preview-scroll table.dt th { padding: 4px 8px; white-space: nowrap; }
+table.dt.compact th, table.dt.compact td { padding: 4px 8px; }
+
+.wiz-note {
+  margin-top: var(--sp-3); padding: 9px 11px; border-radius: var(--r-sm);
+  background: var(--bg-elev2); border: 1px solid var(--line); border-left: 2px solid var(--accent-dim);
+  font-size: var(--fs-2); color: var(--text-dim); line-height: 1.65;
+}
+.wiz-note b { color: var(--text); font-weight: 600; }
+.wiz-note ul { margin: 4px 0 0; padding-left: 18px; }
+.wiz-note.warn { border-left-color: var(--warn); background: var(--warn-bg); border-color: var(--warn-line); color: var(--warn-text); }
+.wiz-note.warn b { color: var(--warn-text); }
+
+/* 选择题卡片：整个开发动线里最主要的交互，点一下就是一个决策 */
+.wiz-choice-row { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
+.wiz-choice {
+  flex: 1 1 120px; min-width: 110px; padding: 9px 12px; cursor: pointer;
+  background: var(--bg-elev2); border: 1px solid var(--line); border-radius: var(--r-md);
+  transition: border-color .12s, background .12s;
+}
+.wiz-choice:hover { border-color: var(--hover-line); }
+.wiz-choice.sm { flex: 0 1 auto; min-width: 84px; padding: 7px 10px; }
+.wiz-choice.sel { border-color: var(--accent); background: var(--nav-active); box-shadow: inset 0 0 0 1px var(--accent-dim); }
+.wiz-choice-t { font-size: var(--fs-3); font-weight: 600; color: var(--text); }
+.wiz-choice-d { font-size: var(--fs-1); color: var(--text-mute); margin-top: 2px; }
+.wiz-choice.sel .wiz-choice-t { color: var(--nav-active-text); }
+
+.wiz-bar { display: flex; align-items: center; gap: var(--sp-2); margin-bottom: var(--sp-2); flex-wrap: wrap; }
+.wiz-bar .hint { margin: 0; }
+.wiz-map { border: 1px solid var(--line); border-radius: var(--r-md); overflow: auto; max-height: 360px; }
+.wiz-map table.dt { margin: 0; }
+.wiz-map table.dt thead th { position: sticky; top: 0; z-index: 1; background: var(--bg-elev2); }
+.wiz-map table.dt td { padding: 3px 8px; }
+.wiz-map table.dt input[type="text"], .wiz-map table.dt input:not([type]), .wiz-map table.dt select { padding: 4px 6px; font-size: var(--fs-2); }
+.wiz-map table.dt tr.wz-off { opacity: .42; }
+
+.wiz-pk {
+  display: inline-flex; align-items: center; gap: 5px; margin: 0; padding: 2px 8px;
+  font-size: var(--fs-1); color: var(--text-dim); cursor: pointer;
+  border: 1px solid var(--line); border-radius: 999px; background: var(--bg-elev2);
+}
+.wiz-pk input { width: auto; margin: 0; }
+.wiz-pk.sel { border-color: var(--accent-dim); color: var(--nav-active-text); background: var(--nav-active); }
+.wiz-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+
+.wiz-pick { border: 1px solid var(--line); border-radius: var(--r-md); max-height: 340px; overflow: auto; }
+.wiz-pick-group + .wiz-pick-group { border-top: 1px solid var(--line-soft); }
+.wiz-pick-head { display: flex; align-items: center; gap: 8px; padding: 7px 12px; background: var(--bg-elev2); position: sticky; top: 0; }
+.wiz-pick-item {
+  display: flex; align-items: center; gap: 9px; margin: 0; padding: 7px 12px;
+  font-size: var(--fs-2); color: var(--text-dim); cursor: pointer; border-left: 2px solid transparent;
+}
+.wiz-pick-item:hover { background: var(--row-hover); }
+.wiz-pick-item input { width: auto; margin: 0; }
+.wiz-pick-item .mono { color: var(--text); }
+.wiz-pick-item .hint { margin-left: auto; }
+.wiz-pick-item.sel { background: var(--nav-active); border-left-color: var(--accent); }
+
+.wiz-ddl { margin: 0; max-height: 300px; overflow: auto; font-size: var(--fs-1); line-height: 1.6; white-space: pre; }
+.wiz-dag { border: 1px solid var(--line); border-radius: var(--r-md); background: var(--bg-elev2); padding: 6px; overflow-x: auto; }
+.wiz-nodes { display: flex; flex-direction: column; gap: 5px; }
+.wiz-node { display: flex; align-items: center; gap: 8px; font-size: var(--fs-2); }
+.wiz-node-n {
+  width: 18px; height: 18px; border-radius: 50%; display: grid; place-items: center; flex: none;
+  font-size: 10px; background: var(--bg-elev2); border: 1px solid var(--line); color: var(--text-mute);
+}
+
+.wiz-done { text-align: center; padding: 22px 0 8px; }
+.wiz-done-icon {
+  width: 46px; height: 46px; margin: 0 auto 12px; border-radius: 50%;
+  display: grid; place-items: center; font-size: 22px;
+  color: var(--ok-text); background: var(--ok-bg); border: 1px solid var(--ok-line);
+}
+.wiz-done h4 { margin: 0 0 4px; font-size: var(--fs-4); }
+.wiz-done-next {
+  margin: 22px auto 0; max-width: 620px; padding: 14px 16px; text-align: left;
+  border: 1px solid var(--line); border-radius: var(--r-md); background: var(--bg-elev2);
+}
+.wiz-done-next .wiz-pane-title { margin-bottom: 10px; }
+
+.wiz-chart { border: 1px solid var(--line); border-radius: var(--r-md); background: var(--code-bg); padding: 8px; }
+.wiz-chart .chart { width: 100%; }
+
+/* 表单字段：向导里到处是「标签在上、控件在下」的竖排 */
+.field { display: block; margin-bottom: var(--sp-3); font-size: var(--fs-2); color: var(--text-dim); }
+.field > span { display: block; margin-bottom: 5px; }
+.field > input, .field > select { width: 100%; }
+.field > em { display: block; font-style: normal; margin-top: 4px; }
+.hint.ok { color: var(--ok-text); }
+.hint.warn { color: var(--warn-text); }
+.hint.err { color: var(--err-text); }
+.center { text-align: center; }
+
+/* 分层 pill：与血缘图同一套层色，避免同一层在两个页面是两种颜色 */
+.pill.ods { color: var(--layer-ods); border-color: var(--line); background: var(--bg-elev2); }
+.pill.dim { color: var(--layer-src); border-color: var(--line); background: var(--bg-elev2); }
+.pill.dwd { color: var(--layer-dwd); border-color: var(--info-line); background: var(--info-bg); }
+.pill.dws { color: var(--layer-dws); border-color: var(--info-line); background: var(--bg-elev2); }
+.pill.ads { color: var(--layer-ads); border-color: var(--warn-line); background: var(--warn-bg); }
+
+@media (max-width: 900px) {
+  .wiz-split { grid-template-columns: 1fr; }
+  .modal.wiz { width: 96vw; }
+}
+
+/* 复选框在深色底上默认是灰白方块，勾没勾几乎看不出来。
+   向导里「可空 / 要不要这一列」全靠它，必须给足对比度。 */
+input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); cursor: pointer; }
+.wiz-map input[type="checkbox"] { width: 15px; height: 15px; }
+.wiz-map td.center input[type="checkbox"] { margin: 0 auto; display: block; }
+/* 「必填」芯片：比 PII 更硬的约束，用中性色 + 锁形，不要和告警抢红色 */
+.wz-chip.lock { color: var(--nav-active-text); background: var(--nav-active); border-color: var(--nav-active-line); }

@@ -1,8 +1,10 @@
-package testsupport
+package testsupport_test
 
 import (
 	"context"
 	"testing"
+
+	"github.com/godw/godw/internal/testsupport"
 )
 
 // 夹具本身也要有测试：它一旦坏掉，所有依赖真实库的用例都会静默跳过，
@@ -10,7 +12,7 @@ import (
 func TestProbe(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60e9)
 	defer cancel()
-	if err := Probe(ctx); err != nil {
+	if err := testsupport.Probe(ctx); err != nil {
 		t.Fatalf("夹具不可用: %v", err)
 	}
 }

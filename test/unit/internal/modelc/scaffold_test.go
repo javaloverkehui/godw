@@ -107,10 +107,11 @@ func TestScaffoldUpstream(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if columnNames(got.Spec.Columns) != "id,amount,order_date" {
+	if columnNames(got.Spec.Columns) != "dt,id,amount,order_date" {
 		t.Fatalf("列错误: %v", columnNames(got.Spec.Columns))
 	}
-	if got.Spec.Columns[0].Type != "bigint" || got.Spec.Columns[1].Type != "decimal(20,4)" {
+	// dt 是各层的必填列，即使显式指定了别的分区列也要补上
+	if got.Spec.Columns[1].Type != "bigint" || got.Spec.Columns[2].Type != "decimal(20,4)" {
 		t.Fatalf("类型归一错误: %+v", got.Spec.Columns)
 	}
 	if !hasWarning(got.Warnings, "重名列") {
@@ -131,16 +132,24 @@ func TestScaffoldUpstream(t *testing.T) {
 	}
 }
 
-// 分区列推导：显式指定 > 上游日期列 > 补 dt。
+// 分区列推导：显式指定 > dt。无论哪种，产物里一定有 dt。
 func TestScaffoldPartition(t *testing.T) {
-	t.Run("自动识别日期列", func(t *testing.T) {
+	t.Run("默认按 dt 分区", func(t *testing.T) {
+		// 上游只有业务时间列时（created_at 这种），不再拿它当分区列：
+		// 各层的必填列是 dt，拿业务时间当分区会让产出的模型自己过不了校验。
 		got, err := modelc.Scaffold(modelc.ScaffoldOptions{Layer: "dwd", Name: "t",
-			Upstream: []model.ColumnSpec{{Name: "biz_dt", Type: "timestamp"}}})
+			Upstream: []model.ColumnSpec{{Name: "created_at", Type: "timestamp"}}})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got.Spec.PartitionBy[0] != "biz_dt" {
-			t.Fatalf("应选首个日期列: %v", got.Spec.PartitionBy)
+		if got.Spec.PartitionBy[0] != "dt" {
+			t.Fatalf("默认分区列应为 dt: %v", got.Spec.PartitionBy)
+		}
+		if columnNames(got.Spec.Columns) != "dt,created_at" {
+			t.Fatalf("应补 dt 且保留业务时间列: %v", columnNames(got.Spec.Columns))
+		}
+		if hasWarning(got.Warnings, "缺少必填列") {
+			t.Fatalf("脚手架不该产出自己都通不过校验的模型: %v", got.Warnings)
 		}
 	})
 	t.Run("显式日期列不存在时补列", func(t *testing.T) {
@@ -149,11 +158,30 @@ func TestScaffoldPartition(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if columnNames(got.Spec.Columns) != "stat_date,id" {
-			t.Fatalf("分区列应补在最前: %v", columnNames(got.Spec.Columns))
+		if columnNames(got.Spec.Columns) != "dt,stat_date,id" {
+			t.Fatalf("dt 与指定的分区列都应补在最前: %v", columnNames(got.Spec.Columns))
 		}
 		if got.Spec.Columns[0].Comment != "分区日期" || got.Spec.Columns[0].Nullable {
 			t.Fatalf("补列属性错误: %+v", got.Spec.Columns[0])
+		}
+		if got.Spec.PartitionBy[0] != "stat_date" {
+			t.Fatalf("显式指定的分区列应生效: %v", got.Spec.PartitionBy)
+		}
+	})
+	t.Run("上游已有 dt 时不重复", func(t *testing.T) {
+		got, err := modelc.Scaffold(modelc.ScaffoldOptions{Layer: "ods", Name: "orders",
+			Upstream: []model.ColumnSpec{
+				{Name: "order_id", Type: "bigint"},
+				{Name: "dt", Type: "date"},
+			}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if columnNames(got.Spec.Columns) != "order_id,dt,_godw_src,_godw_load_at" {
+			t.Fatalf("dt 不应重复: %v", columnNames(got.Spec.Columns))
+		}
+		if got.Spec.PartitionBy[0] != "dt" {
+			t.Fatalf("分区列应为 dt: %v", got.Spec.PartitionBy)
 		}
 	})
 }

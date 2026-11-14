@@ -1,14 +1,12 @@
 package http
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 	"strconv"
 	"time"
 
 	"github.com/godw/godw/internal/obs/alert"
-	"github.com/godw/godw/internal/obs/logstore"
 	"github.com/godw/godw/internal/pkg/errs"
 )
 
@@ -26,6 +24,7 @@ func (h *Handler) queueView(w http.ResponseWriter, r *http.Request, _ map[string
 	groups, err := h.Svc.Repo.ListResourceGroups(r.Context(), ws)
 	if err != nil {
 		fail(w, r, err)
+		return
 	}
 	// 附上每个资源组当前 running 数，前端能画出「占用 / 上限」。
 	usage := map[string]map[string]int{}
@@ -271,25 +270,4 @@ func (h *Handler) instanceLogsSnapshot(w http.ResponseWriter, r *http.Request, p
 
 func isTerminal(status string) bool {
 	return status == "success" || status == "failed" || status == "canceled"
-}
-
-// ---------- 日志采集器（供执行器注入） ----------
-
-// logCollector 把执行器输出接到内存缓冲。
-type logCollector struct {
-	mgr *logstore.Manager
-}
-
-func (c *logCollector) Append(instanceID, nodeID, level, msg string) {
-	if c.mgr == nil {
-		return
-	}
-	c.mgr.Get(instanceID).Append(nodeID, level, msg)
-}
-
-func (c *logCollector) Release(ctx context.Context, instanceID string) {
-	if c.mgr == nil {
-		return
-	}
-	c.mgr.Release(ctx, instanceID)
 }

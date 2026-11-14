@@ -101,11 +101,9 @@ func TestPipelineLifecycle(t *testing.T) {
 	if len(runs) != 1 || field(t, obj(t, runs[0]), "pipeline") != "dwd_order_daily" {
 		t.Fatalf("运行明细不对: %v", run)
 	}
-	// 单条管道失败不能阻断整批：handler 必须如实回传每条结果，
-	// 成功的计入 created、失败的带 error（当前库的 trigger_type 约束会拒绝 select，
-	// 这里断言的是「批量返回结构正确」，而不是某一种具体成败）。
-	if item := obj(t, runs[0]); item["error"] == nil && !fxBool(t, item, "created") {
-		t.Fatalf("运行明细既无 error 也未创建: %v", item)
+	// trigger_type=select 已在 migrations/0007 进白名单，命中管道必须真的建出实例。
+	if item := obj(t, runs[0]); !fxBool(t, item, "created") || item["error"] != nil {
+		t.Fatalf("命中管道应创建实例且无错误: %v", item)
 	}
 	e.fail("POST", "/api/v1/runs/select", map[string]any{"select": "  "}, http.StatusBadRequest)
 	e.as("viewer").fail("POST", "/api/v1/runs/select", map[string]any{"select": "layer:dwd"}, http.StatusForbidden)

@@ -543,8 +543,9 @@ function modelDetail(m) {
 }
 
 function modelEditor(yaml) {
-  modal('模型定义', `
+  modal('模型定义 · 高级', `
     <div class="stack">
+      <div class="hint">直接改 YAML：写得不对会在发布时被校验拦下。日常建模用「新建模型」向导或模型设计器更快。</div>
       <textarea id="model-yaml" rows="22">${esc(yaml || MODEL_TPL)}</textarea>
       <div class="row">
         <div class="hint" style="flex:1">发布前会先编译 DDL；勾选「同时建表」会真正执行 DDL。</div>
@@ -756,8 +757,9 @@ function drawDAG(svg, nodes) {
 }
 
 function pipelineEditor(yaml) {
-  modal('管道定义', `
+  modal('管道定义 · 高级', `
     <div class="stack">
+      <div class="hint">直接改 YAML：节点、依赖、变量写错会在发布时被拦下。日常编排用「新建管道」向导或编排画布。</div>
       <textarea id="pipe-yaml" rows="24">${esc(yaml || PIPE_TPL)}</textarea>
       <div class="hint">变量语法 <span class="mono">\${biz_date}</span>，运行期替换为实例业务日期。</div>
       <div class="row" style="justify-content:flex-end">
@@ -1863,7 +1865,10 @@ async function pageMetrics(view) {
         <h2 class="page-title">指标</h2>
         <p class="page-desc">${esc(m.displayName || m.name)} · <span class="mono">${esc(m.agg)}(${esc(m.expr)})</span> on ${esc(m.model)}</p>
       </div>
-      <button class="primary" data-act="new-metric">新建指标</button>
+      <div class="row">
+        <button class="ghost" data-act="metric-yaml" title="直接编辑指标定义（高级）">高级 YAML</button>
+        <button class="primary" data-act="new-metric">新建指标</button>
+      </div>
     </div>
 
     <div class="card">
@@ -1911,8 +1916,9 @@ async function pageMetrics(view) {
 }
 
 function metricEditor() {
-  modal('指标定义', `
+  modal('指标定义 · 高级', `
     <div class="stack">
+      <div class="hint">直接改 YAML：expr 只能是被聚合的列名，维度必须已声明。用「新建指标」向导可以边改边看曲线。</div>
       <textarea id="metric-yaml" rows="12">${esc(METRIC_TPL)}</textarea>
       <div class="hint">expr 只能是被聚合的列名；维度必须已在 dimensions 中声明。</div>
       <div class="row" style="justify-content:flex-end">
@@ -2533,7 +2539,8 @@ document.addEventListener('click', async (ev) => {
       }
       case 'profile-table': profileModal(); break;
       case 'run-profile': el.disabled = true; await runProfile(); el.disabled = false; break;
-      case 'new-metric': metricEditor(); break;
+      case 'new-metric': metricWizard(); break;
+      case 'metric-yaml': metricEditor(); break;
       case 'new-dashboard': dashboardEditor(true); break;
       case 'edit-dashboard': dashboardEditor(false); break;
 
@@ -2574,7 +2581,7 @@ document.addEventListener('click', async (ev) => {
       }
 
       case 'sel-model': S.selected.model = el.dataset.name; await render(); break;
-      case 'new-model': modelEditor(''); break;
+      case 'new-model': newModelWizard(); break;
       case 'edit-model': {
         const m = (S.cache.models || []).find(x => x.name === el.dataset.name);
         modelEditor(m ? modelYamlFrom(m) : '');
@@ -2605,7 +2612,7 @@ document.addEventListener('click', async (ev) => {
       }
 
       case 'sel-pipeline': S.selected.pipeline = el.dataset.name; await render(); break;
-      case 'new-pipeline': pipelineEditor(''); break;
+      case 'new-pipeline': pipelineWizard(); break;
       case 'edit-pipeline': {
         const p = (S.cache.pipelines || []).find(x => x.name === el.dataset.name);
         pipelineEditor(p && p.spec ? pipelineYamlFrom(p.spec) : '');

@@ -100,10 +100,5 @@ func paginate[T any](items []T, page, size int) Page[T] {
 	return Page[T]{Items: items[start:end], Total: total, Page: page, PageSize: size}
 }
 
-// pathParam 从已匹配的路由参数中取值。
-func pathParam(r *http.Request, key string) string {
-	return r.PathValue(key)
-}
-
 var _ = jsonx.Marshal
 var _ = strings.TrimSpace
