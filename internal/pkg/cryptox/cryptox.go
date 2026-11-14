@@ -19,8 +19,8 @@ type Cipher struct {
 // 加密原语入口，默认指向标准库实现。导出它们只为让外部测试能注入
 // 构造/熵池故障（正常密钥长度下这些错误不可达），生产代码不应改写。
 var (
-	NewBlockCipher = aes.NewCipher
-	NewAEAD        = cipher.NewGCM
+	NewBlockCipher           = aes.NewCipher
+	NewAEAD                  = cipher.NewGCM
 	RandReader     io.Reader = rand.Reader
 )
 

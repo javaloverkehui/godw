@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -27,27 +28,46 @@ import (
 )
 
 func main() {
-	if err := run(); err != nil {
-		fmt.Fprintln(os.Stderr, "启动失败:", err)
-		os.Exit(1)
-	}
+	os.Exit(run(os.Args[1:]))
 }
+
+// stdout / stderr 供测试替换；退出码语义与改造前一致：0 正常、1 启动失败、2 用法错误。
+var (
+	stdout io.Writer = os.Stdout
+	stderr io.Writer = os.Stderr
+)
 
 // 发布构建用 -ldflags "-X main.version=v1.0.0" 覆盖。
 var version = "1.0.0"
 
-func run() error {
+// run 解析参数并启动控制面，返回进程退出码。
+// 参数解析改用独立 FlagSet：全局 flag.CommandLine 在同一进程里只能注册一次，
+// 测试反复调用 run 会 panic。
+func run(args []string) int {
+	fs := flag.NewFlagSet("godw-server", flag.ContinueOnError)
 	var configPath string
 	var migrateOnly, showVersion bool
-	flag.StringVar(&configPath, "config", "", "配置文件路径，默认 ./config.yaml")
-	flag.BoolVar(&migrateOnly, "migrate", false, "只执行迁移后退出")
-	flag.BoolVar(&showVersion, "version", false, "打印版本后退出")
-	flag.Parse()
-	if showVersion {
-		fmt.Println("godw-server", version)
-		return nil
+	fs.StringVar(&configPath, "config", "", "配置文件路径，默认 ./config.yaml")
+	fs.BoolVar(&migrateOnly, "migrate", false, "只执行迁移后退出")
+	fs.BoolVar(&showVersion, "version", false, "打印版本后退出")
+	switch err := fs.Parse(args); {
+	case errors.Is(err, flag.ErrHelp):
+		return 0
+	case err != nil:
+		return 2
 	}
+	if showVersion {
+		fmt.Fprintln(stdout, "godw-server", version)
+		return 0
+	}
+	if err := serve(configPath, migrateOnly); err != nil {
+		fmt.Fprintln(stderr, "启动失败:", err)
+		return 1
+	}
+	return 0
+}
 
+func serve(configPath string, migrateOnly bool) error {
 	res, err := config.Load(config.Loader{Path: configPath})
 	if err != nil {
 		return err

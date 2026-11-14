@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -64,57 +65,70 @@ const usage = `godw-cli — GoDW 运维命令行
 var version = "1.0.0"
 
 func main() {
-	if len(os.Args) < 2 {
-		fmt.Print(usage)
-		os.Exit(2)
+	os.Exit(run(os.Args[1:]))
+}
+
+// stdout / stderr 供测试替换，业务代码只经由它们输出，保证 run 可被单测驱动。
+var (
+	stdout io.Writer = os.Stdout
+	stderr io.Writer = os.Stderr
+)
+
+// run 只负责参数分发、打印 usage / 错误并返回退出码；
+// 退出码语义与原 main 保持一致：0 成功、1 业务错误、2 用法错误。
+func run(args []string) int {
+	if len(args) == 0 {
+		fmt.Fprint(stdout, usage)
+		return 2
 	}
-	cmd := os.Args[1]
-	args := os.Args[2:]
+	cmd := args[0]
+	rest := args[1:]
 
 	var err error
 	switch cmd {
 	case "migrate":
-		err = cmdMigrate(args)
+		err = cmdMigrate(rest)
 	case "doctor":
-		err = cmdDoctor(args)
+		err = cmdDoctor(rest)
 	case "apply":
-		err = cmdApply(args)
+		err = cmdApply(rest)
 	case "run":
-		err = cmdRun(args)
+		err = cmdRun(rest)
 	case "worker":
-		err = cmdWorker(args)
+		err = cmdWorker(rest)
 	case "seed":
-		err = cmdSeed(args)
+		err = cmdSeed(rest)
 	case "backfill":
-		err = cmdBackfill(args)
+		err = cmdBackfill(rest)
 	case "init":
-		err = cmdInit(args)
+		err = cmdInit(rest)
 	case "diff":
-		err = cmdDiff(args)
+		err = cmdDiff(rest)
 	case "export-doc":
-		err = cmdExportDoc(args)
+		err = cmdExportDoc(rest)
 	case "lineage":
-		err = cmdLineage(args)
+		err = cmdLineage(rest)
 	case "profile":
-		err = cmdProfile(args)
+		err = cmdProfile(rest)
 	case "collect":
-		err = cmdCollect(args)
+		err = cmdCollect(rest)
 	case "export":
-		err = cmdExport(args)
+		err = cmdExport(rest)
 	case "lint":
-		err = cmdLint(args)
+		err = cmdLint(rest)
 	case "version", "-v", "--version":
-		fmt.Println("godw-cli", version)
+		fmt.Fprintln(stdout, "godw-cli", version)
 	case "help", "-h", "--help":
-		fmt.Print(usage)
+		fmt.Fprint(stdout, usage)
 	default:
-		fmt.Fprintf(os.Stderr, "未知命令: %s\n\n%s", cmd, usage)
-		os.Exit(2)
+		fmt.Fprintf(stderr, "未知命令: %s\n\n%s", cmd, usage)
+		return 2
 	}
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "错误:", err)
-		os.Exit(1)
+		fmt.Fprintln(stderr, "错误:", err)
+		return 1
 	}
+	return 0
 }
 
 func setup(args []string) (*service.Service, config.Config, func(), error) {
@@ -162,12 +176,12 @@ func cmdMigrate(args []string) error {
 			return err
 		}
 		if len(pending) == 0 {
-			fmt.Println("schema 已是最新")
+			fmt.Fprintln(stdout, "schema 已是最新")
 			return nil
 		}
-		fmt.Printf("待执行迁移 %d 个:\n", len(pending))
+		fmt.Fprintf(stdout, "待执行迁移 %d 个:\n", len(pending))
 		for _, p := range pending {
-			fmt.Println("  -", p)
+			fmt.Fprintln(stdout, "  -", p)
 		}
 		return fmt.Errorf("存在待执行的迁移")
 	}
@@ -176,10 +190,10 @@ func cmdMigrate(args []string) error {
 		return err
 	}
 	if len(applied) == 0 {
-		fmt.Println("schema 已是最新，无需迁移")
+		fmt.Fprintln(stdout, "schema 已是最新，无需迁移")
 		return nil
 	}
-	fmt.Printf("已应用 %d 个迁移: %s\n", len(applied), strings.Join(applied, ", "))
+	fmt.Fprintf(stdout, "已应用 %d 个迁移: %s\n", len(applied), strings.Join(applied, ", "))
 	return nil
 }
 
@@ -193,27 +207,27 @@ func cmdDoctor(args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Println("✓ 配置校验通过")
-	fmt.Printf("  env=%s db=%s\n", res.Config.Env, res.Config.DB.Redacted())
+	fmt.Fprintln(stdout, "✓ 配置校验通过")
+	fmt.Fprintf(stdout, "  env=%s db=%s\n", res.Config.Env, res.Config.DB.Redacted())
 
 	db, err := repo.Open(context.Background(), res.Config.DB)
 	if err != nil {
 		return err
 	}
 	defer db.Close()
-	fmt.Println("✓ 元数据库可连接")
+	fmt.Fprintln(stdout, "✓ 元数据库可连接")
 
 	v, n, err := db.Version(context.Background())
 	if err != nil {
 		return err
 	}
 	if n == 0 {
-		fmt.Println("! schema 未初始化，请执行 godw-cli migrate")
+		fmt.Fprintln(stdout, "! schema 未初始化，请执行 godw-cli migrate")
 	} else {
-		fmt.Printf("✓ schema 版本 %s（%d 个迁移）\n", v, n)
+		fmt.Fprintf(stdout, "✓ schema 版本 %s（%d 个迁移）\n", v, n)
 	}
 
-	fmt.Printf("✓ 已注册连接器: %s\n", strings.Join(connector.Types(), ", "))
+	fmt.Fprintf(stdout, "✓ 已注册连接器: %s\n", strings.Join(connector.Types(), ", "))
 
 	svc, err := service.New(db, res.Config, log.New(res.Config.Log))
 	if err != nil {
@@ -224,18 +238,18 @@ func cmdDoctor(args []string) error {
 		return err
 	}
 	if len(list) == 0 {
-		fmt.Println("! 尚未接入任何数据源")
+		fmt.Fprintln(stdout, "! 尚未接入任何数据源")
 		return nil
 	}
-	fmt.Printf("✓ 数据源 %d 个\n", len(list))
+	fmt.Fprintf(stdout, "✓ 数据源 %d 个\n", len(list))
 	fail := 0
 	for _, ds := range list {
 		if err := svc.TestDatasource(context.Background(), ds.WorkspaceID, ds.Name); err != nil {
-			fmt.Printf("  ✗ %s (%s): %v\n", ds.Name, ds.Type, err)
+			fmt.Fprintf(stdout, "  ✗ %s (%s): %v\n", ds.Name, ds.Type, err)
 			fail++
 			continue
 		}
-		fmt.Printf("  ✓ %s (%s)\n", ds.Name, ds.Type)
+		fmt.Fprintf(stdout, "  ✓ %s (%s)\n", ds.Name, ds.Type)
 	}
 	if fail > 0 {
 		return fmt.Errorf("%d 个数据源连接失败", fail)
@@ -285,10 +299,10 @@ func cmdApply(args []string) error {
 		if err != nil {
 			return err
 		}
-		fmt.Printf("模型 %s 已保存，当前版本 v%d\n", m.Name, m.ActiveVersion)
+		fmt.Fprintf(stdout, "模型 %s 已保存，当前版本 v%d\n", m.Name, m.ActiveVersion)
 		if m.DDL != "" && !*applyDDL {
-			fmt.Println("\n生成的 DDL（未执行）:")
-			fmt.Println(m.DDL)
+			fmt.Fprintln(stdout, "\n生成的 DDL（未执行）:")
+			fmt.Fprintln(stdout, m.DDL)
 		}
 	case "Metric":
 		var m semantic.Metric
@@ -299,7 +313,7 @@ func cmdApply(args []string) error {
 		if err != nil {
 			return err
 		}
-		fmt.Printf("指标 %s 已保存（%s）\n", saved.Name, saved.DisplayName)
+		fmt.Fprintf(stdout, "指标 %s 已保存（%s）\n", saved.Name, saved.DisplayName)
 	case "Dashboard":
 		var d semantic.Dashboard
 		if err := yaml.Unmarshal(raw, &d); err != nil {
@@ -309,13 +323,13 @@ func cmdApply(args []string) error {
 		if err != nil {
 			return err
 		}
-		fmt.Printf("看板 %s 已保存（%d 个卡片）\n", saved.Name, len(saved.Cards))
+		fmt.Fprintf(stdout, "看板 %s 已保存（%d 个卡片）\n", saved.Name, len(saved.Cards))
 	case "Pipeline":
 		p, err := svc.ApplyPipeline(context.Background(), ws.ID, "cli", raw, *publish)
 		if err != nil {
 			return err
 		}
-		fmt.Printf("管道 %s 已保存，当前版本 v%d\n", p.Name, p.ActiveVersion)
+		fmt.Fprintf(stdout, "管道 %s 已保存，当前版本 v%d\n", p.Name, p.ActiveVersion)
 	case "Dataset":
 		var d semantic.Dataset
 		if err := yaml.Unmarshal(raw, &d); err != nil {
@@ -325,7 +339,7 @@ func cmdApply(args []string) error {
 		if err != nil {
 			return err
 		}
-		fmt.Printf("数据集 %s 已保存（%d 维度 / %d 度量）\n", saved.Name, len(saved.Dimensions), len(saved.Measures))
+		fmt.Fprintf(stdout, "数据集 %s 已保存（%d 维度 / %d 度量）\n", saved.Name, len(saved.Dimensions), len(saved.Measures))
 	case "Chart":
 		var c semantic.Chart
 		if err := yaml.Unmarshal(raw, &c); err != nil {
@@ -335,10 +349,10 @@ func cmdApply(args []string) error {
 		if err != nil {
 			return err
 		}
-		fmt.Printf("图表 %s 已保存（%s）\n", saved.Name, saved.Type)
+		fmt.Fprintf(stdout, "图表 %s 已保存（%s）\n", saved.Name, saved.Type)
 		// 影响面提醒：改图表不用重跑数据，但会改变业务看到的数字口径。
 		for _, w := range warnings {
-			fmt.Println("  注意:", w)
+			fmt.Fprintln(stdout, "  注意:", w)
 		}
 	default:
 		return fmt.Errorf("不支持的 kind: %q（应为 Model / Pipeline / Metric / Dashboard / Dataset / Chart）", head.Kind)
@@ -384,9 +398,9 @@ func cmdRun(args []string) error {
 		return err
 	}
 	if created {
-		fmt.Printf("已创建实例 %s（业务日期 %s）\n", inst.ID, inst.BizDate)
+		fmt.Fprintf(stdout, "已创建实例 %s（业务日期 %s）\n", inst.ID, inst.BizDate)
 	} else {
-		fmt.Printf("复用已有实例 %s\n", inst.ID)
+		fmt.Fprintf(stdout, "复用已有实例 %s\n", inst.ID)
 	}
 	if !*wait {
 		return nil
@@ -402,15 +416,15 @@ func runBySelect(svc *service.Service, wsID, expr, bizDate string, wait, dryRun 
 	if err != nil {
 		return err
 	}
-	fmt.Printf("选择器 %s → %d 个模型、%d 条管道\n", expr, len(res.Models), len(res.Pipelines))
+	fmt.Fprintf(stdout, "选择器 %s → %d 个模型、%d 条管道\n", expr, len(res.Models), len(res.Pipelines))
 	for _, m := range res.Models {
-		fmt.Printf("  模型  %s\n", m)
+		fmt.Fprintf(stdout, "  模型  %s\n", m)
 	}
 	for _, p := range res.Pipelines {
-		fmt.Printf("  管道  %s\n", p)
+		fmt.Fprintf(stdout, "  管道  %s\n", p)
 	}
 	if len(res.Uncovered) > 0 {
-		fmt.Printf("  未覆盖（没有管道写这些模型）: %s\n", strings.Join(res.Uncovered, ", "))
+		fmt.Fprintf(stdout, "  未覆盖（没有管道写这些模型）: %s\n", strings.Join(res.Uncovered, ", "))
 	}
 	if dryRun {
 		return nil
@@ -429,12 +443,12 @@ func runBySelect(svc *service.Service, wsID, expr, bizDate string, wait, dryRun 
 		switch {
 		case x.Error != "":
 			failed++
-			fmt.Printf("  ✗ %-24s %s\n", x.Pipeline, x.Error)
+			fmt.Fprintf(stdout, "  ✗ %-24s %s\n", x.Pipeline, x.Error)
 		case x.Created:
-			fmt.Printf("  ✓ %-24s 已排队 %s\n", x.Pipeline, x.InstanceID)
+			fmt.Fprintf(stdout, "  ✓ %-24s 已排队 %s\n", x.Pipeline, x.InstanceID)
 			ids = append(ids, x.InstanceID)
 		default:
-			fmt.Printf("  = %-24s 复用 %s\n", x.Pipeline, x.InstanceID)
+			fmt.Fprintf(stdout, "  = %-24s 复用 %s\n", x.Pipeline, x.InstanceID)
 		}
 	}
 	if !wait || len(ids) == 0 {
@@ -464,12 +478,12 @@ func runAndReport(svc *service.Service, ids []string) error {
 		if err != nil {
 			return err
 		}
-		fmt.Printf("%s 执行结束: %s\n", id, final.Status)
+		fmt.Fprintf(stdout, "%s 执行结束: %s\n", id, final.Status)
 		if final.Status != "success" {
 			bad++
 		}
 		for _, t := range final.Tasks {
-			fmt.Printf("  %-24s %-10s %s\n", t.NodeID, t.Status, t.Error)
+			fmt.Fprintf(stdout, "  %-24s %-10s %s\n", t.NodeID, t.Status, t.Error)
 		}
 	}
 	if bad > 0 {
@@ -494,11 +508,11 @@ func cmdWorker(args []string) error {
 	for {
 		ran, err := svc.RunOnce(context.Background(), *name)
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "执行失败:", err)
+			fmt.Fprintln(stderr, "执行失败:", err)
 		}
 		if *once || !ran {
 			if !ran {
-				fmt.Println("没有待执行实例")
+				fmt.Fprintln(stdout, "没有待执行实例")
 			}
 			return nil
 		}
@@ -539,7 +553,7 @@ func cmdSeed(args []string) error {
 		if cerr != nil {
 			return cerr
 		}
-		fmt.Println("已接入数据源", *dsName)
+		fmt.Fprintln(stdout, "已接入数据源", *dsName)
 	}
 
 	spec, err := svc.DatasourceSpec(context.Background(), ws.ID, *dsName)
@@ -557,7 +571,7 @@ func cmdSeed(args []string) error {
 			return fmt.Errorf("执行失败: %w\n%s", err, stmt)
 		}
 	}
-	fmt.Println("样例数据已灌入", *dsName)
+	fmt.Fprintln(stdout, "样例数据已灌入", *dsName)
 	return nil
 }
 
@@ -606,12 +620,12 @@ func cmdBackfill(args []string) error {
 		}
 		if created {
 			total++
-			fmt.Printf("  %s 已排队 %s\n", date, inst.ID[len(inst.ID)-8:])
+			fmt.Fprintf(stdout, "  %s 已排队 %s\n", date, inst.ID[len(inst.ID)-8:])
 		} else {
-			fmt.Printf("  %s 已存在，跳过\n", date)
+			fmt.Fprintf(stdout, "  %s 已存在，跳过\n", date)
 		}
 	}
-	fmt.Printf("共创建 %d 个补数实例\n", total)
+	fmt.Fprintf(stdout, "共创建 %d 个补数实例\n", total)
 
 	if !*exec {
 		return nil
@@ -619,13 +633,13 @@ func cmdBackfill(args []string) error {
 	for {
 		ran, err := svc.RunOnce(context.Background(), "backfill")
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "执行失败:", err)
+			fmt.Fprintln(stderr, "执行失败:", err)
 		}
 		if !ran {
 			break
 		}
 	}
-	fmt.Println("补数执行完成")
+	fmt.Fprintln(stdout, "补数执行完成")
 	return nil
 }
 
@@ -661,13 +675,13 @@ func cmdLineage(args []string) error {
 		}
 		if *format == "json" {
 			raw, _ := json.MarshalIndent(res, "", "  ")
-			fmt.Println(string(raw))
+			fmt.Fprintln(stdout, string(raw))
 			return nil
 		}
 		edges, _ := res["edges"].([]model.ColumnEdge)
-		fmt.Printf("影响 %v 个下游列，涉及 %d 张表\n", res["count"], len(res["tables"].([]string)))
+		fmt.Fprintf(stdout, "影响 %v 个下游列，涉及 %d 张表\n", res["count"], len(res["tables"].([]string)))
 		for _, e := range edges {
-			fmt.Printf("  %s.%s -> %s.%s\n", e.UpstreamTable, e.UpstreamColumn, e.DownstreamTable, e.DownstreamColumn)
+			fmt.Fprintf(stdout, "  %s.%s -> %s.%s\n", e.UpstreamTable, e.UpstreamColumn, e.DownstreamTable, e.DownstreamColumn)
 		}
 		return nil
 	}
@@ -678,15 +692,15 @@ func cmdLineage(args []string) error {
 	}
 	if *format == "json" {
 		raw, _ := json.MarshalIndent(edges, "", "  ")
-		fmt.Println(string(raw))
+		fmt.Fprintln(stdout, string(raw))
 		return nil
 	}
 	if len(edges) == 0 {
-		fmt.Println("没有列级血缘（可能用了 SELECT *，或尚未发布管道）")
+		fmt.Fprintln(stdout, "没有列级血缘（可能用了 SELECT *，或尚未发布管道）")
 		return nil
 	}
 	for _, e := range edges {
-		fmt.Printf("  %s.%s -> %s.%s\n", e.UpstreamTable, e.UpstreamColumn, e.DownstreamTable, e.DownstreamColumn)
+		fmt.Fprintf(stdout, "  %s.%s -> %s.%s\n", e.UpstreamTable, e.UpstreamColumn, e.DownstreamTable, e.DownstreamColumn)
 	}
 	return nil
 }
@@ -714,15 +728,15 @@ func cmdCollect(args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("采集完成：%s，%d 张表，%d 项结构变更，耗时 %dms\n",
+	fmt.Fprintf(stdout, "采集完成：%s，%d 张表，%d 项结构变更，耗时 %dms\n",
 		res.Datasource, res.Tables, len(res.Changes), res.DurationMS)
 	// 变更超过 10 条时只列前 10，避免刷屏；完整清单在「表结构 → 结构变更」里。
 	for i, c := range res.Changes {
 		if i >= 10 {
-			fmt.Printf("  …… 另有 %d 项\n", len(res.Changes)-10)
+			fmt.Fprintf(stdout, "  …… 另有 %d 项\n", len(res.Changes)-10)
 			break
 		}
-		fmt.Printf("  %-12s %s.%s %s\n", c.Kind, c.Schema, c.Table, c.Column)
+		fmt.Fprintf(stdout, "  %-12s %s.%s %s\n", c.Kind, c.Schema, c.Table, c.Column)
 	}
 	return nil
 }
@@ -755,20 +769,20 @@ func cmdProfile(args []string) error {
 	}
 	if *format == "json" {
 		raw, _ := json.MarshalIndent(res, "", "  ")
-		fmt.Println(string(raw))
+		fmt.Fprintln(stdout, string(raw))
 		return nil
 	}
-	fmt.Printf("%s.%s 共 %v 行\n", *schema, *table, res["rows"])
+	fmt.Fprintf(stdout, "%s.%s 共 %v 行\n", *schema, *table, res["rows"])
 	cols, _ := res["columns"].([]map[string]any)
 	for _, c := range cols {
-		fmt.Printf("  %-18s %-10s 空值率 %.2f%%  去重 %v\n",
+		fmt.Fprintf(stdout, "  %-18s %-10s 空值率 %.2f%%  去重 %v\n",
 			c["column"], c["type"], toFloat(c["nullRate"])*100, c["distinct"])
 	}
 	rules, _ := res["recommended"].([]model.QualityRule)
 	if len(rules) > 0 {
-		fmt.Println("推荐规则：")
+		fmt.Fprintln(stdout, "推荐规则：")
 		for _, r := range rules {
-			fmt.Printf("  - name: %s\n    kind: %s\n    column: %s\n    severity: %s\n", r.Name, r.Kind, r.Column, r.Severity)
+			fmt.Fprintf(stdout, "  - name: %s\n    kind: %s\n    column: %s\n    severity: %s\n", r.Name, r.Kind, r.Column, r.Severity)
 		}
 	}
 	return nil
@@ -810,7 +824,7 @@ func cmdExport(args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Println("导出任务", job.ID, "已创建，等待完成…")
+	fmt.Fprintln(stdout, "导出任务", job.ID, "已创建，等待完成…")
 	for i := 0; i < 60; i++ {
 		time.Sleep(500 * time.Millisecond)
 		j, err := svc.Repo.GetExport(context.Background(), ws.ID, job.ID)
@@ -819,7 +833,7 @@ func cmdExport(args []string) error {
 		}
 		switch j.Status {
 		case "success":
-			fmt.Printf("完成：%d 行 -> %s\n", j.RowCount, j.FilePath)
+			fmt.Fprintf(stdout, "完成：%d 行 -> %s\n", j.RowCount, j.FilePath)
 			if *out != "" {
 				raw, err := os.ReadFile(j.FilePath)
 				if err != nil {
@@ -828,7 +842,7 @@ func cmdExport(args []string) error {
 				if err := os.WriteFile(*out, raw, 0o644); err != nil {
 					return err
 				}
-				fmt.Println("已另存到", *out)
+				fmt.Fprintln(stdout, "已另存到", *out)
 			}
 			return nil
 		case "failed":
@@ -861,7 +875,7 @@ func cmdLint(args []string) error {
 		}
 		kind, err := detectKind(raw)
 		if err != nil {
-			fmt.Printf("✗ %-48s %v\n", f, err)
+			fmt.Fprintf(stdout, "✗ %-48s %v\n", f, err)
 			bad++
 			continue
 		}
@@ -898,16 +912,16 @@ func cmdLint(args []string) error {
 			}
 		}
 		if verr != nil {
-			fmt.Printf("✗ %-48s %v\n", f, verr)
+			fmt.Fprintf(stdout, "✗ %-48s %v\n", f, verr)
 			bad++
 		} else {
-			fmt.Printf("✓ %-48s %s\n", f, kind)
+			fmt.Fprintf(stdout, "✓ %-48s %s\n", f, kind)
 		}
 	}
 	if bad > 0 {
 		return fmt.Errorf("%d 个文件校验失败", bad)
 	}
-	fmt.Printf("全部通过（%d 个文件）\n", len(files))
+	fmt.Fprintf(stdout, "全部通过（%d 个文件）\n", len(files))
 	return nil
 }
 
@@ -962,16 +976,16 @@ func cmdInit(args []string) error {
 		return err
 	}
 	for _, w := range res.Warnings {
-		fmt.Fprintln(os.Stderr, "提示:", w)
+		fmt.Fprintln(stderr, "提示:", w)
 	}
 	if *out != "" {
 		if err := os.WriteFile(*out, []byte(res.YAML), 0o644); err != nil {
 			return err
 		}
-		fmt.Println("已写入", *out)
+		fmt.Fprintln(stdout, "已写入", *out)
 		return nil
 	}
-	fmt.Print(res.YAML)
+	fmt.Fprint(stdout, res.YAML)
 	return nil
 }
 
@@ -1010,7 +1024,7 @@ func cmdDiff(args []string) error {
 	}
 	diff, _ := res["diff"].(modelc.DiffResult)
 	if len(diff.Changes) == 0 {
-		fmt.Println("无结构变更")
+		fmt.Fprintln(stdout, "无结构变更")
 		return nil
 	}
 	for _, c := range diff.Changes {
@@ -1018,18 +1032,18 @@ func cmdDiff(args []string) error {
 		if c.Breaking {
 			flagText = "BREAKING"
 		}
-		fmt.Printf("[%s] %s %s %s → %s  %s\n", flagText, c.Kind, c.Column, c.From, c.To, c.Reason)
+		fmt.Fprintf(stdout, "[%s] %s %s %s → %s  %s\n", flagText, c.Kind, c.Column, c.From, c.To, c.Reason)
 	}
-	fmt.Printf("\n共 %d 项变更，其中破坏性 %d 项\n", len(diff.Changes), diff.Breaking)
+	fmt.Fprintf(stdout, "\n共 %d 项变更，其中破坏性 %d 项\n", len(diff.Changes), diff.Breaking)
 	if plan, okc := res["plan"].(modelc.MigrationPlan); okc {
 		if len(plan.Statements) > 0 {
-			fmt.Println("\n-- 迁移语句 --")
+			fmt.Fprintln(stdout, "\n-- 迁移语句 --")
 			for _, s := range plan.Statements {
-				fmt.Println(s)
+				fmt.Fprintln(stdout, s)
 			}
 		}
 		for _, m := range plan.Manual {
-			fmt.Println("需人工处理:", m)
+			fmt.Fprintln(stdout, "需人工处理:", m)
 		}
 	}
 	if diff.HasBreaking() {
@@ -1070,9 +1084,9 @@ func cmdExportDoc(args []string) error {
 		if err := os.WriteFile(*out, []byte(body), 0o644); err != nil {
 			return err
 		}
-		fmt.Println("已写入", *out, fmt.Sprintf("(%d 字节)", len(body)))
+		fmt.Fprintln(stdout, "已写入", *out, fmt.Sprintf("(%d 字节)", len(body)))
 		return nil
 	}
-	fmt.Print(body)
+	fmt.Fprint(stdout, body)
 	return nil
 }

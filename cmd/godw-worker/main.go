@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"syscall"
@@ -22,29 +23,41 @@ import (
 // 发布构建用 -ldflags "-X main.version=v1.0.0" 覆盖。
 var version = "1.0.0"
 
+// stdout / stderr 供测试替换；退出码语义与改造前一致。
+var (
+	stdout io.Writer = os.Stdout
+	stderr io.Writer = os.Stderr
+)
+
+func main() {
+	os.Exit(run(os.Args[1:]))
+}
+
 // godw-worker 是独立数据面进程：不提供 HTTP，只领取并执行实例。
 // 横向扩容时直接起多个副本，靠 SKIP LOCKED 与租约保证不重复执行。
-func main() {
+//
+// run 解析参数后进入执行循环，返回进程退出码（0 正常退出、1 启动失败）。
+func run(args []string) int {
 	var configPath, name string
 	var once bool
 	fmt.Sscanf(os.Getenv("GODW_WORKER_NAME"), "%s", &name)
-	for i := 1; i < len(os.Args); i++ {
-		switch os.Args[i] {
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
 		case "--config":
-			if i+1 < len(os.Args) {
-				configPath = os.Args[i+1]
+			if i+1 < len(args) {
+				configPath = args[i+1]
 				i++
 			}
 		case "--name":
-			if i+1 < len(os.Args) {
-				name = os.Args[i+1]
+			if i+1 < len(args) {
+				name = args[i+1]
 				i++
 			}
 		case "--once":
 			once = true
 		case "--version", "-v":
-			fmt.Println("godw-worker", version)
-			return
+			fmt.Fprintln(stdout, "godw-worker", version)
+			return 0
 		}
 	}
 	if name == "" {
@@ -53,8 +66,8 @@ func main() {
 
 	res, err := config.Load(config.Loader{Path: configPath})
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		fmt.Fprintln(stderr, err)
+		return 1
 	}
 	lg := log.New(res.Config.Log)
 
@@ -64,14 +77,14 @@ func main() {
 	db, err := repo.Open(ctx, res.Config.DB)
 	if err != nil {
 		lg.Error("连接元数据库失败", "err", err)
-		os.Exit(1)
+		return 1
 	}
 	defer db.Close()
 
 	svc, err := service.New(db, res.Config, lg)
 	if err != nil {
 		lg.Error("初始化服务失败", "err", err)
-		os.Exit(1)
+		return 1
 	}
 
 	lg.Info("数据面已启动", "worker", name)
@@ -79,7 +92,7 @@ func main() {
 		select {
 		case <-ctx.Done():
 			lg.Info("数据面退出")
-			return
+			return 0
 		default:
 		}
 		ran, err := svc.RunOnce(ctx, name)
@@ -88,16 +101,16 @@ func main() {
 		}
 		if ran {
 			if once {
-				return
+				return 0
 			}
 			continue
 		}
 		if once {
-			return
+			return 0
 		}
 		select {
 		case <-ctx.Done():
-			return
+			return 0
 		case <-time.After(2 * time.Second):
 		}
 	}

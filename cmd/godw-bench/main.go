@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -25,13 +26,27 @@ type result struct {
 	mu        sync.Mutex
 }
 
+// stdout 供测试替换，避免用例把压测报告打到测试输出里。
+var stdout io.Writer = os.Stdout
+
 func main() {
-	base := flag.String("base", "http://localhost:8080", "服务地址")
-	token := flag.String("token", "", "Bearer token，留空则用 dev 模式")
-	conc := flag.Int("c", 20, "并发数")
-	dur := flag.Duration("d", 20*time.Second, "持续时长")
-	scenario := flag.String("s", "read", "场景：read（查询类）/ write（提交流程）/ mixed")
-	flag.Parse()
+	os.Exit(run(os.Args[1:]))
+}
+
+// run 解析参数并执行压测，返回退出码：0 无错误、1 有失败请求、2 用法错误。
+func run(args []string) int {
+	fs := flag.NewFlagSet("godw-bench", flag.ContinueOnError)
+	base := fs.String("base", "http://localhost:8080", "服务地址")
+	token := fs.String("token", "", "Bearer token，留空则用 dev 模式")
+	conc := fs.Int("c", 20, "并发数")
+	dur := fs.Duration("d", 20*time.Second, "持续时长")
+	scenario := fs.String("s", "read", "场景：read（查询类）/ write（提交流程）/ mixed")
+	switch err := fs.Parse(args); {
+	case errors.Is(err, flag.ErrHelp):
+		return 0
+	case err != nil:
+		return 2
+	}
 
 	client := &http.Client{
 		Timeout: 30 * time.Second,
@@ -87,20 +102,21 @@ func main() {
 	res.mu.Unlock()
 	sort.Slice(lats, func(i, j int) bool { return lats[i] < lats[j] })
 
-	fmt.Printf("场景=%s 并发=%d 时长=%s\n", *scenario, *conc, total.Round(time.Millisecond))
-	fmt.Printf("请求=%d 成功=%d 失败=%d QPS=%.1f\n",
+	fmt.Fprintf(stdout, "场景=%s 并发=%d 时长=%s\n", *scenario, *conc, total.Round(time.Millisecond))
+	fmt.Fprintf(stdout, "请求=%d 成功=%d 失败=%d QPS=%.1f\n",
 		ok+fail, ok, fail, float64(ok+fail)/total.Seconds())
 	if len(lats) > 0 {
-		fmt.Printf("延迟 p50=%s p90=%s p99=%s max=%s\n",
+		fmt.Fprintf(stdout, "延迟 p50=%s p90=%s p99=%s max=%s\n",
 			pct(lats, 0.5), pct(lats, 0.9), pct(lats, 0.99), lats[len(lats)-1].Round(time.Millisecond))
 	}
 	if len(errs) > 0 {
-		fmt.Println("错误分布：")
+		fmt.Fprintln(stdout, "错误分布：")
 		for k, v := range errs {
-			fmt.Printf("  %4d  %s\n", v, k)
+			fmt.Fprintf(stdout, "  %4d  %s\n", v, k)
 		}
-		os.Exit(1)
+		return 1
 	}
+	return 0
 }
 
 func pct(sorted []time.Duration, p float64) time.Duration {
