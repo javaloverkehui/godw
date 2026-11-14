@@ -127,7 +127,10 @@ func ValidateTypes(spec model.ModelSpec, engine string) []RuleViolation {
 			out = append(out, RuleViolation{Rule: "type_unsupported", Field: "columns." + c.Name, Message: err.Error()})
 			continue
 		}
-		if m.Lossy && !spec.AllowLossy {
+		// _godw_ 前缀是平台自己注入的审计列（_godw_src / _godw_load_at），
+		// 写入口径由平台固定为 UTC，取舍是平台的既成事实，不该每建一张表就让用户
+		// 点一次 allow_lossy；用户自己声明的列照旧必须显式确认。
+		if m.Lossy && !spec.AllowLossy && !isPlatformColumn(c.Name) {
 			out = append(out, RuleViolation{
 				Rule: "lossy_type", Field: "columns." + c.Name,
 				Message: fmt.Sprintf("列 %s 的类型 %s 映射到 %s 会丢失信息（%s）；确认可接受后设置 allow_lossy: true",
@@ -136,6 +139,11 @@ func ValidateTypes(spec model.ModelSpec, engine string) []RuleViolation {
 		}
 	}
 	return out
+}
+
+// isPlatformColumn 判断是否为平台注入的列（_godw_ 前缀）。
+func isPlatformColumn(name string) bool {
+	return strings.HasPrefix(strings.ToLower(name), "_godw_")
 }
 
 // parseTypeSpec 把十进制类型字符串解析成结构化 TypeSpec。

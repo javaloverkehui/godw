@@ -150,7 +150,38 @@ func (c *Conn) DescribeTable(ctx context.Context, schema, table string) (*connec
 	if len(meta.Columns) == 0 {
 		return nil, errs.New(errs.CodeNotFound, fmt.Sprintf("表不存在: %s.%s", schema, table))
 	}
+	// information_schema 不暴露主键，只能问 duckdb_constraints()。
+	meta.PrimaryKey = c.primaryKey(ctx, schema, table)
 	return meta, nil
+}
+
+// primaryKey 读取源表主键。查不到就返回空，不让采集因此失败。
+func (c *Conn) primaryKey(ctx context.Context, schema, table string) []string {
+	var raw sql.NullString
+	err := c.db.QueryRowContext(ctx,
+		`SELECT constraint_column_names::VARCHAR FROM duckdb_constraints()
+		 WHERE COALESCE(NULLIF(schema_name, ''), 'main') = COALESCE(NULLIF(?, ''), 'main')
+		   AND table_name = ? AND constraint_type = 'PRIMARY KEY'`, schema, table).Scan(&raw)
+	if err != nil || !raw.Valid {
+		return nil
+	}
+	return parseNameList(raw.String)
+}
+
+// parseNameList 拆 DuckDB 的列表字面量，形如 [order_id, dt]。
+func parseNameList(s string) []string {
+	s = strings.TrimSpace(s)
+	s = strings.TrimSuffix(strings.TrimPrefix(s, "["), "]")
+	if s == "" {
+		return nil
+	}
+	var out []string
+	for _, p := range strings.Split(s, ",") {
+		if p = strings.Trim(strings.TrimSpace(p), `'"`); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func (c *Conn) Query(ctx context.Context, sqlText string, args ...any) (connector.Rows, error) {

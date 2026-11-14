@@ -16,16 +16,24 @@ type Cipher struct {
 	aead cipher.AEAD
 }
 
+// 加密原语入口，默认指向标准库实现。导出它们只为让外部测试能注入
+// 构造/熵池故障（正常密钥长度下这些错误不可达），生产代码不应改写。
+var (
+	NewBlockCipher = aes.NewCipher
+	NewAEAD        = cipher.NewGCM
+	RandReader     io.Reader = rand.Reader
+)
+
 func New(keyMaterial string) (*Cipher, error) {
 	if len(keyMaterial) < 16 {
 		return nil, fmt.Errorf("cryptox: 主密钥至少 16 字节")
 	}
 	sum := sha256.Sum256([]byte(keyMaterial))
-	block, err := aes.NewCipher(sum[:])
+	block, err := NewBlockCipher(sum[:])
 	if err != nil {
 		return nil, err
 	}
-	aead, err := cipher.NewGCM(block)
+	aead, err := NewAEAD(block)
 	if err != nil {
 		return nil, err
 	}
@@ -38,7 +46,7 @@ func (c *Cipher) Encrypt(v any) ([]byte, error) {
 		return nil, err
 	}
 	nonce := make([]byte, c.aead.NonceSize())
-	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+	if _, err := io.ReadFull(RandReader, nonce); err != nil {
 		return nil, err
 	}
 	return c.aead.Seal(nonce, nonce, plain, nil), nil

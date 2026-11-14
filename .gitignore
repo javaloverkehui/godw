@@ -38,3 +38,8 @@ runner/__pycache__/
 # 无人值守执行器的运行时状态（生成物/易变）
 runner/state.json
 runner/.locks/
+
+# 覆盖率产物（make cover 生成）
+cover.out
+cover.out.summary
+cover.html

@@ -38,6 +38,10 @@ func New(ctx context.Context, spec connector.Spec) (connector.Connector, error) 
 
 func (c *Conn) Type() string { return "mysql" }
 
+// NewWithDB 用调用方提供的 *sql.DB 包装连接器，供测试注入替代驱动。
+// 生产入口是 New；两者对连接器的包装与 SQL 行为完全一致，默认行为不变。
+func NewWithDB(db *sql.DB) connector.Connector { return &Conn{db: db} }
+
 func (c *Conn) Capabilities() connector.Capability {
 	return connector.Capability{
 		MergeUpsert: true, TransactionalDDL: false, WindowFunction: true,
@@ -99,7 +103,9 @@ func (c *Conn) ListTables(ctx context.Context, schema string) ([]connector.Table
 }
 
 func (c *Conn) DescribeTable(ctx context.Context, schema, table string) (*connector.TableMeta, error) {
-	const q = `SELECT column_name, column_type, is_nullable='YES', column_default, column_comment, ordinal_position
+	// column_key='PRI' 对应主键（MySQL 也会把「唯一且非空」的索引标成 PRI，两者都能当幂等键）。
+	// 这是源表已经声明的事实，原样带出去，别让上层再靠列名猜。
+	const q = `SELECT column_name, column_type, is_nullable='YES', column_default, column_comment, ordinal_position, column_key
 		FROM information_schema.columns WHERE table_schema=? AND table_name=? ORDER BY ordinal_position`
 	rows, err := c.db.QueryContext(ctx, q, schema, table)
 	if err != nil {
@@ -111,11 +117,16 @@ func (c *Conn) DescribeTable(ctx context.Context, schema, table string) (*connec
 	for rows.Next() {
 		var col connector.ColumnMeta
 		var def sql.NullString
-		if err := rows.Scan(&col.Name, &col.Type, &col.Nullable, &def, &col.Comment, &col.Ordinal); err != nil {
+		var key string
+		if err := rows.Scan(&col.Name, &col.Type, &col.Nullable, &def, &col.Comment, &col.Ordinal, &key); err != nil {
 			return nil, err
 		}
 		if def.Valid {
 			col.Default = &def.String
+		}
+		// MySQL 把主键列标 PRI；复合主键按 ordinal 顺序收集即可还原索引列序。
+		if strings.EqualFold(key, "PRI") {
+			t.PrimaryKey = append(t.PrimaryKey, col.Name)
 		}
 		t.Columns = append(t.Columns, col)
 	}

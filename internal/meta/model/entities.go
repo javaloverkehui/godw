@@ -79,6 +79,9 @@ type ColumnSpec struct {
 	Nullable bool   `json:"nullable" yaml:"nullable"`
 	Comment  string `json:"comment,omitempty" yaml:"comment,omitempty"`
 	Default  string `json:"default,omitempty" yaml:"default,omitempty"`
+	// PrimaryKey 标记该列在源表里属于主键。只用于元数据采集→建模脚手架这段链路；
+	// 模型 YAML 用 primary_key 列表表达，所以这里不打 yaml 标签，避免同一事实写两遍。
+	PrimaryKey bool `json:"primaryKey,omitempty" yaml:"-"`
 }
 
 // ModelSpec 是模型 YAML 的完整定义，也是版本快照的内容。

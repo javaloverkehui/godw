@@ -72,6 +72,17 @@
   改为先匹配「被引号包住」的形式再匹配裸占位符，`O'Brien` 之类的取值仍正确转义。
 - **空切片序列化成 `null`**：选择器无「未覆盖模型」时返回 `"uncovered": null`，前端 `.length` 直接抛
   `Cannot read properties of null`。服务端改为显式初始化空切片，前端补 `|| []`。
+- **脚手架拿不到源表主键，只能靠列名猜**：`connector.TableMeta` 与 `model.ColumnSpec` 都没有主键字段，
+  采集落库这一步就把源表声明的 PRIMARY KEY 丢了，于是「源表明明写了主键」却提示「未能推断主键」。
+  现在四个连接器都读真实主键：PG 走 `pg_index`（按索引列序）、MySQL 用 `column_key='PRI'`、
+  DuckDB 查 `duckdb_constraints()`、ClickHouse 取 `system.tables.primary_key`（跳过表达式排序键），
+  随 `dataset.columns` 一起落库；脚手架优先级改为「显式指定 > 源表主键 > 名称启发式」，列名被归一改名时
+  主键跟着换名，`key_candidates` 把源表主键排在首位。**老数据集需重新采集一次**才有主键。
+- **ODS 因为没有主键被告警**：ODS 本就不建主键约束（规则里 `RequireKey=false`），提示却要求「手动指定
+  primary_key，否则无法幂等写入」，自相矛盾。现在 ODS 不再出这条告警，源表主键只作为候选展示。
+- **平台自己的审计列反过来逼用户确认有损**：MySQL 上 `_godw_load_at` 的 `datetime → datetime(3)`
+  让每张 ODS 都得点一次 `allow_lossy`。`_godw_` 前缀列由平台写入、口径固定 UTC，不再索要确认；
+  用户自己声明的列照旧必须显式确认。
 
 ### 测试
 - `internal/semantic/dashboard_test.go`：卡片二选一校验、图表卡分派、维度切片、单卡失败隔离、
@@ -83,6 +94,8 @@
 - `internal/meta/service/selector_test.go`：精确、上下闭包、双向、tag、layer、pipeline、通配、并集、
   未知前缀与空表达式。
 - `internal/meta/service/governance_test.go`：表名全名/末段互相命中；占位符单层引号（含 `O'Brien`）。
+- `internal/modelc/rules_test.go`：源表主键优先于名称启发式（复合主键、`unique_key` 同步、候选排序）、
+  ODS 无主键与平台审计列不再产生告警。
 - `scripts/bench_canvas.mjs`：500 节点首屏 40.6ms、DOM 88/500、边 1 条 path、拖动单帧 p95 1.1ms、
   平移/缩放 p95 0.5ms、进出 8 次 52ms→28.8ms。
 

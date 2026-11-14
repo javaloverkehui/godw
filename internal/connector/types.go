@@ -36,14 +36,18 @@ type ColumnMeta struct {
 }
 
 type TableMeta struct {
-	Schema      string       `json:"schema"`
-	Name        string       `json:"name"`
-	Type        string       `json:"type"`
-	Comment     string       `json:"comment,omitempty"`
-	RowCount    int64        `json:"rowCount"`
-	SizeBytes   int64        `json:"sizeBytes"`
-	Columns     []ColumnMeta `json:"columns"`
-	PartitionBy []string     `json:"partitionBy,omitempty"`
+	Schema    string       `json:"schema"`
+	Name      string       `json:"name"`
+	Type      string       `json:"type"`
+	Comment   string       `json:"comment,omitempty"`
+	RowCount  int64        `json:"rowCount"`
+	SizeBytes int64        `json:"sizeBytes"`
+	Columns   []ColumnMeta `json:"columns"`
+	// PrimaryKey 是源表声明的主键列，按索引内的顺序排列（复合主键顺序有意义）。
+	// 采集必须原样带出：建模脚手架据此定主键，而不是拿列名去猜——
+	// 源表已经写清楚的事实，不该让用户再回答一次。
+	PrimaryKey  []string `json:"primaryKey,omitempty"`
+	PartitionBy []string `json:"partitionBy,omitempty"`
 }
 
 // Rows 是游标式结果集。调用方必须 Close。

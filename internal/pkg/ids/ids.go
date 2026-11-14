@@ -11,6 +11,10 @@ import (
 
 const crockford = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 
+// RandRead 是随机源入口，默认指向 crypto/rand.Read。
+// 导出它只为让外部测试能模拟「熵池不可用」的降级路径，生产代码不应改写。
+var RandRead = rand.Read
+
 // ULID 生成 26 位字典序可排序 ID：前 10 位时间戳，后 16 位随机。
 // 不引入第三方库，避免为一个函数增加依赖。
 func ULID() string {
@@ -22,7 +26,7 @@ func ULID() string {
 	b[3] = byte(ms >> 16)
 	b[4] = byte(ms >> 8)
 	b[5] = byte(ms)
-	if _, err := rand.Read(b[6:]); err != nil {
+	if _, err := RandRead(b[6:]); err != nil {
 		// 随机源不可用时退化为纳秒填充，宁可重复也不 panic。
 		binary.BigEndian.PutUint64(b[8:], uint64(time.Now().UnixNano()))
 	}
@@ -60,7 +64,7 @@ func Short(n int) string {
 		n = 8
 	}
 	b := make([]byte, n)
-	if _, err := rand.Read(b); err != nil {
+	if _, err := RandRead(b); err != nil {
 		return fmt.Sprintf("%x", time.Now().UnixNano())
 	}
 	return hex.EncodeToString(b)

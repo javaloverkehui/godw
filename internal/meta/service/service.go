@@ -194,9 +194,18 @@ func (s *Service) CollectMetadata(ctx context.Context, workspaceID, name string)
 				failures = append(failures, fmt.Sprintf("%s.%s: %v", schema, t.Name, derr))
 				continue
 			}
+			// 源表主键必须跟着列一起落库。丢了它，脚手架就只能靠「列名像 id」猜，
+			// 用户在源表里已经写清楚的约束会被要求重新回答一遍。
+			pk := make(map[string]bool, len(full.PrimaryKey))
+			for _, pkCol := range full.PrimaryKey {
+				pk[strings.ToLower(pkCol)] = true
+			}
 			cols := make([]model.ColumnSpec, len(full.Columns))
 			for i, col := range full.Columns {
-				cols[i] = model.ColumnSpec{Name: col.Name, Type: col.Type, Nullable: col.Nullable, Comment: col.Comment}
+				cols[i] = model.ColumnSpec{
+					Name: col.Name, Type: col.Type, Nullable: col.Nullable, Comment: col.Comment,
+					PrimaryKey: pk[strings.ToLower(col.Name)],
+				}
 			}
 			full.RowCount = t.RowCount
 			full.SizeBytes = t.SizeBytes

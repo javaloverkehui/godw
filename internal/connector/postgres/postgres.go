@@ -140,7 +140,36 @@ ORDER BY ordinal_position`
 	if len(t.Columns) == 0 {
 		return nil, errs.New(errs.CodeNotFound, "表不存在: "+schema+"."+table)
 	}
+	t.PrimaryKey = c.primaryKey(ctx, schema, table)
 	return t, nil
+}
+
+// primaryKey 读取源表主键，按索引内的列序返回（复合主键顺序有意义）。
+// 视图、无主键表、或缺 pg_index 读权限时返回空：主键是增强信息，
+// 不该因为它让整张表采集失败。
+func (c *Conn) primaryKey(ctx context.Context, schema, table string) []string {
+	const q = `
+SELECT a.attname
+FROM pg_index i
+JOIN pg_class c ON c.oid = i.indrelid
+JOIN pg_namespace n ON n.oid = c.relnamespace
+JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey::int2[])
+WHERE n.nspname = $1 AND c.relname = $2 AND i.indisprimary
+ORDER BY array_position(i.indkey::int2[], a.attnum)`
+	rows, err := c.pool.Query(ctx, q, schema, table)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil
+		}
+		out = append(out, name)
+	}
+	return out
 }
 
 func (c *Conn) Query(ctx context.Context, sql string, args ...any) (connector.Rows, error) {
@@ -166,7 +195,13 @@ func (c *Conn) Stream(ctx context.Context, sql string, batchSize int, fn func(co
 		return err
 	}
 	defer rows.Close()
+	return StreamRows(rows, batchSize, fn)
+}
 
+// StreamRows 把结果集按 batchSize 分批交给 fn，是 Stream 的公开复用点。
+// 导出目的：分批与错误传播语义需要在没有具体驱动（真实数据库）时也能被验证；
+// Stream 仍走同一实现，默认行为不变。batchSize<=0 表示一次性交付。
+func StreamRows(rows connector.Rows, batchSize int, fn func(connector.Rows) error) error {
 	cols := rows.Columns()
 	var batch [][]any
 	flush := func() error {

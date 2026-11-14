@@ -3,12 +3,14 @@ BIN := bin
 CONFIG ?= config.dev.yaml
 GO ?= go
 
-.PHONY: help build test test-integration lint run migrate doctor seed demo up down reset smoke image clean fmt bench-canvas dag-fixture
+.PHONY: help build test test-integration lint run migrate doctor seed demo up down reset smoke image clean fmt bench-canvas dag-fixture cover cover-html
 
 help:
 	@echo "GoDW 常用命令"
 	@echo "  make build     编译 server / worker / cli 到 bin/"
 	@echo "  make test      单元测试（含 -race）"
+	@echo "  make cover     全量覆盖率 + 95% 门禁（需本机 postgres）"
+	@echo "  make cover-html  覆盖率报告并生成 cover.html"
 	@echo "  make test-integration  真实引擎集成测试（起 pg/mysql/ch，验建表与查询）"
 	@echo "  make lint      go vet + gofmt 检查"
 	@echo "  make run       本地启动控制面（需先 make up && make migrate）"
@@ -31,6 +33,14 @@ build:
 
 test:
 	$(GO) test -race -count=1 ./...
+
+# 覆盖率门禁：真实 PG 上的用例会在没有库时自动跳过，覆盖率随之下降并被拦住，
+# 所以本地跑这个目标前先确认 postgres 已起（make up 或本机服务）。
+cover:
+	bash scripts/cover.sh
+
+cover-html:
+	COVER_HTML=1 bash scripts/cover.sh
 
 # 真实引擎集成测试：会起 postgres/mysql/clickhouse，验完即止不会清理数据卷。
 test-integration:

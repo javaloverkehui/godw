@@ -91,6 +91,8 @@ func Scaffold(opt ScaffoldOptions) (ScaffoldResult, error) {
 
 	// 列：上游列 + 层标准列，按引擎做类型归一。
 	seen := map[string]bool{}
+	// sourceKey 是源表 DDL 里声明的主键，来自元数据采集，不靠列名猜。
+	var sourceKey []string
 	for _, c := range opt.Upstream {
 		nc := model.ColumnSpec{
 			Name:     sanitizeIdent(c.Name),
@@ -103,6 +105,10 @@ func Scaffold(opt ScaffoldOptions) (ScaffoldResult, error) {
 			continue
 		}
 		seen[nc.Name] = true
+		// 列名归一后可能被改名，主键要跟着换成归一后的名字，否则 YAML 引用不到列。
+		if c.PrimaryKey {
+			sourceKey = append(sourceKey, nc.Name)
+		}
 		spec.Columns = append(spec.Columns, nc)
 	}
 
@@ -136,20 +142,25 @@ func Scaffold(opt ScaffoldOptions) (ScaffoldResult, error) {
 		seen[t.Name] = true
 	}
 
-	// 主键推断：优先显式指定，其次找「名字像 ID 且非空」的列。
+	// 主键优先级：显式指定 > 源表声明的主键 > 列名启发式。
+	// 源表 DDL 已经写了 PRIMARY KEY，就不该让用户再回答一次。
 	spec.PrimaryKey = opt.PrimaryKey
+	if len(spec.PrimaryKey) == 0 {
+		spec.PrimaryKey = sourceKey
+	}
 	if len(spec.PrimaryKey) == 0 {
 		spec.PrimaryKey = guessKey(spec.Columns)
 	}
-	if len(spec.PrimaryKey) == 0 {
-		warnings = append(warnings, "未能推断主键，请在发布前手动指定 primary_key（否则无法幂等写入）")
-	}
 
 	if layer == string(model.LayerODS) {
-		// ODS 保原始，不加主键约束，避免源表重复键导致入库失败。
+		// ODS 保原始，不加主键约束，避免源表重复键导致入库失败；
+		// 也正因如此这里不告警——ODS 本来就不要求主键（规则里 RequireKey 为 false）。
 		spec.PrimaryKey = nil
 	} else {
 		spec.UniqueKey = append([]string{}, spec.PrimaryKey...)
+		if len(spec.PrimaryKey) == 0 {
+			warnings = append(warnings, "未能推断主键，请在发布前手动指定 primary_key（否则无法幂等写入）")
+		}
 	}
 
 	spec.Materialization = "table"
@@ -173,9 +184,25 @@ func Scaffold(opt ScaffoldOptions) (ScaffoldResult, error) {
 	return ScaffoldResult{
 		Spec:          spec,
 		YAML:          yamlText,
-		KeyCandidates: guessKeyCandidates(spec.Columns),
+		KeyCandidates: keyCandidates(sourceKey, spec.Columns),
 		Warnings:      warnings,
 	}, nil
+}
+
+// keyCandidates 把源表主键排在候选最前：那不是猜的，是源表已经声明的事实。
+func keyCandidates(source []string, cols []model.ColumnSpec) []string {
+	out := append([]string{}, source...)
+	seen := make(map[string]bool, len(out))
+	for _, k := range out {
+		seen[k] = true
+	}
+	for _, k := range guessKeyCandidates(cols) {
+		if !seen[k] {
+			seen[k] = true
+			out = append(out, k)
+		}
+	}
+	return out
 }
 
 // guessKey 从列名推断主键：<实体>_id / id / <实体>_key，且非空。

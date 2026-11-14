@@ -478,6 +478,56 @@ func TestScaffold(t *testing.T) {
 	}
 }
 
+// 源表 DDL 已经写了 PRIMARY KEY，脚手架就该直接用它，
+// 而不是拿列名启发式盖过去（ref_id 的列名更像主键，但源表主键是 contract_sn + tenant_id）。
+func TestScaffoldUsesSourcePrimaryKey(t *testing.T) {
+	res, err := Scaffold(ScaffoldOptions{
+		Layer: "dwd", Name: "contract", Datasource: "dw", Engine: "mysql",
+		Upstream: []model.ColumnSpec{
+			{Name: "ref_id", Type: "bigint"},
+			{Name: "contract_sn", Type: "varchar(64)", PrimaryKey: true},
+			{Name: "tenant_id", Type: "bigint", PrimaryKey: true},
+			{Name: "amount", Type: "decimal(18,2)"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(res.Spec.PrimaryKey, ","); got != "contract_sn,tenant_id" {
+		t.Fatalf("应采用源表主键 contract_sn,tenant_id，实际 %v", res.Spec.PrimaryKey)
+	}
+	if got := strings.Join(res.Spec.UniqueKey, ","); got != "contract_sn,tenant_id" {
+		t.Fatalf("unique_key 应与主键一致，实际 %v", res.Spec.UniqueKey)
+	}
+	if len(res.KeyCandidates) == 0 || res.KeyCandidates[0] != "contract_sn" {
+		t.Fatalf("源表主键应排在候选首位，实际 %v", res.KeyCandidates)
+	}
+	if len(res.Warnings) != 0 {
+		t.Fatalf("有源表主键时不该再告警: %v", res.Warnings)
+	}
+}
+
+// ODS 保原始、不建主键约束，所以「没有主键」对 ODS 不是问题，不该告警。
+// 平台自己注入的审计列（_godw_ 前缀）也不该逼用户去点 allow_lossy。
+func TestScaffoldODSHasNoKeyNoise(t *testing.T) {
+	res, err := Scaffold(ScaffoldOptions{
+		Layer: "ods", Name: "contract", Datasource: "dw", Engine: "mysql",
+		Upstream: []model.ColumnSpec{
+			{Name: "contract_no", Type: "varchar(64)", PrimaryKey: true},
+			{Name: "amount", Type: "decimal(18,2)"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Spec.PrimaryKey) != 0 {
+		t.Fatalf("ODS 不应带主键约束，实际 %v", res.Spec.PrimaryKey)
+	}
+	if len(res.Warnings) != 0 {
+		t.Fatalf("ODS 脚手架不应产生告警: %v", res.Warnings)
+	}
+}
+
 // T0310：字典导出包含类型、口径、上下游。
 func TestDictionary(t *testing.T) {
 	specs := []model.ModelSpec{

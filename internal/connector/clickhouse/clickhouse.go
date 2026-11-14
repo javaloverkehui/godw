@@ -114,7 +114,29 @@ func (c *Conn) DescribeTable(ctx context.Context, schema, table string) (*connec
 	if len(t.Columns) == 0 {
 		return nil, errs.New(errs.CodeNotFound, "表不存在: "+schema+"."+table)
 	}
+	// ClickHouse 没有约束式主键，「主键」是排序键的前缀，system.tables 里是逗号分隔串。
+	t.PrimaryKey = c.primaryKey(ctx, schema, table)
 	return t, nil
+}
+
+func (c *Conn) primaryKey(ctx context.Context, schema, table string) []string {
+	q := fmt.Sprintf(`SELECT primary_key FROM system.tables WHERE database='%s' AND name='%s'`, esc(schema), esc(table))
+	res, err := c.query(ctx, q)
+	if err != nil || len(res.Data) == 0 {
+		return nil
+	}
+	raw := strings.TrimSpace(fmt.Sprint(res.Data[0]["primary_key"]))
+	if raw == "" {
+		return nil
+	}
+	var out []string
+	for _, p := range strings.Split(raw, ",") {
+		// 排序键允许写表达式，例如 toDate(ts)；只有裸列名才可能是模型主键。
+		if p = strings.TrimSpace(p); p != "" && !strings.ContainsAny(p, "()") {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func (c *Conn) Query(ctx context.Context, sqlText string, args ...any) (connector.Rows, error) {

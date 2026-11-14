@@ -173,7 +173,13 @@ func MapType(engine string, t TypeSpec) (TypeMapping, error) {
 			out.Lossy = true
 			out.Note = "数组元素有损: " + sub.Note
 		}
-		out.Physical = fmt.Sprintf(base.Physical, sub.Physical)
+		// 不是所有引擎的数组物理类型都带元素占位符：MySQL 直接退化为 json，
+		// 无条件 Sprintf 会拼出 "json%!(EXTRA string=...)" 这种非法类型。
+		if strings.Contains(base.Physical, "%s") {
+			out.Physical = fmt.Sprintf(base.Physical, sub.Physical)
+		} else {
+			out.Physical = base.Physical
+		}
 		return out, nil
 	}
 

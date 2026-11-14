@@ -202,7 +202,7 @@ async function selectTable(view, id) {
       <thead><tr><th>#</th><th>字段</th><th>类型</th><th>可空</th><th>注释</th><th>默认值</th></tr></thead>
       <tbody>${(t.columns || []).map((c, i) => `<tr>
         <td class="mute">${i + 1}</td>
-        <td class="mono"><b>${esc(c.name)}</b></td>
+        <td class="mono"><b>${esc(c.name)}</b>${c.primaryKey ? ' <span class="pill">PK</span>' : ''}</td>
         <td class="mono small">${esc(c.type)}</td>
         <td>${c.nullable ? '<span class="mute">是</span>' : '<span class="dim">否</span>'}</td>
         <td class="wrap dim small">${esc(c.comment || '—')}</td>
@@ -254,8 +254,8 @@ async function genODS(t) {
   }
   modal('生成 ODS 模型', `
     <div class="hint" style="margin-bottom:10px">
-      已根据表结构推断主键与标准列。${(res.keyCandidates || []).length
-        ? '候选主键：<b class="mono">' + res.keyCandidates.map(esc).join(', ') + '</b>' : '未推断出主键，请手工指定。'}
+      已按源表结构生成列；主键取自源表声明，源表没有主键时才按列名推断。${(res.keyCandidates || []).length
+        ? '候选主键：<b class="mono">' + res.keyCandidates.map(esc).join(', ') + '</b>' : '源表未声明主键，请手工指定。'}
     </div>
     ${(res.warnings || []).length ? `<div class="err-box" style="margin-bottom:12px">${res.warnings.map(esc).join('\n')}</div>` : ''}
     <textarea id="gen-yaml" rows="16" style="font-family:var(--mono);font-size:12px">${esc(res.yaml)}</textarea>
