@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>任务 E07-E08 · GoDW 文档</title><style>
+:root{--bg:#0e1116;--bg-elev:#151a21;--line:#232b36;--text:#e6edf3;--dim:#9aa7b4;--mute:#6b7887;--accent:#4f8cff}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+.layout{display:grid;grid-template-columns:250px 1fr;min-height:100vh}
+aside{border-right:1px solid var(--line);padding:22px 0;position:sticky;top:0;height:100vh;overflow:auto}
+.brand{padding:0 20px 18px;font-weight:600;font-size:15px}
+.brand small{display:block;color:var(--mute);font-weight:400;font-size:10.5px;letter-spacing:.8px;text-transform:uppercase;margin-top:3px}
+nav a{display:block;padding:7px 20px;color:var(--dim);text-decoration:none;font-size:13px;border-left:2px solid transparent}
+nav a:hover{background:var(--bg-elev);color:var(--text)}
+nav a.active{color:#cfe0ff;border-left-color:var(--accent);background:#1d2836}
+main{padding:34px 44px 80px;max-width:900px}
+h1{font-size:26px;margin:0 0 18px}
+h2{font-size:19px;margin:32px 0 12px;padding-bottom:7px;border-bottom:1px solid var(--line)}
+h3{font-size:15.5px;margin:24px 0 8px}
+p,li{color:#cdd7e1}
+a{color:var(--accent)}
+code{background:#1b222b;padding:2px 5px;border-radius:4px;font-size:12.5px;font-family:ui-monospace,Menlo,Consolas,monospace}
+pre{background:#0b0e13;border:1px solid var(--line);border-radius:8px;padding:14px 16px;overflow:auto}
+pre code{background:none;padding:0}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:13px}
+th{text-align:left;background:#1b222b;padding:8px 11px;border:1px solid var(--line);font-weight:600}
+td{padding:8px 11px;border:1px solid var(--line)}
+blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);background:#141b24;color:var(--dim)}
+img{max-width:100%;border-radius:8px;border:1px solid var(--line)}
+</style></head>
+<body><div class="layout">
+<aside><div class="brand">GoDW<small>Documentation</small></div><nav><a href="index.html" class="">概览</a><a href="architecture.html" class="">总体架构</a><a href="metadata.html" class="">元数据模型</a><a href="interfaces.html" class="">核心抽象与接口</a><a href="ai.html" class="">AI 协作与验收</a><a href="unattended.html" class="">无人值守执行</a><a href="tasks-e01.html" class="">任务 E01-E02</a><a href="tasks-e03.html" class="">任务 E03-E04</a><a href="tasks-e05.html" class="">任务 E05-E06</a><a href="tasks-e07.html" class="active">任务 E07-E08</a><a href="tasks-e09.html" class="">任务 E09-E10</a><a href="perf.html" class="">性能与容量</a><a href="ops.html" class="">运维手册</a><a href="plugin.html" class="">插件开发指南</a><a href="upgrade.html" class="">升级与兼容</a><a href="contrib.html" class="">贡献指南</a><a href="changelog.html" class="">变更日志</a></nav></aside>
+<main><h1 id="e07-bi-e08">E07 · 语义层与 BI ｜ E08 · 治理与安全</h1>
+<blockquote>
+<p>这一层决定「业务能不能自己用」。核心不是图表多好看，而是<strong>指标口径唯一、权限可下推、查询不出事故</strong>。</p>
+</blockquote>
+<hr />
+<h2 id="e07-bi16">E07 语义层与 BI（16 人日）</h2>
+<h4 id="t0701-p0-2d">T0701 · 数据集定义  <code>P0</code> <code>2d</code></h4>
+<p><strong>目标</strong>：把物理表封装成业务能理解的「主题」。
+<strong>要点</strong>
+- <code>dataset = base_model + joins + dimensions + measures + filters</code>；<code>joins</code> 支持 <code>left/inner</code>，必须有显式 <code>on</code> 条件，禁止笛卡尔积。
+- 维度：字段 + 显示名 + 类型（<code>categorical/time/number</code>）+ 是否可作为筛选；时间维度自动派生 <code>day/week/month/quarter/year</code> 粒度。
+- 度量：<code>agg(sum/count/count_distinct/avg/max/min)</code> + 表达式 + 格式（金额/百分比/整数）+ 单位。
+- 数据集只能引用 <code>dwd/dws/ads</code>，引用 <code>ods</code> 直接拒绝（保护原始层）。
+<strong>产出</strong>：<code>internal/semantic/dataset.go</code>、校验器。
+<strong>验收</strong>：引用 ods 被拒；join 无 on 条件被拒；维度派生粒度齐全。</p>
+<h4 id="t0702-p0-2d">T0702 · 指标口径管理  <code>P0</code> <code>2d</code></h4>
+<p><strong>目标</strong>：同一个「GMV」全公司只有一个算法。
+<strong>要点</strong>
+- 指标 = 名称（唯一）+ 所属 dataset + 表达式 + 聚合 + 格式化 + 业务口径说明 + 负责人。
+- 同名指标不允许重复定义；改名保留别名映射，避免看板失效。
+- 指标变更走版本：<code>metric_version</code> 记录表达式历史，看板绑定版本，避免口径漂移导致历史看板变化。
+- 支持指标血缘：指标 → dataset → 模型 → 源表，可在血缘图中展示。
+<strong>产出</strong>：<code>internal/semantic/metric.go</code>、版本表。
+<strong>验收</strong>：重复指标名返回 409；改口径后旧看板仍按旧版本渲染；血缘可查。</p>
+<h4 id="t0703-p0-3d">T0703 · 查询构建器  <code>P0</code> <code>3d</code></h4>
+<p><strong>目标</strong>：把「维度+度量+筛选」翻译成正确 SQL。
+<strong>要点</strong>
+- 生成结构：<code>SELECT dims, aggs FROM base [joins] WHERE filters AND rls GROUP BY dims [HAVING] ORDER BY ... LIMIT ...</code>。
+- 时间粒度用 <code>Dialect.DateTrunc</code>；同环比用窗口函数（<code>LAG</code>）或自连接，优先窗口（引擎支持时）。
+- 空结果处理：无 GROUP BY 的聚合查询必须返回一行（<code>SUM</code> 为 NULL 时转 0，按指标配置）。
+- 所有标识符走 <code>QuoteIdent</code>；筛选值参数化，禁止拼接。
+- 生成 SQL 带注释标明来源 dataset/metric，便于排查。
+<strong>产出</strong>：<code>internal/semantic/querybuilder.go</code>、golden 测试。
+<strong>验收</strong>：20 组查询快照正确；同环比在四引擎结果一致；SQL 注入用例（值含 <code>' OR 1=1</code>）不生效。</p>
+<h4 id="t0704-api-p0-2d">T0704 · 查询 API 与结果协议  <code>P0</code> <code>2d</code></h4>
+<p><strong>目标</strong>：前端拿到就能直接画图。
+<strong>要点</strong>
+- 请求：<code>{dimensions, measures, filters, timeRange, granularity, orderBy, limit, offset}</code>；响应：<code>{columns:[{name,label,type,format}], rows:[...], total, sql, took}</code>。
+- 行数上限默认 10000，超出返回截断标记；导出走独立接口（流式）。
+- 支持 <code>debug=true</code> 返回生成的 SQL（仅 admin）。
+- 查询超时默认 30s，可配；超时返回 <code>50003 query timeout</code> 而非 500。
+- 慢查询（&gt; 5s）记录到 <code>slow_query</code> 表并在运维页可见。
+<strong>产出</strong>：<code>internal/api/http/dataset_query.go</code>。
+<strong>验收</strong>：返回列元数据完整；超过上限有截断标记；超时错误码正确。</p>
+<h4 id="t0705-p0-2d">T0705 · 行级权限与列级脱敏  <code>P0</code> <code>2d</code></h4>
+<p><strong>目标</strong>：不同人看到不同数据。
+<strong>要点</strong>
+- RLS 规则：<code>{dataset, column, operator, valueFrom: user.attr|static}</code>，编译为 SQL 条件注入 <code>WHERE</code>，必须在聚合前生效。
+- 用户属性来自 JWT claims（<code>region</code>、<code>dept</code>、<code>level</code>）；无匹配规则时默认拒绝（fail-closed）而非放行。
+- 列级脱敏：按 <code>column.pii</code> 与角色决定 <code>mask/replace/hide</code>；在 SELECT 列表就替换，不能让前端拿到明文。
+- 所有规则变更审计；提供「预览某用户将看到的 SQL」调试接口。
+<strong>产出</strong>：<code>internal/auth/rls.go</code>、mask 函数。
+<strong>验收</strong>：region=华东 的用户只能查到本区域数据；high PII 列对 viewer 角色返回 <code>***</code>；规则缺失时拒绝查询。</p>
+<h4 id="t0706-p1-2d">T0706 · 缓存与预聚合  <code>P1</code> <code>2d</code></h4>
+<p><strong>目标</strong>：看板打开要快，别每次都扫全表。
+<strong>要点</strong>
+- 结果缓存 key = <code>hash(dataset + 规范化后的查询 + 用户权限指纹)</code>；TTL 按 dataset 配置（默认 5 分钟）。
+- 缓存失效：模型发布/补数完成时按 <code>dataset</code> 维度失效；也支持手动清空。
+- 预聚合：对高频看板配置「定时物化到 ADS」；查询命中预聚合表时自动改写 SQL。
+- 缓存后端抽象（内存/Redis），单机默认内存 LRU（上限 512MB）。
+<strong>产出</strong>：<code>internal/semantic/cache.go</code>、预聚合配置。
+<strong>验收</strong>：二次查询 p95 降低 80%；权限不同的两个用户不共享缓存；发布后缓存失效。</p>
+<h4 id="t0707-p0-2d">T0707 · 图表配置模型  <code>P0</code> <code>2d</code></h4>
+<p><strong>目标</strong>：图表配置可存、可迁移、可复用。
+<strong>要点</strong>
+- 配置：<code>{type, dataset, dimensions, measures, encoding:{x,y,series,size,color}, style, filters}</code>。
+- 支持类型：折线、柱状、堆叠柱、饼图、环形、指标卡、表格、散点、地图（按需）。
+- 编码映射校验：如饼图只能 1 维度 + 1 度量，校验失败给出明确提示。
+- 配置版本化，看板引用图表 ID，修改图表需确认是否影响引用它的看板。
+<strong>产出</strong>：<code>internal/bi/chart.go</code>、schema。
+<strong>验收</strong>：非法编码组合被拒；同一图表被 2 个看板引用时提示影响面。</p>
+<h4 id="t0708-p1-2d">T0708 · 看板模型  <code>P1</code> <code>2d</code></h4>
+<p><strong>目标</strong>：拖拽布局、全局筛选、联动。
+<strong>要点</strong>
+- 栅格布局（24 列），每个图表存 <code>{x,y,w,h}</code>；响应式断点 3 档。
+- 全局筛选器绑定到多个图表的字段；联动：点击某图表的维度值 → 其他图表按该值过滤。
+- 看板级参数（如 <code>bizdate</code>）与 URL 同步，便于分享具体状态。
+- 保存草稿/发布两态；发布后生成快照，回滚可用。
+<strong>产出</strong>：<code>internal/bi/dashboard.go</code>、布局校验。
+<strong>验收</strong>：布局越界/重叠校验；URL 带参数打开后筛选生效；发布快照可回滚。</p>
+<h4 id="t0709-p1-2d">T0709 · 导出与订阅  <code>P1</code> <code>2d</code></h4>
+<p><strong>目标</strong>：数据能带走、能定时送达。
+<strong>要点</strong>
+- 导出 CSV/Excel：流式写（不load全量到内存），大结果集走对象存储 + 预签名 URL。
+- 订阅：按 cron 生成快照（图片或 Excel）→ 邮件/webhook 推送；失败重试 3 次。
+- 导出记录审计（谁、何时、导出了什么、多少行），high 级数据导出需审批（可配置）。
+- 文件名规范：<code>{dashboard}_{yyyyMMddHHmm}.xlsx</code>。
+<strong>产出</strong>：<code>internal/bi/export.go</code>、<code>subscription.go</code>。
+<strong>验收</strong>：100 万行导出内存增长 &lt; 200MB；订阅按时送达；导出记录可查。</p>
+<h4 id="t0710-p2-15d">T0710 · 分享与嵌入  <code>P2</code> <code>1.5d</code></h4>
+<p><strong>目标</strong>：看板能发给不用登录的人。
+<strong>要点</strong>
+- 只读分享：生成 <code>share_token</code>（随机 32 位），可设有效期与密码；只读、不可导出（可配）。
+- iframe 嵌入：提供 embed 路由与 <code>X-Frame-Options</code> 白名单。
+- 分享链接的查询强制走该看板绑定的数据集与 RLS 的「匿名策略」，不允许越权。
+- 支持随时吊销 token。
+<strong>产出</strong>：分享 API、embed 路由。
+<strong>验收</strong>：吊销后链接立即失效；匿名访问不能查到未授权数据；iframe 在允许域名外被拒。</p>
+<hr />
+<h2 id="e08-10">E08 治理与安全（10 人日）</h2>
+<h4 id="t0801-p0-2d">T0801 · 用户、角色与权限  <code>P0</code> <code>2d</code></h4>
+<p><strong>目标</strong>：谁能看什么、改什么，说清楚。
+<strong>要点</strong>
+- 内置角色：<code>owner</code>（工作空间全权）、<code>admin</code>（系统配置）、<code>editor</code>（建模/编排）、<code>runner</code>（触发/重跑）、<code>viewer</code>（只读）。
+- 资源级 ACL：workspace / datasource / model / pipeline / dashboard 五类资源，支持「角色继承 + 单资源授权」。
+- Casbin model：<code>sub, dom(workspace), obj(resource), act</code>；策略存库，支持热加载。
+- 权限校验中间件在路由层完成，service 层再做一次资源归属校验（防越权 ID 猜测）。
+<strong>产出</strong>：<code>internal/auth/rbac/*</code>、casbin model、策略种子。
+<strong>验收</strong>：viewer 调用发布接口返回 403；跨 workspace 访问返回 404（不泄露存在性）。</p>
+<h4 id="t0802-p0-15d">T0802 · 认证与会话  <code>P0</code> <code>1.5d</code></h4>
+<p><strong>目标</strong>：能登录、能接企业账号。
+<strong>要点</strong>
+- 本地账号：bcrypt（cost 12）+ 登录失败锁定（5 次 / 15 分钟）。
+- JWT：HS256，<code>access_token</code> 2h，<code>refresh_token</code> 7d；登出用黑名单（Redis 或 DB）。
+- 预留 OIDC：配置 <code>issuer/client_id/secret</code>，实现授权码流程；LDAP 作为备选。
+- 密码策略：长度 ≥ 10、含大小写数字；首次登录强制改密（可配）。
+<strong>产出</strong>：<code>internal/auth/*</code>、登录/刷新/登出 API。
+<strong>验收</strong>：错误密码 5 次后锁定；token 过期返回 401 且可刷新；OIDC 登录可跑通 mock server。</p>
+<h4 id="t0803-p0-15d">T0803 · 数据分级与脱敏  <code>P0</code> <code>1.5d</code></h4>
+<p><strong>目标</strong>：敏感数据有标记、有策略、有执行。
+<strong>要点</strong>
+- 分级：<code>public/internal/confidential/secret</code>，映射到列的 <code>pii</code> 等级。
+- 脱敏策略：<code>mask</code>（保留首尾）、<code>hash</code>（加盐 SHA256）、<code>replace</code>（固定值）、<code>hide</code>（列不下发）。
+- 策略绑定「角色 + 资源」，在查询构建与导出两处同时生效（漏一处等于没做）。
+- 提供「脱敏预览」：给定角色与列，展示脱敏结果样例。
+<strong>产出</strong>：<code>internal/auth/mask.go</code>、策略配置。
+<strong>验收</strong>：同一列对 admin 明文、对 viewer 脱敏；导出文件同样脱敏；预览结果与实际一致。</p>
+<h4 id="t0804-p0-15d">T0804 · 审计日志  <code>P0</code> <code>1.5d</code></h4>
+<p><strong>目标</strong>：关键操作可追责。
+<strong>要点</strong>
+- 记录范围：登录/登出、增删改、发布/回滚、触发/重跑/终止、权限变更、导出、分享。
+- 字段：<code>actor, action, resource_type, resource_id, before, after, ip, ua, request_id, ts</code>。
+- append-only：只允许插入，DB 层用独立账号（无 UPDATE/DELETE 权限）；可选哈希链（<code>prev_hash</code>）防篡改。
+- 查询：按人/资源/时间/动作过滤，支持导出。
+<strong>产出</strong>：<code>internal/auth/audit.go</code>、审计查询 API。
+<strong>验收</strong>：发布模型产生一条含 before/after 的记录；应用账号无法删除审计行；查询过滤准确。</p>
+<h4 id="t0805-p1-15d">T0805 · 多租户隔离  <code>P1</code> <code>1.5d</code></h4>
+<p><strong>目标</strong>：一套部署服务多个团队，数据不串。
+<strong>要点</strong>
+- 隔离模型：共享库 + <code>workspace_id</code> 行级隔离（默认）；预留「独立 schema」模式给大客户。
+- 所有 repo 方法强制带 <code>workspace_id</code>（sqlc 查询模板统一注入），漏带由测试拦截（查询审计：扫描所有 SQL 是否含 workspace 条件）。
+- 资源配额：每 workspace 限制数据源数、管道数、日任务数、并发数。
+- 跨租户引用（A 的管道写 B 的模型）直接拒绝。
+<strong>产出</strong>：隔离规范、配额校验、审计测试。
+<strong>验收</strong>：构造跨租户请求返回 404；超配额创建返回 429；静态扫描无漏带 workspace 的查询。</p>
+<h4 id="t0806-p1-1d">T0806 · 密钥与凭据管理  <code>P1</code> <code>1d</code></h4>
+<p><strong>目标</strong>：密码不泄露、可轮换。
+<strong>要点</strong>
+- 主密钥来自环境变量或 KMS；数据源密码 AES-256-GCM 加密，<code>secret.key_version</code> 支持轮换（新写用新版本，旧数据按需重加密）。
+- 日志/错误/审计中禁止出现密码与 token（正则过滤 + 单测）。
+- 提供 <code>godw secret rotate</code> 命令批量重加密。
+<strong>产出</strong>：<code>internal/auth/secret/*</code>、轮换命令。
+<strong>验收</strong>：全库搜索无明文密码；轮换后旧数据仍可解密；日志脱敏测试通过。</p>
+<h4 id="t0807-p2-1d">T0807 · 合规与数据生命周期  <code>P2</code> <code>1d</code></h4>
+<p><strong>目标</strong>：满足基本的合规要求。
+<strong>要点</strong>
+- 数据保留策略：按模型配置保留期，到期由维护任务归档/删除，并记录审计。
+- 导出审批：high 级数据导出需审批流（可先做「申请-批准」两态）。
+- 删除权：支持按主键删除指定用户数据（生成删除任务并留痕）。
+<strong>产出</strong>：保留策略配置、删除任务。
+<strong>验收</strong>：到期数据被归档且审计可查；未审批导出被拒。</p>
+<h4 id="t0808-p2-15d">T0808 · 用量与成本核算  <code>P2</code> <code>1.5d</code></h4>
+<p><strong>目标</strong>：知道钱花在哪。
+<strong>要点</strong>
+- 采集：每任务扫描字节、CPU 时间、写入行数；存储按表大小日快照。
+- 归集：按 workspace / pipeline / model 聚合，支持按天/周/月查看。
+- 成本单价可配（元/GB 扫描、元/GB 存储），输出估算账单。
+- 提供 Top N 消耗排行，辅助优化。
+<strong>产出</strong>：<code>internal/obs/usage/*</code>、报表 API。
+<strong>验收</strong>：跑一条管道后用量可见；Top N 排行正确；月度汇总与明细一致。</p></main>
+</div></body></html>

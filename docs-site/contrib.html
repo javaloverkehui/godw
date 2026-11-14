@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>贡献指南 · GoDW 文档</title><style>
+:root{--bg:#0e1116;--bg-elev:#151a21;--line:#232b36;--text:#e6edf3;--dim:#9aa7b4;--mute:#6b7887;--accent:#4f8cff}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+.layout{display:grid;grid-template-columns:250px 1fr;min-height:100vh}
+aside{border-right:1px solid var(--line);padding:22px 0;position:sticky;top:0;height:100vh;overflow:auto}
+.brand{padding:0 20px 18px;font-weight:600;font-size:15px}
+.brand small{display:block;color:var(--mute);font-weight:400;font-size:10.5px;letter-spacing:.8px;text-transform:uppercase;margin-top:3px}
+nav a{display:block;padding:7px 20px;color:var(--dim);text-decoration:none;font-size:13px;border-left:2px solid transparent}
+nav a:hover{background:var(--bg-elev);color:var(--text)}
+nav a.active{color:#cfe0ff;border-left-color:var(--accent);background:#1d2836}
+main{padding:34px 44px 80px;max-width:900px}
+h1{font-size:26px;margin:0 0 18px}
+h2{font-size:19px;margin:32px 0 12px;padding-bottom:7px;border-bottom:1px solid var(--line)}
+h3{font-size:15.5px;margin:24px 0 8px}
+p,li{color:#cdd7e1}
+a{color:var(--accent)}
+code{background:#1b222b;padding:2px 5px;border-radius:4px;font-size:12.5px;font-family:ui-monospace,Menlo,Consolas,monospace}
+pre{background:#0b0e13;border:1px solid var(--line);border-radius:8px;padding:14px 16px;overflow:auto}
+pre code{background:none;padding:0}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:13px}
+th{text-align:left;background:#1b222b;padding:8px 11px;border:1px solid var(--line);font-weight:600}
+td{padding:8px 11px;border:1px solid var(--line)}
+blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);background:#141b24;color:var(--dim)}
+img{max-width:100%;border-radius:8px;border:1px solid var(--line)}
+</style></head>
+<body><div class="layout">
+<aside><div class="brand">GoDW<small>Documentation</small></div><nav><a href="index.html" class="">概览</a><a href="architecture.html" class="">总体架构</a><a href="metadata.html" class="">元数据模型</a><a href="interfaces.html" class="">核心抽象与接口</a><a href="ai.html" class="">AI 协作与验收</a><a href="unattended.html" class="">无人值守执行</a><a href="tasks-e01.html" class="">任务 E01-E02</a><a href="tasks-e03.html" class="">任务 E03-E04</a><a href="tasks-e05.html" class="">任务 E05-E06</a><a href="tasks-e07.html" class="">任务 E07-E08</a><a href="tasks-e09.html" class="">任务 E09-E10</a><a href="perf.html" class="">性能与容量</a><a href="ops.html" class="">运维手册</a><a href="plugin.html" class="">插件开发指南</a><a href="upgrade.html" class="">升级与兼容</a><a href="contrib.html" class="active">贡献指南</a><a href="changelog.html" class="">变更日志</a></nav></aside>
+<main><h1 id="_1">贡献指南</h1>
+<h2 id="1">1. 开发环境</h2>
+<pre><code class="language-bash"># 需要 Go 1.22+、PostgreSQL 16（或用 docker compose）
+go version
+make up          # 起 PG
+make migrate     # 建表
+make seed        # 灌样例数据
+make run         # 起服务，http://localhost:8080
+</code></pre>
+<p>没有 Docker 时，本机装 PostgreSQL 后：</p>
+<pre><code class="language-bash">createdb godw
+GODW_DB_PASSWORD=postgres GODW_AUTH_JWT_SECRET=dev-secret go run ./cmd/godw-server --config config.dev.yaml
+</code></pre>
+<h2 id="2">2. 提交前必做</h2>
+<pre><code class="language-bash">gofmt -w cmd internal
+go vet ./...
+go test ./...
+godw-cli lint --dir examples     # YAML 定义校验
+</code></pre>
+<p>CI 会跑同样四项，任一失败即拒。</p>
+<h2 id="3">3. 代码约定</h2>
+<h3 id="_2">目录</h3>
+<pre><code>cmd/            可执行入口：server / worker / cli / bench
+internal/       全部业务代码，不对外暴露
+  api/          HTTP 层：路由、中间件、handler
+  meta/         元数据领域：model / repo / service
+  connector/    数据源连接器，每个引擎一个子包
+  dialect/      SQL 方言
+  modelc/       模型编译器（YAML → DDL）
+  pipeline/     管道 DSL、编译、节点执行
+  semantic/     语义层：指标、看板
+  scheduler/    cron 与派发
+  quality/      质量规则
+  lineage/      SQL 解析与血缘
+migrations/     数据库迁移，只增不删
+web/            （预留）独立前端工程
+docs/           设计文档
+examples/       可直接 apply 的样例定义
+</code></pre>
+<h3 id="_3">命名</h3>
+<ul>
+<li>包名小写单词，不用下划线：<code>modelc</code> 而非 <code>model_compile</code></li>
+<li>接口名不加 <code>I</code> 前缀：<code>Connector</code> 而非 <code>IConnector</code></li>
+<li>错误用 <code>errs.New(code, msg)</code>，不要裸 <code>errors.New</code></li>
+<li>日志用 <code>slog</code> 的键值对，键名小写下划线：<code>"node_id"</code></li>
+</ul>
+<h3 id="_4">注释</h3>
+<p>只写「为什么」，不写「是什么」：</p>
+<pre><code class="language-go">// ✅ 幂等键带随机后缀：manual 触发允许重复执行，便于人工调试
+key := fmt.Sprintf(&quot;%s:%s:%s&quot;, pipelineID, bizDate, rand.String(6))
+
+// ❌ 生成幂等键
+key := ...
+</code></pre>
+<p>导出的函数必须有注释，且以函数名开头。</p>
+<h2 id="4">4. 测试要求</h2>
+<table>
+<thead>
+<tr>
+<th>改动类型</th>
+<th>必须补的测试</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>新增纯函数/算法</td>
+<td>表驱动单测，覆盖边界</td>
+</tr>
+<tr>
+<td>新增 API</td>
+<td>至少一个 handler 测试（成功 + 参数错误）</td>
+</tr>
+<tr>
+<td>改 SQL</td>
+<td>在本地 PG 上跑通，且 <code>EXPLAIN</code> 无全表扫描（大表）</td>
+</tr>
+<tr>
+<td>改迁移</td>
+<td><code>migrate --check</code> 在两个版本间往返验证</td>
+</tr>
+<tr>
+<td>改前端</td>
+<td>截图对比，确认布局无回归</td>
+</tr>
+</tbody>
+</table>
+<p>测试文件与实现同目录，<code>_test.go</code> 结尾。集成测试用 <code>-short</code> 跳过。</p>
+<h2 id="5">5. 提交信息</h2>
+<pre><code>&lt;type&gt;(&lt;scope&gt;): &lt;subject&gt;
+
+&lt;body 可选&gt;
+
+&lt;footer 可选&gt;
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>type</th>
+<th>用途</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>feat</code></td>
+<td>新功能</td>
+</tr>
+<tr>
+<td><code>fix</code></td>
+<td>修 bug</td>
+</tr>
+<tr>
+<td><code>refactor</code></td>
+<td>重构，不改行为</td>
+</tr>
+<tr>
+<td><code>perf</code></td>
+<td>性能优化</td>
+</tr>
+<tr>
+<td><code>docs</code></td>
+<td>文档</td>
+</tr>
+<tr>
+<td><code>test</code></td>
+<td>测试</td>
+</tr>
+<tr>
+<td><code>chore</code></td>
+<td>构建、依赖、脚本</td>
+</tr>
+</tbody>
+</table>
+<p>例：</p>
+<pre><code>feat(lineage): 支持 CTE 与子查询的列级血缘
+
+之前 CTE 别名被当成物理表，导致血缘断链。改为在解析时
+把虚拟表输出展开成基表列，无法归属时丢弃而不是猜测。
+
+Closes #42
+</code></pre>
+<h2 id="6-pr">6. 提 PR</h2>
+<ol>
+<li>从 <code>main</code> 切分支：<code>feat/xxx</code> 或 <code>fix/xxx</code></li>
+<li>一个 PR 只做一件事，改动控制在 400 行以内</li>
+<li>描述里写清：<strong>改了什么、为什么、怎么验证</strong></li>
+<li>涉及 UI 的附截图；涉及性能的附压测数据</li>
+<li>等 CI 全绿再请人 review</li>
+</ol>
+<h2 id="7">7. 报告问题</h2>
+<p>请附：</p>
+<ul>
+<li>版本（<code>godw-cli version</code>）</li>
+<li>复现步骤（能贴 YAML 就贴 YAML）</li>
+<li>实际结果 vs 期望结果</li>
+<li>相关日志（带 <code>request_id</code> 最好）</li>
+<li><code>godw-cli doctor</code> 的输出（脱敏后）</li>
+</ul>
+<h2 id="8">8. 安全</h2>
+<p>发现漏洞<strong>不要</strong>开公开 issue。发邮件到 security@example.com，48 小时内会回复。</p></main>
+</div></body></html>

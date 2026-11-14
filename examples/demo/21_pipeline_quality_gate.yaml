@@ -1,0 +1,41 @@
+kind: Pipeline
+name: quality_gate
+description: 质量门禁示例——规则故意失败，用来验证 error 级会拦住整条链路
+timezone: Asia/Shanghai
+params:
+  - name: biz_date
+    type: date
+    required: true
+
+nodes:
+  # 这条管道没有 source 节点：质量校验直接读已落库的 DWD 表。
+  # status 里有 1% 空串（样例数据刻意造的），error 级会让实例失败。
+  # 预期结果：实例状态 failed，而不是「跑完了但数据是脏的」。
+  - id: q_strict
+    type: quality
+    datasource: pg_dw
+    model: dwd_order
+    config:
+      rules:
+        - name: status_enum_strict
+          kind: accepted_values
+          column: status
+          values: [paid, refunded, created]
+          severity: error
+        - name: amount_must_be_positive
+          kind: range
+          column: amount
+          min: 0
+          severity: error
+
+  # 只有上游质量通过才会执行；失败时这行永远跑不到。
+  - id: downstream_marker
+    type: sql
+    depends_on: [q_strict]
+    datasource: pg_dw
+    model: dwd_order
+    write_mode: append
+    sql: |
+      SELECT order_id, user_id, amount, status, is_refunded, dt
+      FROM dwd.dwd_order
+      WHERE dt = ${biz_date} AND 1 = 0

@@ -1,0 +1,10 @@
+kind: Chart
+name: gmv_trend
+title: GMV 走势
+type: line
+dataset: sales_daily
+dimensions: [dt]
+measures: [gmv]
+encoding:
+  x: dt
+  y: gmv

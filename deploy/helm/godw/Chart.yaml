@@ -1,0 +1,9 @@
+apiVersion: v2
+name: godw
+description: GoDW 通用数据仓库系统（控制面 + 数据面 + 内嵌控制台）
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords: [data-warehouse, etl, lineage, bi]
+maintainers:
+  - name: GoDW

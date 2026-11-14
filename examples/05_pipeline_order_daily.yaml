@@ -1,0 +1,114 @@
+kind: Pipeline
+name: order_daily
+description: 订单 ODS → DWD → DWS → ADS 日更链路
+schedule: "0 2 * * *"
+timezone: Asia/Shanghai
+params:
+  - name: biz_date
+    type: date
+    required: true
+    description: 业务日期，默认 T-1
+
+nodes:
+  - id: src_order
+    type: source
+    datasource: pg_dw
+    sql: |
+      SELECT order_id, user_id, amount, status, dt
+      FROM ods."order"
+      WHERE dt = ${biz_date}
+
+  - id: dwd_order
+    type: sql
+    name: 订单明细清洗
+    depends_on: [src_order]
+    datasource: pg_dw
+    model: dwd_order
+    write_mode: upsert
+    sql: |
+      SELECT order_id,
+             user_id,
+             amount,
+             status,
+             (status = 'refunded') AS is_refunded,
+             dt
+      FROM ods."order"
+      WHERE dt = ${biz_date}
+
+  - id: q_dwd_order
+    type: quality
+    depends_on: [dwd_order]
+    model: dwd_order
+    config:
+      rules:
+        - name: order_id_not_null
+          kind: not_null
+          column: order_id
+          severity: error
+        - name: order_id_unique
+          kind: unique
+          column: order_id
+          severity: error
+        - name: amount_non_negative
+          kind: range
+          column: amount
+          min: 0
+          severity: error
+        - name: status_accepted
+          kind: accepted_values
+          column: status
+          values: [paid, refunded, created]
+          severity: warn
+        # 大额异常只告警不拦截：拦下来会让当天整批数据不可见，
+        # 而这类异常通常是「少数几笔」，下游照常出数更有价值。
+        - name: amount_upper_bound
+          kind: range
+          column: amount
+          max: 100000
+          severity: warn
+
+  - id: dws_order_daily
+    type: sql
+    depends_on: [q_dwd_order]
+    datasource: pg_dw
+    model: dws_order_daily
+    write_mode: overwrite_partition
+    sql: |
+      SELECT dt,
+             status,
+             COUNT(*)               AS order_cnt,
+             SUM(amount)            AS gmv,
+             COUNT(DISTINCT user_id) AS user_cnt
+      FROM dwd.dwd_order
+      WHERE dt = ${biz_date}
+      GROUP BY dt, status
+
+  # 买家数必须从明细去重，不能把各状态的 user_cnt 相加（同一用户会重复计数）。
+  - id: ads_order_dashboard
+    type: sql
+    depends_on: [dws_order_daily, dwd_order]
+    datasource: pg_dw
+    model: ads_order_dashboard
+    write_mode: overwrite_partition
+    sql: |
+      WITH agg AS (
+        SELECT dt,
+               SUM(order_cnt) AS total_orders,
+               SUM(gmv)       AS total_gmv,
+               COALESCE(SUM(CASE WHEN status = 'refunded' THEN order_cnt END), 0) AS refund_orders,
+               -- 与退款看板统一成百分数口径（20.31 而不是 0.2031）：
+               -- 同一个名字的指标出现两种量纲，用的人一定会算错一次。
+               COALESCE(ROUND(SUM(CASE WHEN status = 'refunded' THEN order_cnt END) * 100::numeric
+                              / NULLIF(SUM(order_cnt), 0), 2), 0) AS refund_rate
+        FROM dws.dws_order_daily
+        WHERE dt = ${biz_date}
+        GROUP BY dt
+      ),
+      buyers AS (
+        SELECT dt, COUNT(DISTINCT user_id) AS buyer_cnt
+        FROM dwd.dwd_order
+        WHERE dt = ${biz_date}
+        GROUP BY dt
+      )
+      SELECT a.dt, a.total_orders, a.total_gmv, a.refund_orders, a.refund_rate, b.buyer_cnt
+      FROM agg a LEFT JOIN buyers b ON b.dt = a.dt

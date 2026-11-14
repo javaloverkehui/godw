@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>总体架构 · GoDW 文档</title><style>
+:root{--bg:#0e1116;--bg-elev:#151a21;--line:#232b36;--text:#e6edf3;--dim:#9aa7b4;--mute:#6b7887;--accent:#4f8cff}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+.layout{display:grid;grid-template-columns:250px 1fr;min-height:100vh}
+aside{border-right:1px solid var(--line);padding:22px 0;position:sticky;top:0;height:100vh;overflow:auto}
+.brand{padding:0 20px 18px;font-weight:600;font-size:15px}
+.brand small{display:block;color:var(--mute);font-weight:400;font-size:10.5px;letter-spacing:.8px;text-transform:uppercase;margin-top:3px}
+nav a{display:block;padding:7px 20px;color:var(--dim);text-decoration:none;font-size:13px;border-left:2px solid transparent}
+nav a:hover{background:var(--bg-elev);color:var(--text)}
+nav a.active{color:#cfe0ff;border-left-color:var(--accent);background:#1d2836}
+main{padding:34px 44px 80px;max-width:900px}
+h1{font-size:26px;margin:0 0 18px}
+h2{font-size:19px;margin:32px 0 12px;padding-bottom:7px;border-bottom:1px solid var(--line)}
+h3{font-size:15.5px;margin:24px 0 8px}
+p,li{color:#cdd7e1}
+a{color:var(--accent)}
+code{background:#1b222b;padding:2px 5px;border-radius:4px;font-size:12.5px;font-family:ui-monospace,Menlo,Consolas,monospace}
+pre{background:#0b0e13;border:1px solid var(--line);border-radius:8px;padding:14px 16px;overflow:auto}
+pre code{background:none;padding:0}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:13px}
+th{text-align:left;background:#1b222b;padding:8px 11px;border:1px solid var(--line);font-weight:600}
+td{padding:8px 11px;border:1px solid var(--line)}
+blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);background:#141b24;color:var(--dim)}
+img{max-width:100%;border-radius:8px;border:1px solid var(--line)}
+</style></head>
+<body><div class="layout">
+<aside><div class="brand">GoDW<small>Documentation</small></div><nav><a href="index.html" class="">概览</a><a href="architecture.html" class="active">总体架构</a><a href="metadata.html" class="">元数据模型</a><a href="interfaces.html" class="">核心抽象与接口</a><a href="ai.html" class="">AI 协作与验收</a><a href="unattended.html" class="">无人值守执行</a><a href="tasks-e01.html" class="">任务 E01-E02</a><a href="tasks-e03.html" class="">任务 E03-E04</a><a href="tasks-e05.html" class="">任务 E05-E06</a><a href="tasks-e07.html" class="">任务 E07-E08</a><a href="tasks-e09.html" class="">任务 E09-E10</a><a href="perf.html" class="">性能与容量</a><a href="ops.html" class="">运维手册</a><a href="plugin.html" class="">插件开发指南</a><a href="upgrade.html" class="">升级与兼容</a><a href="contrib.html" class="">贡献指南</a><a href="changelog.html" class="">变更日志</a></nav></aside>
+<main><h1 id="01">01 · 总体架构</h1>
+<h2 id="1">1. 分层视图</h2>
+<pre><code>┌────────────────────────── Web / CLI / OpenAPI / SDK ──────────────────────────┐
+│ 模型设计 · 管道编排 · 运维中心 · 血缘 · 质量 · BI 看板 · 数据源 · 权限设置     │
+└──────────────────────────────────┬────────────────────────────────────────────┘
+                                   │ REST + SSE
+┌──────────────────────────────────▼────────────────────────────────────────────┐
+│                      Control Plane  (godw-server)                              │
+│                                                                                │
+│  API 层    鉴权/RBAC   审计   限流                                             │
+│  ─────────────────────────────────────────────────────────────                │
+│  元数据服务     模型编译器     管道编译器     语义层/查询构建器                │
+│  调度器         依赖解析       分发器         补数引擎                         │
+│  血缘服务       质量服务       告警服务       指标服务                         │
+└───────┬───────────────────────────────────────────────────┬────────────────────┘
+        │ PostgreSQL 16                                     │ S3/MinIO
+        │ 元数据 / 实例队列 / 日志索引 / 审计                │ 日志归档 / 导出文件
+┌───────▼───────────────────────────────────────────────────▼────────────────────┐
+│                      Data Plane  (godw-worker × N)                             │
+│                                                                                │
+│  Task Executor ─┬─ SQL Runner ────── 连接池 + 方言 + 事务                      │
+│                 ├─ Shell Runner ──── 受控命令 + 超时 + 输出捕获                │
+│                 ├─ HTTP Runner ───── 回调外部系统                              │
+│                 ├─ Container Runner ─ 隔离执行自定义脚本（可选）               │
+│                 └─ SubPipeline ───── 嵌套管道                                  │
+│                                                                                │
+│  Connector Pool：PostgreSQL · MySQL · ClickHouse · Doris · DuckDB · Hive · S3  │
+└───────┬────────────────────────────────────────────────────────────────────────┘
+        │
+        ▼
+   ODS ──▶ DWD ──▶ DWS ──▶ ADS ──▶ 语义层 ──▶ BI
+</code></pre>
+<p><strong>为什么控制面/数据面分离</strong>：调度与元数据是低频高一致性操作，SQL 执行是高频高资源占用操作。分离后可以只扩 worker、把 worker 放到数据所在网络、按资源组隔离（大查询不饿死小任务）。</p>
+<h2 id="2">2. 组件职责</h2>
+<table>
+<thead>
+<tr>
+<th>组件</th>
+<th>职责</th>
+<th>不做什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>api</code></td>
+<td>路由、参数校验、鉴权、审计埋点、SSE</td>
+<td>不写业务逻辑，不直接碰 SQL</td>
+</tr>
+<tr>
+<td><code>meta</code></td>
+<td>元数据 CRUD、版本、发布、乐观锁</td>
+<td>不执行 SQL</td>
+</tr>
+<tr>
+<td><code>model</code></td>
+<td>模型校验、逻辑→物理编译、DDL、schema diff</td>
+<td>不连数据库执行</td>
+</tr>
+<tr>
+<td><code>pipeline</code></td>
+<td>DSL 解析、DAG 校验、参数推导、节点编译</td>
+<td>不调度</td>
+</tr>
+<tr>
+<td><code>sqlx</code></td>
+<td>模板渲染、宏、参数注入、方言函数、SQL 指纹</td>
+<td>不决定何时跑</td>
+</tr>
+<tr>
+<td><code>scheduler</code></td>
+<td>到期生成实例、依赖判定、分发、租约回收</td>
+<td>不执行任务</td>
+</tr>
+<tr>
+<td><code>executor</code></td>
+<td>领取任务、执行、心跳、上报结果与指标</td>
+<td>不做依赖判断</td>
+</tr>
+<tr>
+<td><code>quality</code></td>
+<td>规则编译为 SQL、执行、判定、门禁</td>
+<td>不修数据</td>
+</tr>
+<tr>
+<td><code>lineage</code></td>
+<td>SQL 解析、血缘边、影响分析</td>
+<td>不做可视化渲染</td>
+</tr>
+<tr>
+<td><code>semantic</code></td>
+<td>指标口径、查询构建、RLS 注入、缓存</td>
+<td>不存明细数据</td>
+</tr>
+<tr>
+<td><code>bi</code></td>
+<td>图表/看板配置、导出、订阅</td>
+<td>不做数据加工</td>
+</tr>
+<tr>
+<td><code>auth</code></td>
+<td>认证、RBAC、脱敏策略</td>
+<td>不写业务规则</td>
+</tr>
+</tbody>
+</table>
+<h2 id="3">3. 技术选型</h2>
+<table>
+<thead>
+<tr>
+<th>领域</th>
+<th>选型</th>
+<th>理由</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>语言</td>
+<td>Go 1.22+</td>
+<td>单二进制、并发模型适合调度、部署简单</td>
+</tr>
+<tr>
+<td>HTTP</td>
+<td>Gin 1.10</td>
+<td>生态成熟、中间件丰富、上手快</td>
+</tr>
+<tr>
+<td>配置</td>
+<td>Viper（yaml + env 覆盖）</td>
+<td>多环境配置简单</td>
+</tr>
+<tr>
+<td>元数据库</td>
+<td>PostgreSQL 16</td>
+<td>JSONB 存 DSL、<code>SKIP LOCKED</code> 直接当队列、分区表存实例</td>
+</tr>
+<tr>
+<td>数据访问</td>
+<td>pgx/v5 + sqlc</td>
+<td>类型安全、SQL 显式可控，避免 ORM 魔法</td>
+</tr>
+<tr>
+<td>迁移</td>
+<td>goose</td>
+<td>纯 SQL 迁移，可回滚，CI 友好</td>
+</tr>
+<tr>
+<td>缓存/锁</td>
+<td>Redis 7（可选）</td>
+<td>查询结果缓存、分布式锁；单机模式可关闭</td>
+</tr>
+<tr>
+<td>调度</td>
+<td>自研（PG 队列 + 租约）</td>
+<td>避免引入 Temporal 的运维成本；万级日任务足够</td>
+</tr>
+<tr>
+<td>SQL 解析</td>
+<td><code>pingcap/tidb/parser</code></td>
+<td>支持 MySQL 方言子集，列级血缘可用</td>
+</tr>
+<tr>
+<td>前端</td>
+<td>React 18 + TS + Vite</td>
+<td>主流、组件生态好</td>
+</tr>
+<tr>
+<td>UI</td>
+<td>Ant Design 5</td>
+<td>后台系统开箱即用</td>
+</tr>
+<tr>
+<td>DAG 画布</td>
+<td>AntV X6</td>
+<td>节点/连线/锚点/自动布局能力强于 ReactFlow</td>
+</tr>
+<tr>
+<td>图表</td>
+<td>ECharts 5</td>
+<td>国内图表需求覆盖最全</td>
+</tr>
+<tr>
+<td>编辑器</td>
+<td>Monaco</td>
+<td>SQL 高亮、补全、diff</td>
+</tr>
+<tr>
+<td>状态</td>
+<td>Zustand + TanStack Query</td>
+<td>轻量，服务端状态与 UI 状态分离</td>
+</tr>
+<tr>
+<td>鉴权</td>
+<td>JWT + Casbin</td>
+<td>RBAC 模型可配置</td>
+</tr>
+<tr>
+<td>可观测</td>
+<td>zap + Prometheus + OTel</td>
+<td>日志/指标/链路三件套</td>
+</tr>
+<tr>
+<td>部署</td>
+<td>Docker Compose（单机）/ Helm（K8s）</td>
+<td>先能跑起来，再谈弹性</td>
+</tr>
+</tbody>
+</table>
+<h2 id="4">4. 核心数据流</h2>
+<h3 id="41-design-time">4.1 定义期（Design Time）</h3>
+<pre><code>YAML/UI 输入
+   │
+   ├─ 模型：校验 → 编译 DDL → 存 model + model_version（不可变快照）
+   ├─ 管道：校验 DAG → 解析 ref() 依赖 → 存 pipeline + pipeline_version
+   └─ 指标：绑定 dataset + 表达式 → 存 metric
+</code></pre>
+<p><strong>关键约束</strong>：<code>published</code> 版本不可变。运行中的实例永远绑定某个 <code>version_id</code>，改定义不影响正在跑的任务。</p>
+<h3 id="42-run-time">4.2 运行期（Run Time）</h3>
+<pre><code>cron 到期
+  → 生成 task_instance（唯一键 pipeline+node+bizdate，重复则忽略）
+  → 依赖解析：上游全 SUCCESS → READY
+  → 分发：资源组有空位 → QUEUED
+  → worker 租约领取 → RUNNING（lease_until = now + timeout）
+  → 心跳续租 / 崩溃后回收重派
+  → 执行：渲染 SQL（快照）→ 连接器执行 → 写审计列 → 上报
+  → SUCCESS/FAILED → 唤醒下游 → 指标/告警/质量
+</code></pre>
+<h3 id="43-serving">4.3 服务期（Serving）</h3>
+<pre><code>BI 请求 {dataset, dimensions, measures, filters}
+  → 权限校验 + RLS 条件注入
+  → 查询构建器生成 SQL（带 LIMIT / 时间粒度 / 方言函数）
+  → 缓存命中? 返回 : 执行 → 缓存 → 返回列元数据 + 行数据
+</code></pre>
+<h2 id="5">5. 部署拓扑</h2>
+<p><strong>单机版（开发/小团队）</strong>：<code>godw-server</code> 单进程内含调度器与内嵌 worker，外接一个 PostgreSQL，DuckDB 可作为本地计算引擎。</p>
+<p><strong>标准版（生产）</strong>：</p>
+<pre><code>            ┌────────────┐
+   LB  ────▶│ godw-server │ × 2（无状态，仅一个实例持有调度锁）
+            └─────┬──────┘
+                  │
+            ┌─────▼──────┐        ┌──────────────┐
+            │ PostgreSQL │        │ MinIO / OSS  │
+            └─────┬──────┘        └──────▲───────┘
+                  │                      │
+       ┌──────────▼──────────┐           │
+       │  godw-worker × N    │───────────┘
+       │  按资源组打标签      │
+       └──────────┬──────────┘
+                  │
+        ┌─────────▼──────────┐
+        │ 计算引擎（CH/Doris）│
+        └────────────────────┘
+</code></pre>
+<ul>
+<li>调度器用 PG advisory lock 保证单活，多副本热备。</li>
+<li>worker 按 <code>resource_group</code> 打标签（<code>etl</code> / <code>bi</code> / <code>heavy</code>），任务按组路由。</li>
+</ul>
+<h2 id="6-adr">6. 关键设计决策（ADR 摘要）</h2>
+<table>
+<thead>
+<tr>
+<th>编号</th>
+<th>决策</th>
+<th>备选</th>
+<th>取舍理由</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>ADR-01</td>
+<td>调度队列用 PostgreSQL <code>SKIP LOCKED</code></td>
+<td>Kafka / Redis / Temporal</td>
+<td>少一个中间件；事务内改状态天然一致；万级/日完全够用</td>
+</tr>
+<tr>
+<td>ADR-02</td>
+<td>元数据用 sqlc 而非 GORM</td>
+<td>GORM / ent</td>
+<td>复杂查询（血缘递归、实例分页）用 SQL 更清晰，性能可预期</td>
+</tr>
+<tr>
+<td>ADR-03</td>
+<td>连接器编译期注册而非 Go plugin</td>
+<td><code>plugin</code> 包</td>
+<td>Go plugin 版本/ABI 地狱，编译期注册 + 接口稳定更可靠</td>
+</tr>
+<tr>
+<td>ADR-04</td>
+<td>管道 DSL 用 YAML 而非纯画布 JSON</td>
+<td>画布直存</td>
+<td>YAML 可 review、可 diff、可被 AI 生成；画布是它的可视化视图</td>
+</tr>
+<tr>
+<td>ADR-05</td>
+<td>渲染快照落库</td>
+<td>重跑时重渲染</td>
+<td>防止上游模型变更导致重跑结果不一致，满足审计</td>
+</tr>
+<tr>
+<td>ADR-06</td>
+<td>列级血缘用 AST 解析而非日志推断</td>
+<td>查询日志反解</td>
+<td>定义期即可得血缘，不必等任务跑过；准确率更高</td>
+</tr>
+<tr>
+<td>ADR-07</td>
+<td>前端 DAG 用 X6 而非 ReactFlow</td>
+<td>ReactFlow</td>
+<td>锚点、正交路由、群组、自动布局更适合数据管道</td>
+</tr>
+</tbody>
+</table>
+<h2 id="7">7. 非功能指标</h2>
+<table>
+<thead>
+<tr>
+<th>指标</th>
+<th>目标</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>元数据 API p95</td>
+<td>≤ 200ms（10 万表规模）</td>
+</tr>
+<tr>
+<td>调度吞吐</td>
+<td>≥ 500 实例/分钟（单调度器）</td>
+</tr>
+<tr>
+<td>worker 单实例并发</td>
+<td>32 个 SQL 任务（可配）</td>
+</tr>
+<tr>
+<td>任务状态可见延迟</td>
+<td>≤ 2s（前端轮询/SSE）</td>
+</tr>
+<tr>
+<td>日志首行延迟</td>
+<td>≤ 1s（SSE 推送）</td>
+</tr>
+<tr>
+<td>DAG 画布</td>
+<td>500 节点拖拽 ≥ 40fps</td>
+</tr>
+<tr>
+<td>崩溃恢复</td>
+<td>worker 被杀后 ≤ 60s 自动重派</td>
+</tr>
+<tr>
+<td>单表元数据采集</td>
+<td>1000 表 ≤ 30s</td>
+</tr>
+</tbody>
+</table></main>
+</div></body></html>

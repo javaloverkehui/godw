@@ -1,0 +1,133 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "godw.fullname" . }}-server
+  labels: {{- include "godw.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.server.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "godw.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: server
+  template:
+    metadata:
+      labels:
+        {{- include "godw.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: server
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        fsGroup: 65532
+      containers:
+        - name: server
+          image: {{ include "godw.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/app/godw-server"]
+          args: ["--config", "/etc/godw/config.yaml"]
+          ports:
+            - name: http
+              containerPort: {{ .Values.server.port }}
+          env:
+            - name: GODW_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "godw.dbSecretName" . }}
+                  key: {{ if .Values.postgresql.enabled }}password{{ else }}{{ .Values.externalDatabase.passwordKey }}{{ end }}
+            - name: GODW_AUTH_JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "godw.jwtSecretName" . }}
+                  key: jwt-secret
+            - name: GODW_AUTH_BOOTSTRAP_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "godw.jwtSecretName" . }}
+                  key: bootstrap-pass
+                  optional: true
+          volumeMounts:
+            - name: config
+              mountPath: /etc/godw
+            - name: data
+              mountPath: /data
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources: {{- toYaml .Values.server.resources | nindent 12 }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "godw.fullname" . }}
+        - name: data
+          emptyDir: {}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "godw.fullname" . }}-worker
+  labels: {{- include "godw.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.worker.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "godw.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: worker
+  template:
+    metadata:
+      labels:
+        {{- include "godw.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: worker
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        fsGroup: 65532
+      containers:
+        - name: worker
+          image: {{ include "godw.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/app/godw-worker"]
+          args: ["--config", "/etc/godw/config.yaml", "--concurrency", "4"]
+          env:
+            - name: GODW_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "godw.dbSecretName" . }}
+                  key: {{ if .Values.postgresql.enabled }}password{{ else }}{{ .Values.externalDatabase.passwordKey }}{{ end }}
+            - name: GODW_AUTH_JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "godw.jwtSecretName" . }}
+                  key: jwt-secret
+          volumeMounts:
+            - name: config
+              mountPath: /etc/godw
+            - name: data
+              mountPath: /data
+          livenessProbe:
+            exec:
+              command: ["/app/godw-cli", "doctor", "--config", "/etc/godw/config.yaml"]
+            initialDelaySeconds: 20
+            periodSeconds: 60
+            failureThreshold: 5
+          resources: {{- toYaml .Values.worker.resources | nindent 12 }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "godw.fullname" . }}
+        - name: data
+          {{- if .Values.worker.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "godw.fullname" . }}-worker
+          {{- else }}
+          emptyDir: {}
+          {{- end }}

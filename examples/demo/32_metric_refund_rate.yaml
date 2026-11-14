@@ -1,0 +1,10 @@
+kind: Metric
+name: refund_rate
+displayName: 退款率
+model: ads_refund_dashboard
+agg: avg
+expr: refund_rate
+timeColumn: dt
+dimensions: []
+unit: "%"
+description: 退款笔数占当日订单笔数的比例

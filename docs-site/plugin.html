@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>插件开发指南 · GoDW 文档</title><style>
+:root{--bg:#0e1116;--bg-elev:#151a21;--line:#232b36;--text:#e6edf3;--dim:#9aa7b4;--mute:#6b7887;--accent:#4f8cff}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+.layout{display:grid;grid-template-columns:250px 1fr;min-height:100vh}
+aside{border-right:1px solid var(--line);padding:22px 0;position:sticky;top:0;height:100vh;overflow:auto}
+.brand{padding:0 20px 18px;font-weight:600;font-size:15px}
+.brand small{display:block;color:var(--mute);font-weight:400;font-size:10.5px;letter-spacing:.8px;text-transform:uppercase;margin-top:3px}
+nav a{display:block;padding:7px 20px;color:var(--dim);text-decoration:none;font-size:13px;border-left:2px solid transparent}
+nav a:hover{background:var(--bg-elev);color:var(--text)}
+nav a.active{color:#cfe0ff;border-left-color:var(--accent);background:#1d2836}
+main{padding:34px 44px 80px;max-width:900px}
+h1{font-size:26px;margin:0 0 18px}
+h2{font-size:19px;margin:32px 0 12px;padding-bottom:7px;border-bottom:1px solid var(--line)}
+h3{font-size:15.5px;margin:24px 0 8px}
+p,li{color:#cdd7e1}
+a{color:var(--accent)}
+code{background:#1b222b;padding:2px 5px;border-radius:4px;font-size:12.5px;font-family:ui-monospace,Menlo,Consolas,monospace}
+pre{background:#0b0e13;border:1px solid var(--line);border-radius:8px;padding:14px 16px;overflow:auto}
+pre code{background:none;padding:0}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:13px}
+th{text-align:left;background:#1b222b;padding:8px 11px;border:1px solid var(--line);font-weight:600}
+td{padding:8px 11px;border:1px solid var(--line)}
+blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);background:#141b24;color:var(--dim)}
+img{max-width:100%;border-radius:8px;border:1px solid var(--line)}
+</style></head>
+<body><div class="layout">
+<aside><div class="brand">GoDW<small>Documentation</small></div><nav><a href="index.html" class="">概览</a><a href="architecture.html" class="">总体架构</a><a href="metadata.html" class="">元数据模型</a><a href="interfaces.html" class="">核心抽象与接口</a><a href="ai.html" class="">AI 协作与验收</a><a href="unattended.html" class="">无人值守执行</a><a href="tasks-e01.html" class="">任务 E01-E02</a><a href="tasks-e03.html" class="">任务 E03-E04</a><a href="tasks-e05.html" class="">任务 E05-E06</a><a href="tasks-e07.html" class="">任务 E07-E08</a><a href="tasks-e09.html" class="">任务 E09-E10</a><a href="perf.html" class="">性能与容量</a><a href="ops.html" class="">运维手册</a><a href="plugin.html" class="active">插件开发指南</a><a href="upgrade.html" class="">升级与兼容</a><a href="contrib.html" class="">贡献指南</a><a href="changelog.html" class="">变更日志</a></nav></aside>
+<main><h1 id="_1">插件开发指南</h1>
+<blockquote>
+<p>目标：新增一个数据源引擎（比如 Doris、Trino、SQLite）或一种节点类型，<strong>不改核心代码</strong>。
+全部扩展点都是 Go 接口 + 注册表，没有反射、没有动态加载。</p>
+</blockquote>
+<h2 id="1">1. 扩展点总览</h2>
+<table>
+<thead>
+<tr>
+<th>扩展点</th>
+<th>接口</th>
+<th>注册位置</th>
+<th>影响面</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>数据源引擎</td>
+<td><code>connector.Connector</code></td>
+<td><code>internal/connector/registry.go</code></td>
+<td>连接、查询、执行、元数据采集</td>
+</tr>
+<tr>
+<td>SQL 方言</td>
+<td><code>dialect.Dialect</code></td>
+<td><code>internal/dialect/engines.go</code></td>
+<td>引号、占位符、分页、日期函数、DDL 类型</td>
+</tr>
+<tr>
+<td>节点类型</td>
+<td><code>node.Runner</code></td>
+<td><code>internal/pipeline/node/executor.go</code></td>
+<td>管道里多一种算子</td>
+</tr>
+<tr>
+<td>质量规则</td>
+<td><code>quality.Build</code> 的分支</td>
+<td><code>internal/quality/quality.go</code></td>
+<td>多一种校验方式</td>
+</tr>
+<tr>
+<td>脱敏方式</td>
+<td><code>service.Mask</code> 的分支</td>
+<td><code>internal/meta/service/governance.go</code></td>
+<td>多一种掩码算法</td>
+</tr>
+</tbody>
+</table>
+<h2 id="2">2. 新增数据源引擎</h2>
+<p>以 SQLite 为例，四步：</p>
+<h3 id="21-connector">2.1 实现 Connector</h3>
+<pre><code class="language-go">// internal/connector/sqlite/sqlite.go
+package sqlite
+
+import (
+    &quot;context&quot;
+    &quot;database/sql&quot;
+    _ &quot;modernc.org/sqlite&quot;
+
+    &quot;github.com/godw/godw/internal/connector&quot;
+    &quot;github.com/godw/godw/internal/dialect&quot;
+)
+
+type Conn struct{ db *sql.DB }
+
+func Open(ctx context.Context, spec connector.Spec) (connector.Connector, error) {
+    path, _ := spec.Config[&quot;path&quot;].(string)
+    db, err := sql.Open(&quot;sqlite&quot;, path)
+    if err != nil {
+        return nil, err
+    }
+    if err := db.PingContext(ctx); err != nil {
+        return nil, err
+    }
+    return &amp;Conn{db: db}, nil
+}
+
+func (c *Conn) Type() string { return &quot;sqlite&quot; }
+
+func (c *Conn) Dialect() dialect.Dialect { return dialect.Must(&quot;sqlite&quot;) }
+
+// Capabilities 决定上层能用哪些写入策略。如实声明，不要为了「看起来强」全填 true。
+func (c *Conn) Capabilities() connector.Capability {
+    return connector.Capability{
+        MergeUpsert:      true,  // SQLite 支持 ON CONFLICT
+        InsertOverwrite:  false,
+        TransactionalDDL: true,
+        Returning:        true,
+    }
+}
+
+func (c *Conn) Query(ctx context.Context, sqlText string, args ...any) (connector.Rows, error) {
+    // 返回实现 connector.Rows 的包装；参考 internal/connector/memrows.go
+}
+
+func (c *Conn) Exec(ctx context.Context, sqlText string, args ...any) (connector.Result, error) {
+    res, err := c.db.ExecContext(ctx, sqlText, args...)
+    // ...
+}
+
+func (c *Conn) Ping(ctx context.Context) error { return c.db.PingContext(ctx) }
+func (c *Conn) Close() error                   { return c.db.Close() }
+
+// 可选：实现 Tables/Columns 让元数据采集可用
+</code></pre>
+<h3 id="22-dialect">2.2 实现 Dialect</h3>
+<pre><code class="language-go">// internal/dialect/engines.go 里追加
+type sqliteDialect struct{ base }
+
+func (sqliteDialect) Name() string { return &quot;sqlite&quot; }
+func (d sqliteDialect) QuoteIdent(s string) string { return `&quot;` + strings.ReplaceAll(s, `&quot;`, `&quot;&quot;`) + `&quot;` }
+func (d sqliteDialect) Placeholder(i int) string   { return &quot;?&quot; }
+func (d sqliteDialect) LimitOffset(limit, offset int64) string {
+    if offset &gt; 0 {
+        return fmt.Sprintf(&quot;LIMIT %d OFFSET %d&quot;, limit, offset)
+    }
+    return fmt.Sprintf(&quot;LIMIT %d&quot;, limit)
+}
+func (d sqliteDialect) DateTrunc(gran, col string) string {
+    switch gran {
+    case &quot;month&quot;: return fmt.Sprintf(&quot;date(%s,'start of month')&quot;, col)
+    case &quot;week&quot;:  return fmt.Sprintf(&quot;date(%s,'weekday 0','-6 days')&quot;, col)
+    default:      return fmt.Sprintf(&quot;date(%s)&quot;, col)
+    }
+}
+</code></pre>
+<p>再在 <code>init()</code> 里注册：</p>
+<pre><code class="language-go">func init() { Register(&quot;sqlite&quot;, func() Dialect { return sqliteDialect{} }) }
+</code></pre>
+<h3 id="23-connector">2.3 注册 Connector</h3>
+<pre><code class="language-go">// internal/connector/sqlite/sqlite.go
+func init() { connector.Register(&quot;sqlite&quot;, Open) }
+</code></pre>
+<p>并在 <code>cmd/godw-server/main.go</code> 的匿名导入里加一行：</p>
+<pre><code class="language-go">_ &quot;github.com/godw/godw/internal/connector/sqlite&quot;
+</code></pre>
+<h3 id="24">2.4 验证清单</h3>
+<pre><code class="language-bash">go build ./... &amp;&amp; go test ./internal/connector/...
+godw-cli doctor --config config.yaml        # 应列出 sqlite
+</code></pre>
+<p>然后用 API 建数据源 → 采集 → 建模型 → 跑管道，走一遍全链路。<strong>特别注意</strong>：</p>
+<ul>
+<li>类型映射（<code>dialect.MapType</code>）要覆盖你在 <code>ModelSpec.Columns[].Type</code> 里可能用到的逻辑类型。</li>
+<li>如果不支持 <code>INSERT OVERWRITE</code>，<code>Capabilities()</code> 里必须返回 <code>false</code>，上层会自动退化为 <code>DELETE + INSERT</code>。</li>
+<li>如果支持事务，实现 <code>connector.Transactor</code>，写入失败才能整体回滚。</li>
+</ul>
+<h2 id="3">3. 新增节点类型</h2>
+<p>以「发送企业微信通知」为例：</p>
+<pre><code class="language-go">// internal/pipeline/node/notify.go
+package node
+
+type NotifyRunner struct{}
+
+func (NotifyRunner) Run(ctx context.Context, in RunInput) (Stats, error) {
+    webhook, _ := in.Node.Config[&quot;webhook&quot;].(string)
+    // 渲染模板、发请求、检查返回码
+    return Stats{RowsAffected: 0}, nil
+}
+</code></pre>
+<p>在 <code>executor.go</code> 的分派处加一个 case，并在 <code>pipeline/compile</code> 的节点类型白名单里登记：</p>
+<pre><code class="language-go">case &quot;notify&quot;:
+    return NotifyRunner{}.Run(ctx, in)
+</code></pre>
+<p>前端画布的 <code>NODE_TYPES</code> 也补一项，否则编排页看不到。</p>
+<h2 id="4">4. 新增质量规则</h2>
+<pre><code class="language-go">// internal/quality/quality.go
+case &quot;row_count_between&quot;:
+    min := number(rule.Config[&quot;min&quot;])
+    max := number(rule.Config[&quot;max&quot;])
+    out.SQL = fmt.Sprintf(&quot;SELECT COUNT(*) AS observed, 1 AS expected FROM %s&quot;, t)
+    out.Expect = fmt.Sprintf(&quot;行数在 [%v, %v]&quot;, min, max)
+</code></pre>
+<p>约定：<strong>SQL 必须返回 <code>(observed, expected)</code> 两列</strong>，判定逻辑集中在调用方，新增规则不用改执行器。</p>
+<h2 id="5">5. 新增脱敏方式</h2>
+<pre><code class="language-go">// internal/meta/service/governance.go
+case &quot;idcard&quot;:
+    if len(str) &lt; 8 { return &quot;***&quot; }
+    return str[:4] + &quot;**********&quot; + str[len(str)-4:]
+</code></pre>
+<p>同时更新 <code>saveColumnPolicy</code> 的白名单与前端下拉项。</p>
+<h2 id="6">6. 测试要求</h2>
+<p>新增扩展点必须带测试，至少覆盖：</p>
+<table>
+<thead>
+<tr>
+<th>场景</th>
+<th>断言</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>正常查询</td>
+<td>返回列名、类型、行数正确</td>
+</tr>
+<tr>
+<td>空结果</td>
+<td>不 panic，返回空切片</td>
+</tr>
+<tr>
+<td>语法错误</td>
+<td>返回 <code>CodeExecutionFailed</code> 且带原 SQL</td>
+</tr>
+<tr>
+<td>事务回滚</td>
+<td>中途失败后表内无残留</td>
+</tr>
+<tr>
+<td>方言转义</td>
+<td>标识符含 <code>"</code>、值含 <code>'</code> 时不注入</td>
+</tr>
+</tbody>
+</table>
+<p>参考 <code>internal/dialect/dialect_test.go</code>、<code>internal/quality/quality_test.go</code>。</p>
+<h2 id="7">7. 不要做的事</h2>
+<ul>
+<li><strong>不要在 Connector 里做业务判断</strong>（比如「dwd 层必须 upsert」）。那是建模层的策略。</li>
+<li><strong>不要在 SQL 里拼接用户输入</strong>。所有值走 <code>${var}</code> 渲染，渲染器会做字面量转义。</li>
+<li><strong>不要为某个引擎在核心代码里加 <code>if type == "xxx"</code></strong>。加分支就说明抽象漏了，应该补接口。</li>
+</ul></main>
+</div></body></html>

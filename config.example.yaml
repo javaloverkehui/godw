@@ -1,0 +1,39 @@
+# GoDW 配置示例。复制为 config.yaml（dev）或 config.prod.yaml（生产）。
+# 优先级：默认值 < config.yaml < config.<env>.yaml < 环境变量（GODW_ 前缀，层级用 _）。
+# 敏感项（jwt_secret / password）不设默认值，必须从环境变量或 *_FILE 挂载读取。
+
+env: dev
+
+server:
+  addr: ":8080"
+  read_timeout_sec: 30
+  write_timeout_sec: 60
+  embed_ui: true
+  cors_origins: []
+
+db:
+  host: 127.0.0.1
+  port: 5432
+  user: godw
+  database: godw
+  ssl_mode: disable
+  max_conns: 20
+  min_conns: 2
+  auto_migrate: false
+
+auth:
+  token_ttl_min: 720
+
+scheduler:
+  tick_sec: 10
+  lease_sec: 90
+  max_concurrent: 8
+  enabled: true
+
+log:
+  level: info
+  format: json
+
+executor:
+  work_dir: ./data
+  max_rows: 200000

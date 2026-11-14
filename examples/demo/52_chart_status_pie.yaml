@@ -1,0 +1,10 @@
+kind: Chart
+name: status_share
+title: 订单状态占比
+type: pie
+dataset: sales_daily
+dimensions: [status]
+measures: [gmv]
+encoding:
+  x: status
+  y: gmv

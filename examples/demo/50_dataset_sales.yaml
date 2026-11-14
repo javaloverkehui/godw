@@ -1,0 +1,32 @@
+kind: Dataset
+name: sales_daily
+description: 按天与订单状态的销售概览，供 BI 图表使用
+baseModel: dws_order_daily
+dimensions:
+  - name: dt
+    field: dt
+    type: time
+    filterable: true
+  - name: status
+    field: status
+    type: categorical
+    filterable: true
+measures:
+  - name: gmv
+    field: gmv
+    agg: sum
+    format: amount
+    unit: 元
+    zeroWhenNull: true
+  - name: order_cnt
+    field: order_cnt
+    agg: sum
+    format: integer
+    unit: 单
+    zeroWhenNull: true
+  - name: user_cnt
+    field: user_cnt
+    agg: sum
+    format: integer
+    unit: 人
+    zeroWhenNull: true

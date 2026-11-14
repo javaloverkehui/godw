@@ -1,0 +1,10 @@
+kind: Metric
+name: refund_cnt
+displayName: 退款笔数
+model: dws_refund_daily
+agg: sum
+expr: refund_cnt
+timeColumn: dt
+dimensions: [reason]
+unit: 笔
+description: 按天汇总的退款笔数

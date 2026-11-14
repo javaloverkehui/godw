@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>任务 E01-E02 · GoDW 文档</title><style>
+:root{--bg:#0e1116;--bg-elev:#151a21;--line:#232b36;--text:#e6edf3;--dim:#9aa7b4;--mute:#6b7887;--accent:#4f8cff}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+.layout{display:grid;grid-template-columns:250px 1fr;min-height:100vh}
+aside{border-right:1px solid var(--line);padding:22px 0;position:sticky;top:0;height:100vh;overflow:auto}
+.brand{padding:0 20px 18px;font-weight:600;font-size:15px}
+.brand small{display:block;color:var(--mute);font-weight:400;font-size:10.5px;letter-spacing:.8px;text-transform:uppercase;margin-top:3px}
+nav a{display:block;padding:7px 20px;color:var(--dim);text-decoration:none;font-size:13px;border-left:2px solid transparent}
+nav a:hover{background:var(--bg-elev);color:var(--text)}
+nav a.active{color:#cfe0ff;border-left-color:var(--accent);background:#1d2836}
+main{padding:34px 44px 80px;max-width:900px}
+h1{font-size:26px;margin:0 0 18px}
+h2{font-size:19px;margin:32px 0 12px;padding-bottom:7px;border-bottom:1px solid var(--line)}
+h3{font-size:15.5px;margin:24px 0 8px}
+p,li{color:#cdd7e1}
+a{color:var(--accent)}
+code{background:#1b222b;padding:2px 5px;border-radius:4px;font-size:12.5px;font-family:ui-monospace,Menlo,Consolas,monospace}
+pre{background:#0b0e13;border:1px solid var(--line);border-radius:8px;padding:14px 16px;overflow:auto}
+pre code{background:none;padding:0}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:13px}
+th{text-align:left;background:#1b222b;padding:8px 11px;border:1px solid var(--line);font-weight:600}
+td{padding:8px 11px;border:1px solid var(--line)}
+blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);background:#141b24;color:var(--dim)}
+img{max-width:100%;border-radius:8px;border:1px solid var(--line)}
+</style></head>
+<body><div class="layout">
+<aside><div class="brand">GoDW<small>Documentation</small></div><nav><a href="index.html" class="">概览</a><a href="architecture.html" class="">总体架构</a><a href="metadata.html" class="">元数据模型</a><a href="interfaces.html" class="">核心抽象与接口</a><a href="ai.html" class="">AI 协作与验收</a><a href="unattended.html" class="">无人值守执行</a><a href="tasks-e01.html" class="active">任务 E01-E02</a><a href="tasks-e03.html" class="">任务 E03-E04</a><a href="tasks-e05.html" class="">任务 E05-E06</a><a href="tasks-e07.html" class="">任务 E07-E08</a><a href="tasks-e09.html" class="">任务 E09-E10</a><a href="perf.html" class="">性能与容量</a><a href="ops.html" class="">运维手册</a><a href="plugin.html" class="">插件开发指南</a><a href="upgrade.html" class="">升级与兼容</a><a href="contrib.html" class="">贡献指南</a><a href="changelog.html" class="">变更日志</a></nav></aside>
+<main><h1 id="e01-e02">E01 · 工程基座 ｜ E02 · 元数据与数据源</h1>
+<blockquote>
+<p><strong>给 AI 的执行说明</strong>：本文件按任务卡顺序执行。每张卡独立可交付，禁止提前实现后续卡片的功能。完成后必须贴出：变更文件清单、关键决策、<code>make test</code> 结果。开工前先读 <code>docs/03-核心抽象与接口.md</code> 第 1–2 节。</p>
+</blockquote>
+<hr />
+<h2 id="e01-8">E01 工程基座（8 人日）</h2>
+<h4 id="t0101-p0-1d">T0101 · 仓库骨架与依赖边界  <code>P0</code> <code>1d</code></h4>
+<p><strong>目标</strong>：建立能长期演进、AI 不会写乱的目录结构。
+<strong>要点</strong>
+- 严格按 <code>docs/03</code> 第 1 节创建 <code>cmd/internal/pkg</code> 三层；<code>internal</code> 内按领域分包，禁止建 <code>utils</code> 大杂烩。
+- 只允许单向依赖：<code>api → service → repo/domain</code>，<code>executor → connector</code>。
+- 引入 <code>depguard</code> 规则写入 <code>.golangci.yml</code>，违规即 CI 失败。
+- <code>go.mod</code> 声明 <code>module github.com/&lt;org&gt;/godw</code>，Go 版本 1.22。
+<strong>产出</strong>：目录树、<code>go.mod</code>、<code>.golangci.yml</code>、根 <code>README.md</code>。
+<strong>验收</strong>：<code>go build ./...</code>、<code>go vet ./...</code>、<code>golangci-lint run</code> 全部通过；空包都有 <code>doc.go</code> 说明职责。</p>
+<h4 id="t0102-p0-1d">T0102 · 配置系统  <code>P0</code> <code>1d</code></h4>
+<p><strong>目标</strong>：一份配置跑多环境，敏感信息不落盘。
+<strong>要点</strong>
+- <code>config.yaml</code> + 环境变量覆盖，前缀 <code>GODW_</code>，层级用 <code>_</code> 连接（<code>GODW_DB_HOST</code>）。
+- 结构体用 <code>validator</code> 标签做必填/范围校验，启动失败要打印<strong>具体字段名</strong>和来源。
+- 支持 <code>config.dev.yaml</code> / <code>config.prod.yaml</code> 叠加；<code>--config</code> 指定路径。
+- 敏感项只允许从环境变量或 secret 文件读，禁止写默认值。
+<strong>产出</strong>：<code>internal/config/config.go</code>、<code>loader.go</code>、<code>config.example.yaml</code>。
+<strong>验收</strong>：三条优先级（默认 &lt; 文件 &lt; 环境变量）单测通过；缺 <code>db.host</code> 时启动报 <code>config: db.host is required (source: default)</code>。</p>
+<h4 id="t0103-id-p0-1d">T0103 · 日志、错误码与链路 ID  <code>P0</code> <code>1d</code></h4>
+<p><strong>目标</strong>：出问题能凭一个 ID 定位全链路。
+<strong>要点</strong>
+- zap JSON 输出，固定字段 <code>ts/level/msg/request_id/trace_id/workspace_id/instance_id</code>。
+- <code>pkg/errs</code> 定义 <code>AppError{Code int, Msg string, Cause error, Meta map[string]any}</code>，实现 <code>Unwrap()</code>；提供 <code>Wrap/Is/As</code>。
+- 错误码常量集中在 <code>pkg/errs/codes.go</code>，分段与 API 文档一致（10xxx/20xxx/30xxx/40xxx/50xxx）。
+- HTTP 中间件生成 <code>request_id</code>（ULID），注入 ctx 与响应头 <code>X-Request-Id</code>；panic 恢复为 500 并记录堆栈。
+<strong>产出</strong>：<code>pkg/errs/*</code>、<code>internal/obs/log/*</code>、中间件。
+<strong>验收</strong>：构造 3 层包装错误，<code>errors.Is</code> 能命中底层；panic 请求返回统一 JSON 且日志含 stack。</p>
+<h4 id="t0104-sqlc-p0-15d">T0104 · 迁移与 sqlc 接入  <code>P0</code> <code>1.5d</code></h4>
+<p><strong>目标</strong>：schema 变更可追溯、可回滚，查询类型安全。
+<strong>要点</strong>
+- goose 迁移放 <code>migrations/</code>，命名 <code>0001_init.sql</code>；每个迁移必须写 <code>-- +goose Down</code>。
+- <code>sqlc.yaml</code> 按领域分 package（<code>meta</code>、<code>scheduler</code>、<code>bi</code>），<code>emit_pointers_for_null_types: true</code>。
+- 连接池 pgx/v5，参数：<code>max_conns=20</code>、<code>min_conns=2</code>、<code>max_conn_lifetime=30m</code>。
+- 迁移作为独立命令执行（<code>godw migrate up</code>），server 启动只校验版本，不自动迁移。
+<strong>产出</strong>：迁移脚本、<code>sqlc.yaml</code>、<code>internal/meta/repo/db.go</code>。
+<strong>验收</strong>：空库执行 <code>make migrate</code> 成功；<code>sqlc generate</code> 后 <code>git diff --exit-code</code> 无变更；重复迁移幂等。</p>
+<h4 id="t0105-http-p0-15d">T0105 · HTTP 基础层  <code>P0</code> <code>1.5d</code></h4>
+<p><strong>目标</strong>：所有接口共享一致的入参校验、响应与错误处理。
+<strong>要点</strong>
+- 中间件顺序：<code>recover → requestID → accessLog → auth → rbac → audit → rateLimit</code>。
+- 统一响应封装 <code>{code,message,data,requestId}</code>；分页解析 <code>page/pageSize/sort</code>，<code>pageSize</code> 上限 200。
+- 入参用 DTO + <code>binding</code> 标签，错误转成 <code>20xxx</code> 并返回字段级信息。
+- CORS、gzip、健康检查 <code>/healthz</code>、就绪 <code>/readyz</code>（检查 DB 与迁移版本）。
+<strong>产出</strong>：<code>internal/api/http/router.go</code>、<code>middleware/*</code>、<code>response/*</code>。
+<strong>验收</strong>：非法 body 返回 400 + 字段名；<code>/readyz</code> 在 DB 断开时返回 503；中间件顺序有单测。</p>
+<h4 id="t0106-openapi-p0-1d">T0106 · OpenAPI 契约  <code>P0</code> <code>1d</code></h4>
+<p><strong>目标</strong>：前后端并行开发，接口变更可审查。
+<strong>要点</strong>
+- 手写 <code>api/openapi.yaml</code>（3.1），用 <code>oapi-codegen</code> 生成 server 接口与 TS 类型。
+- CI 用 <code>oasdiff</code> 检查 breaking change，破坏性变更需 PR 标签 <code>api-breaking</code>。
+- 生成物提交入库，禁止运行期反射生成文档。
+<strong>产出</strong>：<code>api/openapi.yaml</code>、<code>api/gen/*</code>、<code>web/src/api/types.ts</code>。
+<strong>验收</strong>：<code>make api-gen</code> 无 diff；<code>oasdiff</code> 在删除字段时报错。</p>
+<h4 id="t0107-p0-1d">T0107 · 本地开发环境  <code>P0</code> <code>1d</code></h4>
+<p><strong>目标</strong>：新人一条命令起全套依赖。
+<strong>要点</strong>
+- <code>deploy/docker-compose.dev.yaml</code>：postgres:16、redis:7、mysql:8、clickhouse:24、minio。
+- 初始化脚本建库 <code>godw</code>、建只读账号、创建 CH 测试库 <code>dw</code>。
+- <code>make up / down / reset / seed</code>；<code>seed</code> 灌入样例业务表（订单 10 万行）。
+<strong>产出</strong>：compose 文件、<code>deploy/init/*.sql</code>、Makefile。
+<strong>验收</strong>：<code>make reset &amp;&amp; make migrate &amp;&amp; make seed &amp;&amp; make smoke</code> 全绿；冷启动 ≤ 90s。</p>
+<h4 id="t0108-ci-p0-1d">T0108 · CI 流水线  <code>P0</code> <code>1d</code></h4>
+<p><strong>目标</strong>：质量门禁自动化。
+<strong>要点</strong>
+- 任务：lint（golangci-lint）、test（<code>-race -coverprofile</code>）、build（多架构）、docker image、web lint+build。
+- 缓存 Go module 与 pnpm store；PR 必跑，main 分支额外跑 integration。
+- 覆盖率低于阈值（70%）直接失败。
+<strong>产出</strong>：<code>.github/workflows/ci.yaml</code>、<code>.golangci.yml</code>。
+<strong>验收</strong>：故意提交 lint 错误与失败测试，CI 均能拦住。</p>
+<h4 id="t0109-p0-1d">T0109 · 集成测试框架  <code>P0</code> <code>1d</code></h4>
+<p><strong>目标</strong>：连接器与 SQL 逻辑必须跑真库。
+<strong>要点</strong>
+- <code>testcontainers-go</code> 启 PG/MySQL/CH；DuckDB 用内存模式。
+- 提供 <code>testkit.NewPG(t)</code> 返回已迁移 + 已 seed 的实例，测试结束自动清理。
+- 集成测试加 <code>//go:build integration</code>，<code>make test-integration</code> 单独跑。
+<strong>产出</strong>：<code>test/testkit/*</code>、示例测试 3 个。
+<strong>验收</strong>：<code>make test-integration</code> 5 分钟内完成；并行测试互不干扰（随机 schema 名）。</p>
+<h4 id="t0110-cli-p0-1d">T0110 · CLI 骨架  <code>P0</code> <code>1d</code></h4>
+<p><strong>目标</strong>：所有能力都能脚本化。
+<strong>要点</strong>
+- cobra 子命令：<code>serve/worker/migrate/version/doctor/config/apply/plan/export/run/backfill</code>。
+- 全局 <code>--config</code>、<code>--workspace</code>、<code>--env</code>、<code>--output json|table</code>。
+- <code>doctor</code> 检查：DB 连通、迁移版本、Redis、对象存储、引擎连通性。
+<strong>产出</strong>：<code>cmd/godw-cli/*</code>、<code>internal/cli/*</code>。
+<strong>验收</strong>：<code>godw doctor</code> 在依赖缺失时逐项输出 <code>FAIL</code> 与修复建议；<code>--output json</code> 可被 jq 解析。</p>
+<hr />
+<h2 id="e02-14">E02 元数据与数据源（14 人日）</h2>
+<h4 id="t0201-ddl-er-p0-2d">T0201 · 元数据 DDL 与 ER  <code>P0</code> <code>2d</code></h4>
+<p><strong>目标</strong>：把 <code>docs/02</code> 的设计落成可执行迁移。
+<strong>要点</strong>
+- 实现第 2.1–2.7 节全部表、索引、约束、分区；分区表先建 3 个月分区。
+- 所有表带 <code>created_at/updated_at</code>，写操作靠触发器或应用层统一填充（二选一，全库一致）。
+- 唯一约束必须覆盖业务幂等键，禁止只靠应用层判重。
+<strong>产出</strong>：<code>migrations/0002_meta.sql</code> 等、<code>docs/er.png</code>（可用 mermaid 替代）。
+<strong>验收</strong>：重复插入 <code>(pipeline_id,node_key,biz_date)</code> 报唯一冲突；<code>\d+ task_instance</code> 可见分区与索引。</p>
+<h4 id="t0202-repository-p0-2d">T0202 · Repository 层  <code>P0</code> <code>2d</code></h4>
+<p><strong>目标</strong>：数据访问集中、可控、可测。
+<strong>要点</strong>
+- 每个聚合一个 repo（<code>ModelRepo/PipelineRepo/InstanceRepo/...</code>），方法首参 <code>ctx</code>。
+- 提供 <code>WithTx(ctx, fn)</code>，事务内复用同一 <code>Queries</code>；禁止在 repo 里开 goroutine。
+- 更新带乐观锁：<code>WHERE id=$1 AND version=$2</code>，影响行数 0 → <code>errs.ErrConflict</code>（HTTP 409）。
+- 查询方法必须支持分页与过滤，禁止 <code>SELECT *</code> 无 limit 暴露给 API。
+<strong>产出</strong>：<code>internal/meta/repo/*.go</code>、<code>tx.go</code>。
+<strong>验收</strong>：并发更新同一模型，一个成功一个 409；repo 测试跑真 PG 且覆盖软删除过滤。</p>
+<h4 id="t0203-p0-1d">T0203 · 工作空间与环境  <code>P0</code> <code>1d</code></h4>
+<p><strong>目标</strong>：多项目、多环境隔离的最小闭环。
+<strong>要点</strong>
+- workspace 创建时自动建 <code>dev/prod</code> 两个 env 与 <code>default</code> 资源组。
+- <code>env.bindings</code> 维护「逻辑别名 → datasource_id」，提供解析函数 <code>ResolveDatasource(alias, env)</code>。
+- 删除 workspace 用软删除 + 级联校验（有运行中实例时拒绝）。
+<strong>产出</strong>：service/handler/DTO、解析函数与单测。
+<strong>验收</strong>：同一模型在 dev/prod 解析出不同数据源；有运行实例时删除返回 409。</p>
+<h4 id="t0204-p0-2d">T0204 · 数据源管理  <code>P0</code> <code>2d</code></h4>
+<p><strong>目标</strong>：安全地存连接信息并验证可用性。
+<strong>要点</strong>
+- 密码走 <code>secret</code> 表：AES-256-GCM，密钥来自环境变量 <code>GODW_SECRET_KEY</code>（32 字节），支持 <code>key_version</code> 轮换。
+- 连接串按类型拼装，参数集中在 <code>connector/dsn.go</code>，禁止字符串拼接 SQL。
+- 测试连接超时 5s，返回耗时与版本号；失败区分「网络不可达 / 认证失败 / 库不存在」。
+- 列表接口不回传密码，只回 <code>hasPassword: true</code>。
+<strong>产出</strong>：<code>internal/meta/service/datasource.go</code>、<code>internal/connector/dsn.go</code>、加密工具。
+<strong>验收</strong>：DB 中 <code>secret</code> 表无明文；错误密码返回 <code>50002 auth failed</code>；测试接口 5s 内必返回。</p>
+<h4 id="t0205-p0-2d">T0205 · 连接器接口与注册表  <code>P0</code> <code>2d</code></h4>
+<p><strong>目标</strong>：新增数据源不改核心代码。
+<strong>要点</strong>
+- 实现 <code>docs/03</code> 第 2 节 <code>Connector</code> 接口与 <code>Register/Open</code>；工厂签名 <code>func(ctx, Config) (Connector, error)</code>。
+- 连接池按 <code>datasource_id</code> 缓存，<code>sync.Map</code> + 引用计数，空闲 10 分钟回收。
+- 所有方法必须响应 ctx 取消；<code>Query</code> 返回的 <code>Rows</code> 必须可 <code>Close</code> 且幂等。
+- 提供 <code>connectortest</code> 套件：一套接口测试跑遍所有实现。
+<strong>产出</strong>：<code>types.go</code>、<code>registry.go</code>、<code>pool.go</code>、<code>connectortest/suite.go</code>。
+<strong>验收</strong>：注册表并发注册/获取无 race（<code>-race</code> 通过）；ctx 取消后 <code>Query</code> 1s 内返回。</p>
+<h4 id="t0206-p0-4d">T0206 · 四个首期连接器  <code>P0</code> <code>4d</code></h4>
+<p><strong>目标</strong>：覆盖 80% 使用场景。
+<strong>要点</strong>
+- PostgreSQL（pgx）、MySQL（go-sql-driver）、ClickHouse（clickhouse-go v2）、DuckDB（嵌入式）。
+- 每个实现 <code>Capabilities()</code>：PG/MySQL <code>MergeUpsert=true</code>；Doris <code>InsertOverwrite=true</code>；ClickHouse <code>InsertOverwrite=false, ReplacePartition=true</code>（CH 无 <code>INSERT OVERWRITE</code>，只有 <code>REPLACE PARTITION</code>）；DuckDB 单机全支持。能力声明错一个，写入策略就会生成跑不通的 SQL，必须有集成测试兜底。
+- 类型映射表落在 <code>dialect/&lt;engine&gt;/types.go</code>，覆盖 string/int/float/decimal/date/timestamp/bool/json/array。
+- 大结果集用 <code>Stream</code>，CH 必须用 native 协议而非 HTTP。
+<strong>产出</strong>：<code>connector/{postgres,mysql,clickhouse,duckdb}/*</code>。
+<strong>验收</strong>：<code>connectortest</code> 全通过；10 万行导出内存增长 &lt; 100MB；<code>Cancel</code> 后服务端查询确实终止（查 <code>pg_stat_activity</code> / <code>system.processes</code>）。</p>
+<h4 id="t0207-p0-2d">T0207 · 元数据采集  <code>P0</code> <code>2d</code></h4>
+<p><strong>目标</strong>：不连库也能看到表结构。
+<strong>要点</strong>
+- 统一 <code>Collector</code> 接口：<code>Collect(ctx, schema) ([]TableMeta, error)</code>，各引擎用 <code>information_schema</code> / <code>system.tables</code> / <code>DESCRIBE</code>。
+- 计算结构指纹 <code>fingerprint = sha256(sorted(column name+type+nullable))</code>，与库中比对判断是否变化。
+- 大表行数用估算（<code>pg_class.reltuples</code>、<code>system.parts</code>），不做 <code>COUNT(*)</code>。
+- 采集结果写 <code>meta_table</code>，保留上次指纹用于变更对比。
+<strong>产出</strong>：<code>connector/*/collect.go</code>、<code>internal/meta/service/collect.go</code>。
+<strong>验收</strong>：1000 张表采集 ≤ 30s；新增一列后再次采集能识别 <code>add_column</code>。</p>
+<h4 id="t0208-p1-15d">T0208 · 采集调度与变更告警  <code>P1</code> <code>1.5d</code></h4>
+<p><strong>目标</strong>：表结构漂移能被发现。
+<strong>要点</strong>
+- 支持手动刷新与定时刷新（默认每日 02:00），同一数据源加分布式锁防并发。
+- 采集 diff 生成 <code>schema_change</code> 记录（add/drop/modify column），推送到站内消息。
+- 采集失败重试 3 次，仍失败标记数据源 <code>status=failed</code> 并告警。
+<strong>产出</strong>：<code>internal/meta/service/collect_job.go</code>、变更记录表与 API。
+<strong>验收</strong>：删除源表一列后，站内消息出现 <code>drop_column</code> 且含表名与列名。</p>
+<h4 id="t0209-p1-15d">T0209 · 敏感字段识别  <code>P1</code> <code>1.5d</code></h4>
+<p><strong>目标</strong>：为脱敏与合规提供依据。
+<strong>要点</strong>
+- 规则两层：列名正则（<code>phone|mobile|id_card|email|bank_card|address</code>）+ 值采样（每列最多 200 行，正则命中率 &gt; 80% 判定）。
+- 采样必须 <code>LIMIT</code>，禁止全表扫描；对超大表随机采样。
+- 结果写 <code>column.pii</code>（none/low/medium/high）与 <code>pii_reason</code>，允许人工覆盖并记录操作人。
+<strong>产出</strong>：<code>internal/meta/service/pii.go</code>、识别规则配置。
+<strong>验收</strong>：样例库中手机号/邮箱列识别准确率 ≥ 90%；人工修改后不被下次采集覆盖。</p>
+<h4 id="t0210-p1-15d">T0210 · 元数据搜索与标签  <code>P1</code> <code>1.5d</code></h4>
+<p><strong>目标</strong>：几万张表里能快速找到目标表。
+<strong>要点</strong>
+- PG 全文检索（<code>to_tsvector('simple', name||comment)</code>）+ <code>pg_trgm</code> 模糊匹配双通道，中文按字切分。
+- 支持按 <code>layer/datasource/tag/owner</code> 过滤，结果高亮命中词。
+- 标签 CRUD + 批量打标；标签可作为模型编译的软约束（如 <code>pii=high</code> 必须有脱敏）。
+<strong>产出</strong>：搜索 API、标签表与 service。
+<strong>验收</strong>：10 万行元数据下关键词搜索 p95 ≤ 100ms；中文表名可命中。</p></main>
+</div></body></html>

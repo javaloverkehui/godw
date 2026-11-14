@@ -1,0 +1,10 @@
+kind: Metric
+name: gmv
+displayName: 成交总额
+model: dws_order_daily
+agg: sum
+expr: gmv
+timeColumn: dt
+dimensions: [status]
+unit: 元
+description: 按天汇总的成交金额，可下钻到订单状态

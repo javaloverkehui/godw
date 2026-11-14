@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>任务 E03-E04 · GoDW 文档</title><style>
+:root{--bg:#0e1116;--bg-elev:#151a21;--line:#232b36;--text:#e6edf3;--dim:#9aa7b4;--mute:#6b7887;--accent:#4f8cff}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+.layout{display:grid;grid-template-columns:250px 1fr;min-height:100vh}
+aside{border-right:1px solid var(--line);padding:22px 0;position:sticky;top:0;height:100vh;overflow:auto}
+.brand{padding:0 20px 18px;font-weight:600;font-size:15px}
+.brand small{display:block;color:var(--mute);font-weight:400;font-size:10.5px;letter-spacing:.8px;text-transform:uppercase;margin-top:3px}
+nav a{display:block;padding:7px 20px;color:var(--dim);text-decoration:none;font-size:13px;border-left:2px solid transparent}
+nav a:hover{background:var(--bg-elev);color:var(--text)}
+nav a.active{color:#cfe0ff;border-left-color:var(--accent);background:#1d2836}
+main{padding:34px 44px 80px;max-width:900px}
+h1{font-size:26px;margin:0 0 18px}
+h2{font-size:19px;margin:32px 0 12px;padding-bottom:7px;border-bottom:1px solid var(--line)}
+h3{font-size:15.5px;margin:24px 0 8px}
+p,li{color:#cdd7e1}
+a{color:var(--accent)}
+code{background:#1b222b;padding:2px 5px;border-radius:4px;font-size:12.5px;font-family:ui-monospace,Menlo,Consolas,monospace}
+pre{background:#0b0e13;border:1px solid var(--line);border-radius:8px;padding:14px 16px;overflow:auto}
+pre code{background:none;padding:0}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:13px}
+th{text-align:left;background:#1b222b;padding:8px 11px;border:1px solid var(--line);font-weight:600}
+td{padding:8px 11px;border:1px solid var(--line)}
+blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);background:#141b24;color:var(--dim)}
+img{max-width:100%;border-radius:8px;border:1px solid var(--line)}
+</style></head>
+<body><div class="layout">
+<aside><div class="brand">GoDW<small>Documentation</small></div><nav><a href="index.html" class="">概览</a><a href="architecture.html" class="">总体架构</a><a href="metadata.html" class="">元数据模型</a><a href="interfaces.html" class="">核心抽象与接口</a><a href="ai.html" class="">AI 协作与验收</a><a href="unattended.html" class="">无人值守执行</a><a href="tasks-e01.html" class="">任务 E01-E02</a><a href="tasks-e03.html" class="active">任务 E03-E04</a><a href="tasks-e05.html" class="">任务 E05-E06</a><a href="tasks-e07.html" class="">任务 E07-E08</a><a href="tasks-e09.html" class="">任务 E09-E10</a><a href="perf.html" class="">性能与容量</a><a href="ops.html" class="">运维手册</a><a href="plugin.html" class="">插件开发指南</a><a href="upgrade.html" class="">升级与兼容</a><a href="contrib.html" class="">贡献指南</a><a href="changelog.html" class="">变更日志</a></nav></aside>
+<main><h1 id="e03-e04-sql">E03 · 分层建模 ｜ E04 · 管道与 SQL 引擎</h1>
+<blockquote>
+<p><strong>执行前提</strong>：E01、E02 已完成，<code>meta_table</code> 里已有真实表结构可用于对照。本文件的产出直接决定「系统是否像个数仓」而不是「一个跑 SQL 的调度器」，建模约束必须严格执行，不允许为了跑通而放宽。</p>
+</blockquote>
+<hr />
+<h2 id="e03-16">E03 分层建模（16 人日）</h2>
+<h4 id="t0301-dsl-p0-2d">T0301 · 模型 DSL 与校验  <code>P0</code> <code>2d</code></h4>
+<p><strong>目标</strong>：用一份 YAML 描述一张数仓表，且能被人和 AI 读懂。
+<strong>要点</strong>
+- 结构体对齐 <code>docs/03</code> 第 4 节 <code>ModelSpec</code>；同时输出 <code>schema/model.schema.json</code>（JSON Schema Draft 2020-12）供编辑器补全。
+- 校验分三层：语法（JSON Schema）→ 语义（层规则、主键、分区字段存在）→ 环境（目标数据源是否支持该类型/物化方式）。
+- 错误必须结构化：<code>{path: "columns[3].type", code: "invalid_type", message: "decimal(18,4) 在 clickhouse 需指定精度"}</code>，前端可直接定位到表单字段。
+- 支持 <code>godw validate -f model.yaml</code> 离线校验。
+<strong>产出</strong>：<code>internal/pipeline/dsl/model.go</code>、<code>schema/*.json</code>、校验器与 30 个反例测试。
+<strong>验收</strong>：30 个反例全部报出正确 <code>path</code>；合法样例零告警；JSON Schema 能在 VSCode 中生效。</p>
+<h4 id="t0302-ddl-p0-3d">T0302 · 模型编译器（逻辑 → DDL）  <code>P0</code> <code>3d</code></h4>
+<p><strong>目标</strong>：一份模型定义，编译出四种引擎都能跑的建表语句。
+<strong>要点</strong>
+- <code>Compile</code> 必须是纯函数（无 IO、无全局状态、无时间依赖），便于表驱动测试与快照对比。
+- 输出按引擎组织语句序列：PG/MySQL 单条 <code>CREATE TABLE</code>；CH 需 <code>CREATE TABLE ... ENGINE = MergeTree() PARTITION BY ... ORDER BY ... TTL ...</code>；Doris 需 <code>DISTRIBUTED BY HASH(...) BUCKETS n</code>。
+- 列注释：PG 用 <code>COMMENT ON COLUMN</code>，MySQL 内联 <code>COMMENT</code>，CH 用 <code>COMMENT</code> 子句，Doris 内联。
+- 生成 <code>CREATE TABLE IF NOT EXISTS</code> 与「已存在则比对」两套路径；结构不一致时报 <code>schema drift</code>，不静默跳过。
+- DDL 输出稳定排序（列按定义顺序、选项按固定键序），保证 diff 可比。
+<strong>产出</strong>：<code>internal/modelc/compile.go</code>、<code>ddl_{pg,mysql,ch,doris}.go</code>、golden 测试。
+<strong>验收</strong>：同一模型四引擎 DDL 快照测试通过；两次编译字节级一致；对已存在且结构不同的表返回明确错误码。</p>
+<h4 id="t0303-p0-15d">T0303 · 分层规范强制  <code>P0</code> <code>1.5d</code></h4>
+<p><strong>目标</strong>：让「分层」成为约束而非口号。
+<strong>要点</strong>
+- 表名必须匹配 <code>^(ods|dwd|dws|ads)_[a-z][a-z0-9_]*$</code>，否则编译失败。
+- 引用规则：<code>ods</code> 只能引用数据源原始表；<code>dwd</code> 引用 <code>ods/dwd</code>；<code>dws</code> 引用 <code>dwd/dws</code>；<code>ads</code> 引用 <code>dwd/dws/ads</code>。跨层引用（如 <code>ods</code> 直接读 <code>dws</code>）一律拒绝。
+- 每层必填列：<code>dt DATE</code>；ODS 额外 <code>_godw_src STRING</code>、<code>_godw_load_at TIMESTAMP</code>；DWD/DWS 必须有主键或粒度声明。
+- 规则以配置表实现（<code>layer_rule</code>），允许工作空间级覆盖，但默认值不可关闭「禁止反向依赖」。
+<strong>产出</strong>：<code>internal/modelc/rules.go</code>、规则配置与测试。
+<strong>验收</strong>：构造 12 种违规引用，全部被拒且错误信息说明「哪条规则、哪个字段」。</p>
+<h4 id="t0304-p0-15d">T0304 · 分区、分桶与生命周期  <code>P0</code> <code>1.5d</code></h4>
+<p><strong>目标</strong>：控制存储成本与查询效率。
+<strong>要点</strong>
+- <code>storage.partitionBy</code> 支持表达式（<code>dt</code>、<code>toYYYYMM(dt)</code>、<code>date_trunc('month', dt)</code>），编译时按引擎能力转换。
+- <code>ttl</code> 支持 <code>30d/12m/3y</code>，转成 CH <code>TTL dt + INTERVAL</code>、PG 分区删除策略（由维护任务执行）。
+- 分区字段必须在列定义中存在且非空；分区粒度不得细于小时（防小文件）。
+- 提供「分区预创建」能力：维护任务提前 7 天建分区。
+<strong>产出</strong>：<code>modelc/partition.go</code>、维护任务、TTL 清理逻辑。
+<strong>验收</strong>：CH 建表后 <code>system.parts</code> 分区符合预期；过期分区在维护任务执行后被删除并留审计。</p>
+<h4 id="t0305-p0-2d">T0305 · 跨引擎类型映射矩阵  <code>P0</code> <code>2d</code></h4>
+<p><strong>目标</strong>：一处定义类型，处处可用。
+<strong>要点</strong>
+- 逻辑类型集合：<code>string,text,int32,int64,float64,decimal(p,s),bool,date,timestamp,json,array&lt;T&gt;,map&lt;K,V&gt;</code>。
+- 维护矩阵（Go 表 + 文档表格双份，测试保证一致）：行=逻辑类型，列=引擎，值=物理类型 + 是否需精度参数 + 是否有损。
+- 有损映射（如 <code>json → string</code>、<code>decimal(38,10) → decimal(18,4)</code>）编译时产生 <code>warning</code>，需显式 <code>allowLossy: true</code> 才放行。
+- 反向映射（引擎类型 → 逻辑类型）用于元数据采集与 ODS 自动建模。
+<strong>产出</strong>：<code>dialect/types_matrix.go</code>、<code>docs/type-matrix.md</code>、双向转换测试。
+<strong>验收</strong>：矩阵每个单元格都有测试；有损转换未声明时编译失败。</p>
+<h4 id="t0306-schema-p0-2d">T0306 · Schema 变更管理  <code>P0</code> <code>2d</code></h4>
+<p><strong>目标</strong>：改表结构不能悄悄搞坏下游。
+<strong>要点</strong>
+- <code>Diff(old, new)</code> 输出 <code>Change{Kind, Column, From, To, Breaking}</code>；判定规则：删列/改类型/改分区/改主键 = breaking；加可空列/加注释 = safe。
+- breaking 变更必须走「申请 → 影响分析（调 T0609）→ 审批 → 执行」流程；MVP 可先用「二次确认 + 记录操作人」。
+- 提供迁移 SQL 生成：<code>ALTER TABLE ... ADD COLUMN</code>，CH 的 <code>ADD COLUMN</code> 需带 <code>AFTER</code>；不支持的类型变更给出「新建表 + 双写 + 切换」建议。
+- 所有变更写 <code>model_version</code> 与审计日志，可回滚到任意历史版本。
+<strong>产出</strong>：<code>modelc/diff.go</code>、变更申请 API、迁移 SQL 生成器。
+<strong>验收</strong>：删列被判定 breaking 并拦截直接发布；加列生成正确 ALTER；回滚后 DDL 与历史版本一致。</p>
+<h4 id="t0307-p0-15d">T0307 · 版本与发布  <code>P0</code> <code>1.5d</code></h4>
+<p><strong>目标</strong>：定义可追溯，运行不受编辑影响。
+<strong>要点</strong>
+- <code>publish</code> 生成不可变 <code>model_version</code> 快照（含 DDL 与 hash），<code>version</code> 自增；<code>draft</code> 可随意改。
+- 运行中的任务绑定 <code>version_id</code>；发布新版本不改变已排队实例的行为。
+- <code>rollback(model, version)</code> 生成<strong>新版本</strong>（内容等于旧版），不删除历史，保证审计链完整。
+- 同名模型并发发布用 <code>SELECT ... FOR UPDATE</code> 或唯一约束兜底。
+<strong>产出</strong>：<code>internal/meta/service/model_publish.go</code>。
+<strong>验收</strong>：发布后修改 draft 不影响已发布版本；回滚产生 version+1 且 <code>ddl_hash</code> 与目标版本相同。</p>
+<h4 id="t0308-p1-15d">T0308 · 物化方式  <code>P1</code> <code>1.5d</code></h4>
+<p><strong>目标</strong>：支持不同时效与成本要求。
+<strong>要点</strong>
+- <code>table</code>：物理表，调度写入；<code>view</code>：逻辑视图，不占存储，查询实时；<code>mv</code>：物化视图（CH/PG 支持，MySQL 不支持需降级为表+定时刷新）；<code>incremental</code>：增量表，配合写入策略。
+- 不支持时编译期报错并给替代方案，不允许静默降级。
+- view 不允许配置 TTL/分区，校验时拒绝。
+<strong>产出</strong>：<code>modelc/materialization.go</code>。
+<strong>验收</strong>：MySQL 上定义 mv 返回明确错误与建议；view 的查询能正确透传到底表。</p>
+<h4 id="t0309-p1-1d">T0309 · 建模脚手架  <code>P1</code> <code>1d</code></h4>
+<p><strong>目标</strong>：降低建表门槛，保证新表天然合规。
+<strong>要点</strong>
+- <code>godw init model --layer dwd --from ods_order --name dwd_order_detail</code> 读取源表结构，自动生成 YAML 骨架（含 <code>dt</code>、审计列、注释、类型映射）。
+- 生成时自动推断主键候选（唯一且非空的列）并提示确认。
+- 模板内置四层各一套标准字段（ODS 审计列、DWD 主键区、DWS 粒度区、ADS 展示区）。
+<strong>产出</strong>：<code>internal/cli/init_model.go</code>、模板文件。
+<strong>验收</strong>：从 MySQL 表生成 YAML 后 <code>godw validate</code> 直接通过；字段顺序与源表一致。</p>
+<h4 id="t0310-p2-1d">T0310 · 数据字典与注释同步  <code>P2</code> <code>1d</code></h4>
+<p><strong>目标</strong>：文档跟着模型走，不靠人肉维护。
+<strong>要点</strong>
+- 发布时把列注释写入引擎（<code>COMMENT ON</code> / 内联），并从引擎回读校验。
+- <code>godw export-doc --format md|html</code> 输出数据字典：表清单、字段、类型、口径说明、上下游。
+- 字典页支持按层/标签筛选，可导出 Excel。
+<strong>产出</strong>：<code>internal/modelc/doc.go</code>、导出命令。
+<strong>验收</strong>：修改注释并发布后，引擎中 <code>col_description</code> 同步更新；导出的 md 表格列齐全。</p>
+<hr />
+<h2 id="e04-sql-20">E04 管道与 SQL 引擎（20 人日）</h2>
+<h4 id="t0401-dsl-p0-2d">T0401 · 管道 DSL 与存储  <code>P0</code> <code>2d</code></h4>
+<p><strong>目标</strong>：管道可读、可 diff、可被 AI 生成。
+<strong>要点</strong>
+- 结构对齐 <code>docs/03</code> 第 5 节；<code>nodes[].key</code> 全局唯一，<code>type</code> 必须在注册表中。
+- YAML ↔ JSON 双向往返无损（前端画布用 JSON，CLI 用 YAML）。
+- 保存草稿时只做语法校验；<code>publish</code> 时做全量校验并编译。
+- 图数据同时写 <code>pipeline_node/edge</code>（便于反查）与 <code>pipeline_version.graph</code>（运行快照）。
+<strong>产出</strong>：<code>internal/pipeline/dsl/*</code>、<code>schema/pipeline.schema.json</code>。
+<strong>验收</strong>：YAML→JSON→YAML 往返一致；重复 key 报错定位到行号。</p>
+<h4 id="t0402-dag-p0-2d">T0402 · DAG 校验  <code>P0</code> <code>2d</code></h4>
+<p><strong>目标</strong>：发布前拦住所有图结构错误。
+<strong>要点</strong>
+- 校验项：环检测（Kahn 拓扑排序）、孤立节点（无入边且非 source）、悬空依赖、<code>dependsOn</code> 与 <code>edges</code> 不一致、节点 key 重复、必填字段缺失。
+- 端口类型校验：<code>source</code> 无入边；<code>quality</code> 必须有入边；<code>branch</code> 必须有 <code>then/else</code>。
+- 输出结构化错误列表（可一次返回多个），前端在画布上高亮对应节点。
+- 拓扑序计算结果缓存进 <code>compiled</code>，调度时直接用。
+<strong>产出</strong>：<code>internal/pipeline/compile/dag.go</code>、<code>validate.go</code>。
+<strong>验收</strong>：构造 10 种坏图全部被拒且错误指向正确节点；1 万节点图校验 ≤ 200ms。</p>
+<h4 id="t0403-p0-2d">T0403 · 参数系统  <code>P0</code> <code>2d</code></h4>
+<p><strong>目标</strong>：同一条管道跑不同日期、不同区域，不复制粘贴。
+<strong>要点</strong>
+- 四类命名空间（<code>sys/p/g/nodes</code>）与优先级：节点参数 &gt; 管道参数 &gt; 全局变量 &gt; 系统默认。
+- 日期运算在渲染期完成：<code>${sys.bizdate-1d}</code>、<code>${sys.bizdate-7d}</code>、<code>${sys.month_start}</code>；统一 <code>yyyyMMdd</code>，输出到 SQL 时按列类型加引号。
+- 类型系统：<code>string/int/bool/date/enum</code>，触发时校验并转换；缺必填参数直接拒绝触发。
+- <code>params_snapshot</code> 落库；重跑默认复用快照。
+<strong>产出</strong>：<code>internal/pipeline/params/*</code>、解析器与 20 个用例。
+<strong>验收</strong>：<code>${sys.bizdate-1d}</code> 在月末/年初跨月跨年正确；非法枚举值返回 400 并列出可选值。</p>
+<h4 id="t0404-sql-p0-3d">T0404 · SQL 模板引擎  <code>P0</code> <code>3d</code></h4>
+<p><strong>目标</strong>：写得像 dbt，但比 dbt 更可控。
+<strong>要点</strong>
+- 两阶段渲染：先解析 <code>{{ }}</code> 函数（<code>ref/src/macro/mask/var</code>），再替换 <code>${ }</code> 变量；顺序不可颠倒。
+- <code>ref()</code> 副作用：注册表依赖 + 生成血缘边 + 校验模型存在且已发布；未发布时报错而不是静默用草稿。
+- 宏库内置：<code>partition_range(days)</code>、<code>date_spine(start,end)</code>、<code>dedup(keys,order)</code>、<code>surrogate_key(cols)</code>；宏用 Go 函数实现，禁止用户自定义任意代码。
+- 渲染结果与 <code>refs</code> 列表一起返回；同一输入必须字节级一致（禁止 map 遍历顺序影响输出）。
+- 提供 <code>godw render --node clean --bizdate 20251110</code> 命令行预览。
+<strong>产出</strong>：<code>internal/sqlx/{render,funcs,macros}.go</code>。
+<strong>验收</strong>：<code>ref()</code> 拼错表名报 <code>model not found: xxx</code>；渲染 1000 次结果 hash 一致；宏参数非法时报具体宏名。</p>
+<h4 id="t0405-p0-25d">T0405 · 方言抽象层  <code>P0</code> <code>2.5d</code></h4>
+<p><strong>目标</strong>：一套 SQL 逻辑，四种引擎都能跑。
+<strong>要点</strong>
+- 实现 <code>Dialect</code> 接口全部方法；标识符转义、占位符、分页、日期截断、日期加减、字符串拼接、空值处理、正则、JSON 取值逐项覆盖。
+- 函数映射表：逻辑函数名 → 各引擎实际函数；未覆盖时编译期报 <code>unsupported function</code> 并指出引擎。
+- 能力矩阵 <code>Capability</code> 与方言解耦：方言管语法，能力管特性（是否有 MERGE、是否支持窗口）。
+- 单测方式：同一逻辑 SQL 在四引擎执行，结果集必须一致（用 testcontainers）。
+<strong>产出</strong>：<code>internal/dialect/{postgres,mysql,clickhouse,doris,duckdb}/*</code>、一致性测试。
+<strong>验收</strong>：20 条跨引擎 SQL 结果一致；<code>date_trunc('week')</code> 在 CH 与 PG 周起始一致（周一）。</p>
+<h4 id="t0406-p0-3d">T0406 · 六种写入策略  <code>P0</code> <code>3d</code></h4>
+<p><strong>目标</strong>：写入必须幂等，重跑不产生重复数据。
+<strong>要点</strong>
+- 实现 <code>append / overwrite_partition / merge / scd2 / full_refresh / delete_insert</code>，按 <code>Capability</code> 选择实现路径。
+- <code>merge</code>：优先原生 <code>MERGE</code>；PG 用 <code>ON CONFLICT DO UPDATE</code>；MySQL 用 <code>ON DUPLICATE KEY UPDATE</code>；CH 用 <code>ReplacingMergeTree</code> + <code>FINAL</code> 或 <code>ALTER TABLE ... UPDATE</code>（明确写选型理由）。
+- <code>scd2</code>：先 <code>UPDATE</code> 关链（<code>end_date= bizdate, is_current=0</code>），再 <code>INSERT</code> 新版本；必须在事务内，无事务引擎拒绝执行。
+- <code>overwrite_partition</code>：能力优先级 <code>INSERT OVERWRITE</code>（Doris）→ <code>ALTER TABLE ... REPLACE PARTITION</code>（ClickHouse，需先写临时表）→ <code>DELETE + INSERT</code>（PG/MySQL，必须包在事务里）。三档都不支持时返回 <code>ErrUnsupported</code>，不允许静默全量覆盖。
+- 所有写入自动补 <code>_godw_run_id</code>、<code>_godw_bizdate</code>、<code>_godw_load_at</code>（若模型声明）。
+- 生成语句序列 <code>[]string</code>，由执行器顺序执行并记录每条耗时。
+<strong>产出</strong>：<code>internal/sqlx/write.go</code>、各策略实现、golden 测试。
+<strong>验收</strong>：6 策略 × 4 引擎快照测试；每策略连跑两次，目标表行数与内容不变；scd2 二次运行后历史版本数正确。</p>
+<h4 id="t0407-p0-2d">T0407 · 增量条件推导  <code>P0</code> <code>2d</code></h4>
+<p><strong>目标</strong>：不写 WHERE 也能只跑增量。
+<strong>要点</strong>
+- 依据模型 <code>storage.partitionBy</code> 与 <code>bizDate</code> 自动注入分区裁剪条件（<code>dt = '20251110'</code>）。
+- 若源表无分区字段，降级为时间列推导（<code>updated_at &gt;= bizdate AND &lt; bizdate+1</code>），并在编译结果中标注 <code>inference: time_column</code>。
+- 无法推导时<strong>不猜</strong>：显式报错要求手写 <code>where</code>，避免全表扫描。
+- 推导逻辑输出到 <code>compiled.inference</code> 供前端展示「本次将扫描的分区」。
+<strong>产出</strong>：<code>internal/pipeline/compile/incremental.go</code>。
+<strong>验收</strong>：无分区字段的源表触发明确报错；推导结果与实际扫描分区一致（用 CH <code>system.query_log</code> 校验）。</p>
+<h4 id="t0408-p1-3d">T0408 · 内置算子  <code>P1</code> <code>3d</code></h4>
+<p><strong>目标</strong>：常见清洗不用手写 SQL。
+<strong>要点</strong>
+- 算子：<code>dedup(keys, orderBy)</code>、<code>cast(map)</code>、<code>rename(map)</code>、<code>filter(expr)</code>、<code>join(model, on, type)</code>、<code>union(models)</code>、<code>aggregate(groupBy, aggs)</code>、<code>window(partitionBy, orderBy, fn)</code>、<code>mask(columns, strategy)</code>。
+- 算子编译为 SQL 片段，最终仍走 <code>sqlx</code> 渲染；不允许算子内部直接执行。
+- 每个算子有 JSON Schema 描述参数，前端据此生成表单。
+- 算子组合顺序即 SQL 嵌套顺序，输出带注释标明来源算子，便于排查。
+<strong>产出</strong>：<code>internal/pipeline/node/operators/*</code>。
+<strong>验收</strong>：每个算子有「输入样例 → 输出 SQL」快照；<code>mask</code> 对 high 级 PII 必须生效。</p>
+<h4 id="t0409-p0-15d">T0409 · 版本、发布与灰度  <code>P0</code> <code>1.5d</code></h4>
+<p><strong>目标</strong>：改管道不影响线上。
+<strong>要点</strong>
+- <code>draft</code> 可编辑；<code>publish</code> 生成不可变 <code>pipeline_version</code>；调度只认 published。
+- 生产环境发布需二次确认（前端输入管道名）；支持「只发布不调度」用于灰度。
+- 运行中实例保留旧 <code>version_id</code>；新实例用新版本。
+- 提供版本对比 API：返回 graph diff（新增/删除/修改节点与连线）。
+<strong>产出</strong>：<code>service/pipeline_publish.go</code>、diff API。
+<strong>验收</strong>：发布新版本后，进行中的实例仍用旧版本执行；diff 能准确列出改动节点。</p>
+<h4 id="t0410-dry-run-p0-2d">T0410 · 试跑与 Dry-run  <code>P0</code> <code>2d</code></h4>
+<p><strong>目标</strong>：上线前能看到「将要执行什么」。
+<strong>要点</strong>
+- <code>dry-run</code>：完整渲染 SQL + 参数 + 目标表 + 预计扫描分区，不连库执行；返回每条语句与 <code>refs</code>。
+- <code>sample-run</code>：对 SELECT 部分包一层 <code>LIMIT 100</code> 真跑，返回列与样例数据，用于验证字段与类型。
+- 试跑结果不写目标表（事务回滚或只跑 SELECT）。
+- 前端展示「渲染后 SQL」并支持复制、格式化、与上次对比。
+<strong>产出</strong>：<code>service/pipeline_dryrun.go</code>、sample-run 执行器。
+<strong>验收</strong>：dry-run 不产生任何写入（查 <code>run</code> 表无记录）；sample-run 返回 ≤100 行且列类型正确。</p></main>
+</div></body></html>

@@ -1,0 +1,1802 @@
+{
+  "generated_from": "docs/tasks/*.md",
+  "count": 100,
+  "total_days": 191.0,
+  "critical_path_days": 41.0,
+  "critical_path": [
+    "T0101",
+    "T0104",
+    "T0201",
+    "T0202",
+    "T0204",
+    "T0206",
+    "T0302",
+    "T0306",
+    "T0307",
+    "T0404",
+    "T0406",
+    "T0409",
+    "T0501",
+    "T0502",
+    "T0504",
+    "T0505",
+    "T0507",
+    "T0512",
+    "T1002"
+  ],
+  "max_level_width": 9,
+  "epics": {
+    "E01": "工程基座",
+    "E02": "元数据与数据源",
+    "E03": "分层建模",
+    "E04": "管道与 SQL 引擎",
+    "E05": "调度与执行",
+    "E06": "质量与血缘",
+    "E07": "语义层与 BI",
+    "E08": "治理与安全",
+    "E09": "前端与可视化",
+    "E10": "交付与工程化"
+  },
+  "tasks": [
+    {
+      "id": "T0101",
+      "title": "仓库骨架与依赖边界",
+      "priority": "P0",
+      "estimate_days": 1.0,
+      "epic": "E01",
+      "epic_name": "工程基座",
+      "source": "docs/tasks/E01-E02-基座与元数据.md",
+      "card": "**目标**：建立能长期演进、AI 不会写乱的目录结构。\n**要点**\n- 严格按 `docs/03` 第 1 节创建 `cmd/internal/pkg` 三层；`internal` 内按领域分包，禁止建 `utils` 大杂烩。\n- 只允许单向依赖：`api → service → repo/domain`，`executor → connector`。\n- 引入 `depguard` 规则写入 `.golangci.yml`，违规即 CI 失败。\n- `go.mod` 声明 `module github.com/<org>/godw`，Go 版本 1.22。\n**产出**：目录树、`go.mod`、`.golangci.yml`、根 `README.md`。\n**验收**：`go build ./...`、`go vet ./...`、`golangci-lint run` 全部通过；空包都有 `doc.go` 说明职责。",
+      "deps": [],
+      "scope": [
+        "epic:E01"
+      ],
+      "level": 0
+    },
+    {
+      "id": "T0102",
+      "title": "配置系统",
+      "priority": "P0",
+      "estimate_days": 1.0,
+      "epic": "E01",
+      "epic_name": "工程基座",
+      "source": "docs/tasks/E01-E02-基座与元数据.md",
+      "card": "**目标**：一份配置跑多环境，敏感信息不落盘。\n**要点**\n- `config.yaml` + 环境变量覆盖，前缀 `GODW_`，层级用 `_` 连接（`GODW_DB_HOST`）。\n- 结构体用 `validator` 标签做必填/范围校验，启动失败要打印**具体字段名**和来源。\n- 支持 `config.dev.yaml` / `config.prod.yaml` 叠加；`--config` 指定路径。\n- 敏感项只允许从环境变量或 secret 文件读，禁止写默认值。\n**产出**：`internal/config/config.go`、`loader.go`、`config.example.yaml`。\n**验收**：三条优先级（默认 < 文件 < 环境变量）单测通过；缺 `db.host` 时启动报 `config: db.host is required (source: default)`。",
+      "deps": [
+        "T0101"
+      ],
+      "scope": [
+        "internal/config"
+      ],
+      "level": 1
+    },
+    {
+      "id": "T0103",
+      "title": "日志、错误码与链路 ID",
+      "priority": "P0",
+      "estimate_days": 1.0,
+      "epic": "E01",
+      "epic_name": "工程基座",
+      "source": "docs/tasks/E01-E02-基座与元数据.md",
+      "card": "**目标**：出问题能凭一个 ID 定位全链路。\n**要点**\n- zap JSON 输出，固定字段 `ts/level/msg/request_id/trace_id/workspace_id/instance_id`。\n- `pkg/errs` 定义 `AppError{Code int, Msg string, Cause error, Meta map[string]any}`，实现 `Unwrap()`；提供 `Wrap/Is/As`。\n- 错误码常量集中在 `pkg/errs/codes.go`，分段与 API 文档一致（10xxx/20xxx/30xxx/40xxx/50xxx）。\n- HTTP 中间件生成 `request_id`（ULID），注入 ctx 与响应头 `X-Request-Id`；panic 恢复为 500 并记录堆栈。\n**产出**：`pkg/errs/*`、`internal/obs/log/*`、中间件。\n**验收**：构造 3 层包装错误，`errors.Is` 能命中底层；panic 请求返回统一 JSON 且日志含 stack。",
+      "deps": [
+        "T0101"
+      ],
+      "scope": [
+        "internal/obs/log",
+        "pkg/errs"
+      ],
+      "level": 1
+    },
+    {
+      "id": "T0104",
+      "title": "迁移与 sqlc 接入",
+      "priority": "P0",
+      "estimate_days": 1.5,
+      "epic": "E01",
+      "epic_name": "工程基座",
+      "source": "docs/tasks/E01-E02-基座与元数据.md",
+      "card": "**目标**：schema 变更可追溯、可回滚，查询类型安全。\n**要点**\n- goose 迁移放 `migrations/`，命名 `0001_init.sql`；每个迁移必须写 `-- +goose Down`。\n- `sqlc.yaml` 按领域分 package（`meta`、`scheduler`、`bi`），`emit_pointers_for_null_types: true`。\n- 连接池 pgx/v5，参数：`max_conns=20`、`min_conns=2`、`max_conn_lifetime=30m`。\n- 迁移作为独立命令执行（`godw migrate up`），server 启动只校验版本，不自动迁移。\n**产出**：迁移脚本、`sqlc.yaml`、`internal/meta/repo/db.go`。\n**验收**：空库执行 `make migrate` 成功；`sqlc generate` 后 `git diff --exit-code` 无变更；重复迁移幂等。",
+      "deps": [
+        "T0101"
+      ],
+      "scope": [
+        "internal/meta/repo"
+      ],
+      "level": 1
+    },
+    {
+      "id": "T0105",
+      "title": "HTTP 基础层",
+      "priority": "P0",
+      "estimate_days": 1.5,
+      "epic": "E01",
+      "epic_name": "工程基座",
+      "source": "docs/tasks/E01-E02-基座与元数据.md",
+      "card": "**目标**：所有接口共享一致的入参校验、响应与错误处理。\n**要点**\n- 中间件顺序：`recover → requestID → accessLog → auth → rbac → audit → rateLimit`。\n- 统一响应封装 `{code,message,data,requestId}`；分页解析 `page/pageSize/sort`，`pageSize` 上限 200。\n- 入参用 DTO + `binding` 标签，错误转成 `20xxx` 并返回字段级信息。\n- CORS、gzip、健康检查 `/healthz`、就绪 `/readyz`（检查 DB 与迁移版本）。\n**产出**：`internal/api/http/router.go`、`middleware/*`、`response/*`。\n**验收**：非法 body 返回 400 + 字段名；`/readyz` 在 DB 断开时返回 503；中间件顺序有单测。",
+      "deps": [
+        "T0103",
+        "T0104"
+      ],
+      "scope": [
+        "internal/api/http"
+      ],
+      "level": 2
+    },
+    {
+      "id": "T0106",
+      "title": "OpenAPI 契约",
+      "priority": "P0",
+      "estimate_days": 1.0,
+      "epic": "E01",
+      "epic_name": "工程基座",
+      "source": "docs/tasks/E01-E02-基座与元数据.md",
+      "card": "**目标**：前后端并行开发，接口变更可审查。\n**要点**\n- 手写 `api/openapi.yaml`（3.1），用 `oapi-codegen` 生成 server 接口与 TS 类型。\n- CI 用 `oasdiff` 检查 breaking change，破坏性变更需 PR 标签 `api-breaking`。\n- 生成物提交入库，禁止运行期反射生成文档。\n**产出**：`api/openapi.yaml`、`api/gen/*`、`web/src/api/types.ts`。\n**验收**：`make api-gen` 无 diff；`oasdiff` 在删除字段时报错。",
+      "deps": [
+        "T0101"
+      ],
+      "scope": [
+        "api",
+        "api/gen",
+        "web/src/api"
+      ],
+      "level": 1
+    },
+    {
+      "id": "T0107",
+      "title": "本地开发环境",
+      "priority": "P0",
+      "estimate_days": 1.0,
+      "epic": "E01",
+      "epic_name": "工程基座",
+      "source": "docs/tasks/E01-E02-基座与元数据.md",
+      "card": "**目标**：新人一条命令起全套依赖。\n**要点**\n- `deploy/docker-compose.dev.yaml`：postgres:16、redis:7、mysql:8、clickhouse:24、minio。\n- 初始化脚本建库 `godw`、建只读账号、创建 CH 测试库 `dw`。\n- `make up / down / reset / seed`；`seed` 灌入样例业务表（订单 10 万行）。\n**产出**：compose 文件、`deploy/init/*.sql`、Makefile。\n**验收**：`make reset && make migrate && make seed && make smoke` 全绿；冷启动 ≤ 90s。",
+      "deps": [
+        "T0101"
+      ],
+      "scope": [
+        "deploy/init"
+      ],
+      "level": 1
+    },
+    {
+      "id": "T0108",
+      "title": "CI 流水线",
+      "priority": "P0",
+      "estimate_days": 1.0,
+      "epic": "E01",
+      "epic_name": "工程基座",
+      "source": "docs/tasks/E01-E02-基座与元数据.md",
+      "card": "**目标**：质量门禁自动化。\n**要点**\n- 任务：lint（golangci-lint）、test（`-race -coverprofile`）、build（多架构）、docker image、web lint+build。\n- 缓存 Go module 与 pnpm store；PR 必跑，main 分支额外跑 integration。\n- 覆盖率低于阈值（70%）直接失败。\n**产出**：`.github/workflows/ci.yaml`、`.golangci.yml`。\n**验收**：故意提交 lint 错误与失败测试，CI 均能拦住。",
+      "deps": [
+        "T0101"
+      ],
+      "scope": [
+        ".github/workflows"
+      ],
+      "level": 1
+    },
+    {
+      "id": "T0109",
+      "title": "集成测试框架",
+      "priority": "P0",
+      "estimate_days": 1.0,
+      "epic": "E01",
+      "epic_name": "工程基座",
+      "source": "docs/tasks/E01-E02-基座与元数据.md",
+      "card": "**目标**：连接器与 SQL 逻辑必须跑真库。\n**要点**\n- `testcontainers-go` 启 PG/MySQL/CH；DuckDB 用内存模式。\n- 提供 `testkit.NewPG(t)` 返回已迁移 + 已 seed 的实例，测试结束自动清理。\n- 集成测试加 `//go:build integration`，`make test-integration` 单独跑。\n**产出**：`test/testkit/*`、示例测试 3 个。\n**验收**：`make test-integration` 5 分钟内完成；并行测试互不干扰（随机 schema 名）。",
+      "deps": [
+        "T0104",
+        "T0107"
+      ],
+      "scope": [
+        "test/testkit"
+      ],
+      "level": 2
+    },
+    {
+      "id": "T0110",
+      "title": "CLI 骨架",
+      "priority": "P0",
+      "estimate_days": 1.0,
+      "epic": "E01",
+      "epic_name": "工程基座",
+      "source": "docs/tasks/E01-E02-基座与元数据.md",
+      "card": "**目标**：所有能力都能脚本化。\n**要点**\n- cobra 子命令：`serve/worker/migrate/version/doctor/config/apply/plan/export/run/backfill`。\n- 全局 `--config`、`--workspace`、`--env`、`--output json|table`。\n- `doctor` 检查：DB 连通、迁移版本、Redis、对象存储、引擎连通性。\n**产出**：`cmd/godw-cli/*`、`internal/cli/*`。\n**验收**：`godw doctor` 在依赖缺失时逐项输出 `FAIL` 与修复建议；`--output json` 可被 jq 解析。",
+      "deps": [
+        "T0102",
+        "T0105"
+      ],
+      "scope": [
+        "cmd/godw-cli",
+        "internal/cli"
+      ],
+      "level": 3
+    },
+    {
+      "id": "T0201",
+      "title": "元数据 DDL 与 ER",
+      "priority": "P0",
+      "estimate_days": 2.0,
+      "epic": "E02",
+      "epic_name": "元数据与数据源",
+      "source": "docs/tasks/E01-E02-基座与元数据.md",
+      "card": "**目标**：把 `docs/02` 的设计落成可执行迁移。\n**要点**\n- 实现第 2.1–2.7 节全部表、索引、约束、分区；分区表先建 3 个月分区。\n- 所有表带 `created_at/updated_at`，写操作靠触发器或应用层统一填充（二选一，全库一致）。\n- 唯一约束必须覆盖业务幂等键，禁止只靠应用层判重。\n**产出**：`migrations/0002_meta.sql` 等、`docs/er.png`（可用 mermaid 替代）。\n**验收**：重复插入 `(pipeline_id,node_key,biz_date)` 报唯一冲突；`\\d+ task_instance` 可见分区与索引。",
+      "deps": [
+        "T0104"
+      ],
+      "scope": [
+        "migrations"
+      ],
+      "level": 2
+    },
+    {
+      "id": "T0202",
+      "title": "Repository 层",
+      "priority": "P0",
+      "estimate_days": 2.0,
+      "epic": "E02",
+      "epic_name": "元数据与数据源",
+      "source": "docs/tasks/E01-E02-基座与元数据.md",
+      "card": "**目标**：数据访问集中、可控、可测。\n**要点**\n- 每个聚合一个 repo（`ModelRepo/PipelineRepo/InstanceRepo/...`），方法首参 `ctx`。\n- 提供 `WithTx(ctx, fn)`，事务内复用同一 `Queries`；禁止在 repo 里开 goroutine。\n- 更新带乐观锁：`WHERE id=$1 AND version=$2`，影响行数 0 → `errs.ErrConflict`（HTTP 409）。\n- 查询方法必须支持分页与过滤，禁止 `SELECT *` 无 limit 暴露给 API。\n**产出**：`internal/meta/repo/*.go`、`tx.go`。\n**验收**：并发更新同一模型，一个成功一个 409；repo 测试跑真 PG 且覆盖软删除过滤。",
+      "deps": [
+        "T0201"
+      ],
+      "scope": [
+        "internal/meta/repo"
+      ],
+      "level": 3
+    },
+    {
+      "id": "T0203",
+      "title": "工作空间与环境",
+      "priority": "P0",
+      "estimate_days": 1.0,
+      "epic": "E02",
+      "epic_name": "元数据与数据源",
+      "source": "docs/tasks/E01-E02-基座与元数据.md",
+      "card": "**目标**：多项目、多环境隔离的最小闭环。\n**要点**\n- workspace 创建时自动建 `dev/prod` 两个 env 与 `default` 资源组。\n- `env.bindings` 维护「逻辑别名 → datasource_id」，提供解析函数 `ResolveDatasource(alias, env)`。\n- 删除 workspace 用软删除 + 级联校验（有运行中实例时拒绝）。\n**产出**：service/handler/DTO、解析函数与单测。\n**验收**：同一模型在 dev/prod 解析出不同数据源；有运行实例时删除返回 409。",
+      "deps": [
+        "T0105",
+        "T0202"
+      ],
+      "scope": [
+        "epic:E02"
+      ],
+      "level": 4
+    },
+    {
+      "id": "T0204",
+      "title": "数据源管理",
+      "priority": "P0",
+      "estimate_days": 2.0,
+      "epic": "E02",
+      "epic_name": "元数据与数据源",
+      "source": "docs/tasks/E01-E02-基座与元数据.md",
+      "card": "**目标**：安全地存连接信息并验证可用性。\n**要点**\n- 密码走 `secret` 表：AES-256-GCM，密钥来自环境变量 `GODW_SECRET_KEY`（32 字节），支持 `key_version` 轮换。\n- 连接串按类型拼装，参数集中在 `connector/dsn.go`，禁止字符串拼接 SQL。\n- 测试连接超时 5s，返回耗时与版本号；失败区分「网络不可达 / 认证失败 / 库不存在」。\n- 列表接口不回传密码，只回 `hasPassword: true`。\n**产出**：`internal/meta/service/datasource.go`、`internal/connector/dsn.go`、加密工具。\n**验收**：DB 中 `secret` 表无明文；错误密码返回 `50002 auth failed`；测试接口 5s 内必返回。",
+      "deps": [
+        "T0103",
+        "T0202"
+      ],
+      "scope": [
+        "internal/connector",
+        "internal/meta/service"
+      ],
+      "level": 4
+    },
+    {
+      "id": "T0205",
+      "title": "连接器接口与注册表",
+      "priority": "P0",
+      "estimate_days": 2.0,
+      "epic": "E02",
+      "epic_name": "元数据与数据源",
+      "source": "docs/tasks/E01-E02-基座与元数据.md",
+      "card": "**目标**：新增数据源不改核心代码。\n**要点**\n- 实现 `docs/03` 第 2 节 `Connector` 接口与 `Register/Open`；工厂签名 `func(ctx, Config) (Connector, error)`。\n- 连接池按 `datasource_id` 缓存，`sync.Map` + 引用计数，空闲 10 分钟回收。\n- 所有方法必须响应 ctx 取消；`Query` 返回的 `Rows` 必须可 `Close` 且幂等。\n- 提供 `connectortest` 套件：一套接口测试跑遍所有实现。\n**产出**：`types.go`、`registry.go`、`pool.go`、`connectortest/suite.go`。\n**验收**：注册表并发注册/获取无 race（`-race` 通过）；ctx 取消后 `Query` 1s 内返回。",
+      "deps": [
+        "T0202"
+      ],
+      "scope": [
+        "connectortest"
+      ],
+      "level": 4
+    },
+    {
+      "id": "T0206",
+      "title": "四个首期连接器",
+      "priority": "P0",
+      "estimate_days": 4.0,
+      "epic": "E02",
+      "epic_name": "元数据与数据源",
+      "source": "docs/tasks/E01-E02-基座与元数据.md",
+      "card": "**目标**：覆盖 80% 使用场景。\n**要点**\n- PostgreSQL（pgx）、MySQL（go-sql-driver）、ClickHouse（clickhouse-go v2）、DuckDB（嵌入式）。\n- 每个实现 `Capabilities()`：PG/MySQL `MergeUpsert=true`；Doris `InsertOverwrite=true`；ClickHouse `InsertOverwrite=false, ReplacePartition=true`（CH 无 `INSERT OVERWRITE`，只有 `REPLACE PARTITION`）；DuckDB 单机全支持。能力声明错一个，写入策略就会生成跑不通的 SQL，必须有集成测试兜底。\n- 类型映射表落在 `dialect/<engine>/types.go`，覆盖 string/int/float/decimal/date/timestamp/bool/json/array。\n- 大结果集用 `Stream`，CH 必须用 native 协议而非 HTTP。\n**产出**：`connector/{postgres,mysql,clickhouse,duckdb}/*`。\n**验收**：`connectortest` 全通过；10 万行导出内存增长 < 100MB；`Cancel` 后服务端查询确实终止（查 `pg_stat_activity` / `system.processes`）。",
+      "deps": [
+        "T0204",
+        "T0205"
+      ],
+      "scope": [
+        "epic:E02"
+      ],
+      "level": 5
+    },
+    {
+      "id": "T0207",
+      "title": "元数据采集",
+      "priority": "P0",
+      "estimate_days": 2.0,
+      "epic": "E02",
+      "epic_name": "元数据与数据源",
+      "source": "docs/tasks/E01-E02-基座与元数据.md",
+      "card": "**目标**：不连库也能看到表结构。\n**要点**\n- 统一 `Collector` 接口：`Collect(ctx, schema) ([]TableMeta, error)`，各引擎用 `information_schema` / `system.tables` / `DESCRIBE`。\n- 计算结构指纹 `fingerprint = sha256(sorted(column name+type+nullable))`，与库中比对判断是否变化。\n- 大表行数用估算（`pg_class.reltuples`、`system.parts`），不做 `COUNT(*)`。\n- 采集结果写 `meta_table`，保留上次指纹用于变更对比。\n**产出**：`connector/*/collect.go`、`internal/meta/service/collect.go`。\n**验收**：1000 张表采集 ≤ 30s；新增一列后再次采集能识别 `add_column`。",
+      "deps": [
+        "T0201",
+        "T0206"
+      ],
+      "scope": [
+        "connector/*",
+        "internal/meta/service"
+      ],
+      "level": 6
+    },
+    {
+      "id": "T0208",
+      "title": "采集调度与变更告警",
+      "priority": "P1",
+      "estimate_days": 1.5,
+      "epic": "E02",
+      "epic_name": "元数据与数据源",
+      "source": "docs/tasks/E01-E02-基座与元数据.md",
+      "card": "**目标**：表结构漂移能被发现。\n**要点**\n- 支持手动刷新与定时刷新（默认每日 02:00），同一数据源加分布式锁防并发。\n- 采集 diff 生成 `schema_change` 记录（add/drop/modify column），推送到站内消息。\n- 采集失败重试 3 次，仍失败标记数据源 `status=failed` 并告警。\n**产出**：`internal/meta/service/collect_job.go`、变更记录表与 API。\n**验收**：删除源表一列后，站内消息出现 `drop_column` 且含表名与列名。",
+      "deps": [
+        "T0207"
+      ],
+      "scope": [
+        "internal/meta/service"
+      ],
+      "level": 7
+    },
+    {
+      "id": "T0209",
+      "title": "敏感字段识别",
+      "priority": "P1",
+      "estimate_days": 1.5,
+      "epic": "E02",
+      "epic_name": "元数据与数据源",
+      "source": "docs/tasks/E01-E02-基座与元数据.md",
+      "card": "**目标**：为脱敏与合规提供依据。\n**要点**\n- 规则两层：列名正则（`phone|mobile|id_card|email|bank_card|address`）+ 值采样（每列最多 200 行，正则命中率 > 80% 判定）。\n- 采样必须 `LIMIT`，禁止全表扫描；对超大表随机采样。\n- 结果写 `column.pii`（none/low/medium/high）与 `pii_reason`，允许人工覆盖并记录操作人。\n**产出**：`internal/meta/service/pii.go`、识别规则配置。\n**验收**：样例库中手机号/邮箱列识别准确率 ≥ 90%；人工修改后不被下次采集覆盖。",
+      "deps": [
+        "T0207"
+      ],
+      "scope": [
+        "internal/meta/service"
+      ],
+      "level": 7
+    },
+    {
+      "id": "T0210",
+      "title": "元数据搜索与标签",
+      "priority": "P1",
+      "estimate_days": 1.5,
+      "epic": "E02",
+      "epic_name": "元数据与数据源",
+      "source": "docs/tasks/E01-E02-基座与元数据.md",
+      "card": "**目标**：几万张表里能快速找到目标表。\n**要点**\n- PG 全文检索（`to_tsvector('simple', name||comment)`）+ `pg_trgm` 模糊匹配双通道，中文按字切分。\n- 支持按 `layer/datasource/tag/owner` 过滤，结果高亮命中词。\n- 标签 CRUD + 批量打标；标签可作为模型编译的软约束（如 `pii=high` 必须有脱敏）。\n**产出**：搜索 API、标签表与 service。\n**验收**：10 万行元数据下关键词搜索 p95 ≤ 100ms；中文表名可命中。",
+      "deps": [
+        "T0201",
+        "T0203"
+      ],
+      "scope": [
+        "epic:E02"
+      ],
+      "level": 5
+    },
+    {
+      "id": "T0301",
+      "title": "模型 DSL 与校验",
+      "priority": "P0",
+      "estimate_days": 2.0,
+      "epic": "E03",
+      "epic_name": "分层建模",
+      "source": "docs/tasks/E03-E04-模型与管道.md",
+      "card": "**目标**：用一份 YAML 描述一张数仓表，且能被人和 AI 读懂。\n**要点**\n- 结构体对齐 `docs/03` 第 4 节 `ModelSpec`；同时输出 `schema/model.schema.json`（JSON Schema Draft 2020-12）供编辑器补全。\n- 校验分三层：语法（JSON Schema）→ 语义（层规则、主键、分区字段存在）→ 环境（目标数据源是否支持该类型/物化方式）。\n- 错误必须结构化：`{path: \"columns[3].type\", code: \"invalid_type\", message: \"decimal(18,4) 在 clickhouse 需指定精度\"}`，前端可直接定位到表单字段。\n- 支持 `godw validate -f model.yaml` 离线校验。\n**产出**：`internal/pipeline/dsl/model.go`、`schema/*.json`、校验器与 30 个反例测试。\n**验收**：30 个反例全部报出正确 `path`；合法样例零告警；JSON Schema 能在 VSCode 中生效。",
+      "deps": [
+        "T0201"
+      ],
+      "scope": [
+        "internal/pipeline/dsl",
+        "schema"
+      ],
+      "level": 3
+    },
+    {
+      "id": "T0302",
+      "title": "模型编译器（逻辑 → DDL）",
+      "priority": "P0",
+      "estimate_days": 3.0,
+      "epic": "E03",
+      "epic_name": "分层建模",
+      "source": "docs/tasks/E03-E04-模型与管道.md",
+      "card": "**目标**：一份模型定义，编译出四种引擎都能跑的建表语句。\n**要点**\n- `Compile` 必须是纯函数（无 IO、无全局状态、无时间依赖），便于表驱动测试与快照对比。\n- 输出按引擎组织语句序列：PG/MySQL 单条 `CREATE TABLE`；CH 需 `CREATE TABLE ... ENGINE = MergeTree() PARTITION BY ... ORDER BY ... TTL ...`；Doris 需 `DISTRIBUTED BY HASH(...) BUCKETS n`。\n- 列注释：PG 用 `COMMENT ON COLUMN`，MySQL 内联 `COMMENT`，CH 用 `COMMENT` 子句，Doris 内联。\n- 生成 `CREATE TABLE IF NOT EXISTS` 与「已存在则比对」两套路径；结构不一致时报 `schema drift`，不静默跳过。\n- DDL 输出稳定排序（列按定义顺序、选项按固定键序），保证 diff 可比。\n**产出**：`internal/modelc/compile.go`、`ddl_{pg,mysql,ch,doris}.go`、golden 测试。\n**验收**：同一模型四引擎 DDL 快照测试通过；两次编译字节级一致；对已存在且结构不同的表返回明确错误码。",
+      "deps": [
+        "T0206",
+        "T0301"
+      ],
+      "scope": [
+        "internal/modelc"
+      ],
+      "level": 6
+    },
+    {
+      "id": "T0303",
+      "title": "分层规范强制",
+      "priority": "P0",
+      "estimate_days": 1.5,
+      "epic": "E03",
+      "epic_name": "分层建模",
+      "source": "docs/tasks/E03-E04-模型与管道.md",
+      "card": "**目标**：让「分层」成为约束而非口号。\n**要点**\n- 表名必须匹配 `^(ods|dwd|dws|ads)_[a-z][a-z0-9_]*$`，否则编译失败。\n- 引用规则：`ods` 只能引用数据源原始表；`dwd` 引用 `ods/dwd`；`dws` 引用 `dwd/dws`；`ads` 引用 `dwd/dws/ads`。跨层引用（如 `ods` 直接读 `dws`）一律拒绝。\n- 每层必填列：`dt DATE`；ODS 额外 `_godw_src STRING`、`_godw_load_at TIMESTAMP`；DWD/DWS 必须有主键或粒度声明。\n- 规则以配置表实现（`layer_rule`），允许工作空间级覆盖，但默认值不可关闭「禁止反向依赖」。\n**产出**：`internal/modelc/rules.go`、规则配置与测试。\n**验收**：构造 12 种违规引用，全部被拒且错误信息说明「哪条规则、哪个字段」。",
+      "deps": [
+        "T0301"
+      ],
+      "scope": [
+        "internal/modelc"
+      ],
+      "level": 4
+    },
+    {
+      "id": "T0304",
+      "title": "分区、分桶与生命周期",
+      "priority": "P0",
+      "estimate_days": 1.5,
+      "epic": "E03",
+      "epic_name": "分层建模",
+      "source": "docs/tasks/E03-E04-模型与管道.md",
+      "card": "**目标**：控制存储成本与查询效率。\n**要点**\n- `storage.partitionBy` 支持表达式（`dt`、`toYYYYMM(dt)`、`date_trunc('month', dt)`），编译时按引擎能力转换。\n- `ttl` 支持 `30d/12m/3y`，转成 CH `TTL dt + INTERVAL`、PG 分区删除策略（由维护任务执行）。\n- 分区字段必须在列定义中存在且非空；分区粒度不得细于小时（防小文件）。\n- 提供「分区预创建」能力：维护任务提前 7 天建分区。\n**产出**：`modelc/partition.go`、维护任务、TTL 清理逻辑。\n**验收**：CH 建表后 `system.parts` 分区符合预期；过期分区在维护任务执行后被删除并留审计。",
+      "deps": [
+        "T0302"
+      ],
+      "scope": [
+        "modelc"
+      ],
+      "level": 7
+    },
+    {
+      "id": "T0305",
+      "title": "跨引擎类型映射矩阵",
+      "priority": "P0",
+      "estimate_days": 2.0,
+      "epic": "E03",
+      "epic_name": "分层建模",
+      "source": "docs/tasks/E03-E04-模型与管道.md",
+      "card": "**目标**：一处定义类型，处处可用。\n**要点**\n- 逻辑类型集合：`string,text,int32,int64,float64,decimal(p,s),bool,date,timestamp,json,array<T>,map<K,V>`。\n- 维护矩阵（Go 表 + 文档表格双份，测试保证一致）：行=逻辑类型，列=引擎，值=物理类型 + 是否需精度参数 + 是否有损。\n- 有损映射（如 `json → string`、`decimal(38,10) → decimal(18,4)`）编译时产生 `warning`，需显式 `allowLossy: true` 才放行。\n- 反向映射（引擎类型 → 逻辑类型）用于元数据采集与 ODS 自动建模。\n**产出**：`dialect/types_matrix.go`、`docs/type-matrix.md`、双向转换测试。\n**验收**：矩阵每个单元格都有测试；有损转换未声明时编译失败。",
+      "deps": [
+        "T0206",
+        "T0301"
+      ],
+      "scope": [
+        "dialect"
+      ],
+      "level": 6
+    },
+    {
+      "id": "T0306",
+      "title": "Schema 变更管理",
+      "priority": "P0",
+      "estimate_days": 2.0,
+      "epic": "E03",
+      "epic_name": "分层建模",
+      "source": "docs/tasks/E03-E04-模型与管道.md",
+      "card": "**目标**：改表结构不能悄悄搞坏下游。\n**要点**\n- `Diff(old, new)` 输出 `Change{Kind, Column, From, To, Breaking}`；判定规则：删列/改类型/改分区/改主键 = breaking；加可空列/加注释 = safe。\n- breaking 变更必须走「申请 → 影响分析（调 T0609）→ 审批 → 执行」流程；MVP 可先用「二次确认 + 记录操作人」。\n- 提供迁移 SQL 生成：`ALTER TABLE ... ADD COLUMN`，CH 的 `ADD COLUMN` 需带 `AFTER`；不支持的类型变更给出「新建表 + 双写 + 切换」建议。\n- 所有变更写 `model_version` 与审计日志，可回滚到任意历史版本。\n**产出**：`modelc/diff.go`、变更申请 API、迁移 SQL 生成器。\n**验收**：删列被判定 breaking 并拦截直接发布；加列生成正确 ALTER；回滚后 DDL 与历史版本一致。",
+      "deps": [
+        "T0302",
+        "T0305"
+      ],
+      "scope": [
+        "modelc"
+      ],
+      "level": 7
+    },
+    {
+      "id": "T0307",
+      "title": "版本与发布",
+      "priority": "P0",
+      "estimate_days": 1.5,
+      "epic": "E03",
+      "epic_name": "分层建模",
+      "source": "docs/tasks/E03-E04-模型与管道.md",
+      "card": "**目标**：定义可追溯，运行不受编辑影响。\n**要点**\n- `publish` 生成不可变 `model_version` 快照（含 DDL 与 hash），`version` 自增；`draft` 可随意改。\n- 运行中的任务绑定 `version_id`；发布新版本不改变已排队实例的行为。\n- `rollback(model, version)` 生成**新版本**（内容等于旧版），不删除历史，保证审计链完整。\n- 同名模型并发发布用 `SELECT ... FOR UPDATE` 或唯一约束兜底。\n**产出**：`internal/meta/service/model_publish.go`。\n**验收**：发布后修改 draft 不影响已发布版本；回滚产生 version+1 且 `ddl_hash` 与目标版本相同。",
+      "deps": [
+        "T0302",
+        "T0306"
+      ],
+      "scope": [
+        "internal/meta/service"
+      ],
+      "level": 8
+    },
+    {
+      "id": "T0308",
+      "title": "物化方式",
+      "priority": "P1",
+      "estimate_days": 1.5,
+      "epic": "E03",
+      "epic_name": "分层建模",
+      "source": "docs/tasks/E03-E04-模型与管道.md",
+      "card": "**目标**：支持不同时效与成本要求。\n**要点**\n- `table`：物理表，调度写入；`view`：逻辑视图，不占存储，查询实时；`mv`：物化视图（CH/PG 支持，MySQL 不支持需降级为表+定时刷新）；`incremental`：增量表，配合写入策略。\n- 不支持时编译期报错并给替代方案，不允许静默降级。\n- view 不允许配置 TTL/分区，校验时拒绝。\n**产出**：`modelc/materialization.go`。\n**验收**：MySQL 上定义 mv 返回明确错误与建议；view 的查询能正确透传到底表。",
+      "deps": [
+        "T0302"
+      ],
+      "scope": [
+        "modelc"
+      ],
+      "level": 7
+    },
+    {
+      "id": "T0309",
+      "title": "建模脚手架",
+      "priority": "P1",
+      "estimate_days": 1.0,
+      "epic": "E03",
+      "epic_name": "分层建模",
+      "source": "docs/tasks/E03-E04-模型与管道.md",
+      "card": "**目标**：降低建表门槛，保证新表天然合规。\n**要点**\n- `godw init model --layer dwd --from ods_order --name dwd_order_detail` 读取源表结构，自动生成 YAML 骨架（含 `dt`、审计列、注释、类型映射）。\n- 生成时自动推断主键候选（唯一且非空的列）并提示确认。\n- 模板内置四层各一套标准字段（ODS 审计列、DWD 主键区、DWS 粒度区、ADS 展示区）。\n**产出**：`internal/cli/init_model.go`、模板文件。\n**验收**：从 MySQL 表生成 YAML 后 `godw validate` 直接通过；字段顺序与源表一致。",
+      "deps": [
+        "T0207",
+        "T0302"
+      ],
+      "scope": [
+        "internal/cli"
+      ],
+      "level": 7
+    },
+    {
+      "id": "T0310",
+      "title": "数据字典与注释同步",
+      "priority": "P2",
+      "estimate_days": 1.0,
+      "epic": "E03",
+      "epic_name": "分层建模",
+      "source": "docs/tasks/E03-E04-模型与管道.md",
+      "card": "**目标**：文档跟着模型走，不靠人肉维护。\n**要点**\n- 发布时把列注释写入引擎（`COMMENT ON` / 内联），并从引擎回读校验。\n- `godw export-doc --format md|html` 输出数据字典：表清单、字段、类型、口径说明、上下游。\n- 字典页支持按层/标签筛选，可导出 Excel。\n**产出**：`internal/modelc/doc.go`、导出命令。\n**验收**：修改注释并发布后，引擎中 `col_description` 同步更新；导出的 md 表格列齐全。",
+      "deps": [
+        "T0307"
+      ],
+      "scope": [
+        "internal/modelc"
+      ],
+      "level": 9
+    },
+    {
+      "id": "T0401",
+      "title": "管道 DSL 与存储",
+      "priority": "P0",
+      "estimate_days": 2.0,
+      "epic": "E04",
+      "epic_name": "管道与 SQL 引擎",
+      "source": "docs/tasks/E03-E04-模型与管道.md",
+      "card": "**目标**：管道可读、可 diff、可被 AI 生成。\n**要点**\n- 结构对齐 `docs/03` 第 5 节；`nodes[].key` 全局唯一，`type` 必须在注册表中。\n- YAML ↔ JSON 双向往返无损（前端画布用 JSON，CLI 用 YAML）。\n- 保存草稿时只做语法校验；`publish` 时做全量校验并编译。\n- 图数据同时写 `pipeline_node/edge`（便于反查）与 `pipeline_version.graph`（运行快照）。\n**产出**：`internal/pipeline/dsl/*`、`schema/pipeline.schema.json`。\n**验收**：YAML→JSON→YAML 往返一致；重复 key 报错定位到行号。",
+      "deps": [
+        "T0301"
+      ],
+      "scope": [
+        "internal/pipeline/dsl",
+        "schema"
+      ],
+      "level": 4
+    },
+    {
+      "id": "T0402",
+      "title": "DAG 校验",
+      "priority": "P0",
+      "estimate_days": 2.0,
+      "epic": "E04",
+      "epic_name": "管道与 SQL 引擎",
+      "source": "docs/tasks/E03-E04-模型与管道.md",
+      "card": "**目标**：发布前拦住所有图结构错误。\n**要点**\n- 校验项：环检测（Kahn 拓扑排序）、孤立节点（无入边且非 source）、悬空依赖、`dependsOn` 与 `edges` 不一致、节点 key 重复、必填字段缺失。\n- 端口类型校验：`source` 无入边；`quality` 必须有入边；`branch` 必须有 `then/else`。\n- 输出结构化错误列表（可一次返回多个），前端在画布上高亮对应节点。\n- 拓扑序计算结果缓存进 `compiled`，调度时直接用。\n**产出**：`internal/pipeline/compile/dag.go`、`validate.go`。\n**验收**：构造 10 种坏图全部被拒且错误指向正确节点；1 万节点图校验 ≤ 200ms。",
+      "deps": [
+        "T0401"
+      ],
+      "scope": [
+        "internal/pipeline/compile"
+      ],
+      "level": 5
+    },
+    {
+      "id": "T0403",
+      "title": "参数系统",
+      "priority": "P0",
+      "estimate_days": 2.0,
+      "epic": "E04",
+      "epic_name": "管道与 SQL 引擎",
+      "source": "docs/tasks/E03-E04-模型与管道.md",
+      "card": "**目标**：同一条管道跑不同日期、不同区域，不复制粘贴。\n**要点**\n- 四类命名空间（`sys/p/g/nodes`）与优先级：节点参数 > 管道参数 > 全局变量 > 系统默认。\n- 日期运算在渲染期完成：`${sys.bizdate-1d}`、`${sys.bizdate-7d}`、`${sys.month_start}`；统一 `yyyyMMdd`，输出到 SQL 时按列类型加引号。\n- 类型系统：`string/int/bool/date/enum`，触发时校验并转换；缺必填参数直接拒绝触发。\n- `params_snapshot` 落库；重跑默认复用快照。\n**产出**：`internal/pipeline/params/*`、解析器与 20 个用例。\n**验收**：`${sys.bizdate-1d}` 在月末/年初跨月跨年正确；非法枚举值返回 400 并列出可选值。",
+      "deps": [
+        "T0401"
+      ],
+      "scope": [
+        "internal/pipeline/params"
+      ],
+      "level": 5
+    },
+    {
+      "id": "T0404",
+      "title": "SQL 模板引擎",
+      "priority": "P0",
+      "estimate_days": 3.0,
+      "epic": "E04",
+      "epic_name": "管道与 SQL 引擎",
+      "source": "docs/tasks/E03-E04-模型与管道.md",
+      "card": "**目标**：写得像 dbt，但比 dbt 更可控。\n**要点**\n- 两阶段渲染：先解析 `{{ }}` 函数（`ref/src/macro/mask/var`），再替换 `${ }` 变量；顺序不可颠倒。\n- `ref()` 副作用：注册表依赖 + 生成血缘边 + 校验模型存在且已发布；未发布时报错而不是静默用草稿。\n- 宏库内置：`partition_range(days)`、`date_spine(start,end)`、`dedup(keys,order)`、`surrogate_key(cols)`；宏用 Go 函数实现，禁止用户自定义任意代码。\n- 渲染结果与 `refs` 列表一起返回；同一输入必须字节级一致（禁止 map 遍历顺序影响输出）。\n- 提供 `godw render --node clean --bizdate 20251110` 命令行预览。\n**产出**：`internal/sqlx/{render,funcs,macros}.go`。\n**验收**：`ref()` 拼错表名报 `model not found: xxx`；渲染 1000 次结果 hash 一致；宏参数非法时报具体宏名。",
+      "deps": [
+        "T0307",
+        "T0403"
+      ],
+      "scope": [
+        "internal/sqlx"
+      ],
+      "level": 9
+    },
+    {
+      "id": "T0405",
+      "title": "方言抽象层",
+      "priority": "P0",
+      "estimate_days": 2.5,
+      "epic": "E04",
+      "epic_name": "管道与 SQL 引擎",
+      "source": "docs/tasks/E03-E04-模型与管道.md",
+      "card": "**目标**：一套 SQL 逻辑，四种引擎都能跑。\n**要点**\n- 实现 `Dialect` 接口全部方法；标识符转义、占位符、分页、日期截断、日期加减、字符串拼接、空值处理、正则、JSON 取值逐项覆盖。\n- 函数映射表：逻辑函数名 → 各引擎实际函数；未覆盖时编译期报 `unsupported function` 并指出引擎。\n- 能力矩阵 `Capability` 与方言解耦：方言管语法，能力管特性（是否有 MERGE、是否支持窗口）。\n- 单测方式：同一逻辑 SQL 在四引擎执行，结果集必须一致（用 testcontainers）。\n**产出**：`internal/dialect/{postgres,mysql,clickhouse,doris,duckdb}/*`、一致性测试。\n**验收**：20 条跨引擎 SQL 结果一致；`date_trunc('week')` 在 CH 与 PG 周起始一致（周一）。",
+      "deps": [
+        "T0206"
+      ],
+      "scope": [
+        "internal/dialect"
+      ],
+      "level": 6
+    },
+    {
+      "id": "T0406",
+      "title": "六种写入策略",
+      "priority": "P0",
+      "estimate_days": 3.0,
+      "epic": "E04",
+      "epic_name": "管道与 SQL 引擎",
+      "source": "docs/tasks/E03-E04-模型与管道.md",
+      "card": "**目标**：写入必须幂等，重跑不产生重复数据。\n**要点**\n- 实现 `append / overwrite_partition / merge / scd2 / full_refresh / delete_insert`，按 `Capability` 选择实现路径。\n- `merge`：优先原生 `MERGE`；PG 用 `ON CONFLICT DO UPDATE`；MySQL 用 `ON DUPLICATE KEY UPDATE`；CH 用 `ReplacingMergeTree` + `FINAL` 或 `ALTER TABLE ... UPDATE`（明确写选型理由）。\n- `scd2`：先 `UPDATE` 关链（`end_date= bizdate, is_current=0`），再 `INSERT` 新版本；必须在事务内，无事务引擎拒绝执行。\n- `overwrite_partition`：能力优先级 `INSERT OVERWRITE`（Doris）→ `ALTER TABLE ... REPLACE PARTITION`（ClickHouse，需先写临时表）→ `DELETE + INSERT`（PG/MySQL，必须包在事务里）。三档都不支持时返回 `ErrUnsupported`，不允许静默全量覆盖。\n- 所有写入自动补 `_godw_run_id`、`_godw_bizdate`、`_godw_load_at`（若模型声明）。\n- 生成语句序列 `[]string`，由执行器顺序执行并记录每条耗时。\n**产出**：`internal/sqlx/write.go`、各策略实现、golden 测试。\n**验收**：6 策略 × 4 引擎快照测试；每策略连跑两次，目标表行数与内容不变；scd2 二次运行后历史版本数正确。",
+      "deps": [
+        "T0404",
+        "T0405"
+      ],
+      "scope": [
+        "internal/sqlx"
+      ],
+      "level": 10
+    },
+    {
+      "id": "T0407",
+      "title": "增量条件推导",
+      "priority": "P0",
+      "estimate_days": 2.0,
+      "epic": "E04",
+      "epic_name": "管道与 SQL 引擎",
+      "source": "docs/tasks/E03-E04-模型与管道.md",
+      "card": "**目标**：不写 WHERE 也能只跑增量。\n**要点**\n- 依据模型 `storage.partitionBy` 与 `bizDate` 自动注入分区裁剪条件（`dt = '20251110'`）。\n- 若源表无分区字段，降级为时间列推导（`updated_at >= bizdate AND < bizdate+1`），并在编译结果中标注 `inference: time_column`。\n- 无法推导时**不猜**：显式报错要求手写 `where`，避免全表扫描。\n- 推导逻辑输出到 `compiled.inference` 供前端展示「本次将扫描的分区」。\n**产出**：`internal/pipeline/compile/incremental.go`。\n**验收**：无分区字段的源表触发明确报错；推导结果与实际扫描分区一致（用 CH `system.query_log` 校验）。",
+      "deps": [
+        "T0304",
+        "T0406"
+      ],
+      "scope": [
+        "internal/pipeline/compile"
+      ],
+      "level": 11
+    },
+    {
+      "id": "T0408",
+      "title": "内置算子",
+      "priority": "P1",
+      "estimate_days": 3.0,
+      "epic": "E04",
+      "epic_name": "管道与 SQL 引擎",
+      "source": "docs/tasks/E03-E04-模型与管道.md",
+      "card": "**目标**：常见清洗不用手写 SQL。\n**要点**\n- 算子：`dedup(keys, orderBy)`、`cast(map)`、`rename(map)`、`filter(expr)`、`join(model, on, type)`、`union(models)`、`aggregate(groupBy, aggs)`、`window(partitionBy, orderBy, fn)`、`mask(columns, strategy)`。\n- 算子编译为 SQL 片段，最终仍走 `sqlx` 渲染；不允许算子内部直接执行。\n- 每个算子有 JSON Schema 描述参数，前端据此生成表单。\n- 算子组合顺序即 SQL 嵌套顺序，输出带注释标明来源算子，便于排查。\n**产出**：`internal/pipeline/node/operators/*`。\n**验收**：每个算子有「输入样例 → 输出 SQL」快照；`mask` 对 high 级 PII 必须生效。",
+      "deps": [
+        "T0404",
+        "T0406"
+      ],
+      "scope": [
+        "internal/pipeline/node/operators"
+      ],
+      "level": 11
+    },
+    {
+      "id": "T0409",
+      "title": "版本、发布与灰度",
+      "priority": "P0",
+      "estimate_days": 1.5,
+      "epic": "E04",
+      "epic_name": "管道与 SQL 引擎",
+      "source": "docs/tasks/E03-E04-模型与管道.md",
+      "card": "**目标**：改管道不影响线上。\n**要点**\n- `draft` 可编辑；`publish` 生成不可变 `pipeline_version`；调度只认 published。\n- 生产环境发布需二次确认（前端输入管道名）；支持「只发布不调度」用于灰度。\n- 运行中实例保留旧 `version_id`；新实例用新版本。\n- 提供版本对比 API：返回 graph diff（新增/删除/修改节点与连线）。\n**产出**：`service/pipeline_publish.go`、diff API。\n**验收**：发布新版本后，进行中的实例仍用旧版本执行；diff 能准确列出改动节点。",
+      "deps": [
+        "T0402",
+        "T0406"
+      ],
+      "scope": [
+        "service"
+      ],
+      "level": 11
+    },
+    {
+      "id": "T0410",
+      "title": "试跑与 Dry-run",
+      "priority": "P0",
+      "estimate_days": 2.0,
+      "epic": "E04",
+      "epic_name": "管道与 SQL 引擎",
+      "source": "docs/tasks/E03-E04-模型与管道.md",
+      "card": "**目标**：上线前能看到「将要执行什么」。\n**要点**\n- `dry-run`：完整渲染 SQL + 参数 + 目标表 + 预计扫描分区，不连库执行；返回每条语句与 `refs`。\n- `sample-run`：对 SELECT 部分包一层 `LIMIT 100` 真跑，返回列与样例数据，用于验证字段与类型。\n- 试跑结果不写目标表（事务回滚或只跑 SELECT）。\n- 前端展示「渲染后 SQL」并支持复制、格式化、与上次对比。\n**产出**：`service/pipeline_dryrun.go`、sample-run 执行器。\n**验收**：dry-run 不产生任何写入（查 `run` 表无记录）；sample-run 返回 ≤100 行且列类型正确。",
+      "deps": [
+        "T0404",
+        "T0406",
+        "T0409"
+      ],
+      "scope": [
+        "service"
+      ],
+      "level": 12
+    },
+    {
+      "id": "T0501",
+      "title": "实例模型与状态机",
+      "priority": "P0",
+      "estimate_days": 2.0,
+      "epic": "E05",
+      "epic_name": "调度与执行",
+      "source": "docs/tasks/E05-E06-调度与质量血缘.md",
+      "card": "**目标**：任务状态机是整个平台的真相来源。\n**要点**\n- 状态枚举与 `docs/02` 第 3.1 节一致；所有迁移走 `Transition(ctx, id, from, to, patch)`，SQL 条件更新，影响行数 0 视为冲突并返回明确错误。\n- 禁止任何 `UPDATE ... SET state=?` 无条件更新；禁止在业务代码里直接写 state 字符串，用常量 + 校验函数 `CanTransit(from,to)`。\n- 状态迁移表驱动测试：合法迁移全通过、非法迁移全被拒（矩阵覆盖）。\n- 终态（SUCCESS/FAILED/KILLED/SKIPPED/UPSTREAM_FAILED）不可再迁移（除人工重跑重置 attempt）。\n**产出**：`internal/scheduler/state.go`、`Transition` 实现、状态图文档。\n**验收**：并发 100 goroutine 对同一实例做同一迁移，只有 1 个成功；状态矩阵测试全绿。",
+      "deps": [
+        "T0409"
+      ],
+      "scope": [
+        "internal/scheduler"
+      ],
+      "level": 12
+    },
+    {
+      "id": "T0502",
+      "title": "依赖解析与就绪判定",
+      "priority": "P0",
+      "estimate_days": 2.0,
+      "epic": "E05",
+      "epic_name": "调度与执行",
+      "source": "docs/tasks/E05-E06-调度与质量血缘.md",
+      "card": "**目标**：上游没成功，下游绝不启动。\n**要点**\n- 依据 `pipeline_version.compiled` 的拓扑序与入边，批量把 `PENDING → READY`（所有上游 ∈ {SUCCESS, SKIPPED}）；任一上游失败 → `UPSTREAM_FAILED`。\n- 判定用一条 SQL 完成（`NOT EXISTS` 子查询），禁止逐实例循环查库。\n- 支持「跨管道依赖」：`sensor` 节点等待另一管道成功（按 `pipeline + bizdate` 查询）。\n- 每轮扫描限制批量（500 条）避免长事务。\n**产出**：`internal/scheduler/dag/resolver.go`。\n**验收**：1000 实例 / 10 层 DAG，一轮判定 ≤ 200ms；上游失败后 1 个调度周期内下游变 `UPSTREAM_FAILED`。",
+      "deps": [
+        "T0402",
+        "T0501"
+      ],
+      "scope": [
+        "internal/scheduler/dag"
+      ],
+      "level": 13
+    },
+    {
+      "id": "T0503",
+      "title": "调度器主循环",
+      "priority": "P0",
+      "estimate_days": 2.5,
+      "epic": "E05",
+      "epic_name": "调度与执行",
+      "source": "docs/tasks/E05-E06-调度与质量血缘.md",
+      "card": "**目标**：按 cron 稳定产生实例，且不重复。\n**要点**\n- 每秒 tick：计算 `next_fire_at <= now` 的管道 → 按 `bizdate` 生成实例；`INSERT ... ON CONFLICT DO NOTHING` 依赖唯一键去重。\n- 多副本用 PG advisory lock 保证单活（`pg_try_advisory_lock(hash)`），持锁实例定期续期；失锁立即停止调度。\n- cron 支持标准 5 段 + `@daily/@hourly` + 时区；用 `robfig/cron/v3` 解析，禁止自研。\n- 记录 `last_fire_at` 与 `next_fire_at`，重启后从库恢复，不补跑历史（补跑走 backfill）。\n- 提供「暂停/恢复调度」「立即触发」开关，暂停期间不生成实例。\n**产出**：`internal/scheduler/loop.go`、`cron.go`。\n**验收**：重启 10 次不产生重复实例；双副本只有一个在调度（日志验证）；暂停后不再新建实例。",
+      "deps": [
+        "T0501"
+      ],
+      "scope": [
+        "internal/scheduler"
+      ],
+      "level": 13
+    },
+    {
+      "id": "T0504",
+      "title": "队列与分发",
+      "priority": "P0",
+      "estimate_days": 2.0,
+      "epic": "E05",
+      "epic_name": "调度与执行",
+      "source": "docs/tasks/E05-E06-调度与质量血缘.md",
+      "card": "**目标**：任务按优先级与资源组公平出队。\n**要点**\n- 出队：`SELECT ... WHERE state='QUEUED' AND resource_group = ANY($1) ORDER BY priority, scheduled_at FOR UPDATE SKIP LOCKED LIMIT n`。\n- 资源组：每组配置 `max_concurrency`，分发前用计数（Redis 或 PG `count`）判断是否有空位；满则留在 READY。\n- 优先级 1–9（1 最高），同优先级按 `scheduled_at` FIFO；支持「紧急插队」接口但记录审计。\n- 分发与领取解耦：分发只改 `READY→QUEUED`，worker 才 `QUEUED→RUNNING`。\n**产出**：`internal/scheduler/queue/*`、`dispatch.go`。\n**验收**：1000 任务 5 并发槽位下无超发；高优先级任务先出队；`SKIP LOCKED` 下无重复领取。",
+      "deps": [
+        "T0501",
+        "T0502"
+      ],
+      "scope": [
+        "internal/scheduler/queue"
+      ],
+      "level": 14
+    },
+    {
+      "id": "T0505",
+      "title": "worker 租约与崩溃恢复",
+      "priority": "P0",
+      "estimate_days": 2.5,
+      "epic": "E05",
+      "epic_name": "调度与执行",
+      "source": "docs/tasks/E05-E06-调度与质量血缘.md",
+      "card": "**目标**：worker 挂了任务不会永久卡住。\n**要点**\n- 领取时写 `worker_id` 与 `lease_until = now + timeout`；执行中每 15s 心跳续租。\n- 回收器每 30s 扫描 `state='RUNNING' AND lease_until < now()`：`attempt+1`，未超上限则回 `QUEUED`（保留原 `worker_id` 供排查），超限则 `FAILED`（`error_code=LEASE_EXPIRED`）。\n- 优雅退出：收到 SIGTERM 停止领新任务，等待在跑任务完成（上限 60s），超时后强制上报 `FAILED(worker_shutdown)` 以便重派。\n- worker 注册表记录主机、版本、资源组、最后心跳，运维页可见。\n**产出**：`internal/executor/lease/*`、`recover.go`、`worker/registry.go`。\n**验收**：`kill -9` worker 后 ≤ 60s 任务被重派并最终成功；SIGTERM 后不再领新任务。",
+      "deps": [
+        "T0504"
+      ],
+      "scope": [
+        "internal/executor/lease",
+        "worker"
+      ],
+      "level": 15
+    },
+    {
+      "id": "T0506",
+      "title": "任务执行器",
+      "priority": "P0",
+      "estimate_days": 3.0,
+      "epic": "E05",
+      "epic_name": "调度与执行",
+      "source": "docs/tasks/E05-E06-调度与质量血缘.md",
+      "card": "**目标**：插件式执行各类节点。\n**要点**\n- `Runner` 接口见 `docs/03` 第 7 节；注册表按 `type` 分发。\n- `sqlrunner`：渲染快照 → 逐条执行写入语句 → 采集 `rows_read/rows_written/bytes/duration` → 失败带 `sql_snippet`（前 500 字符）与引擎错误码。\n- `shellrunner`：白名单命令 + 参数数组（禁止 `sh -c` 拼接）、超时强杀进程组、捕获 stdout/stderr 分流。\n- `httprunner`：超时、重试、2xx 判定、响应体截断存储。\n- `subpipeline`：同步等待子管道完成，传递参数，防止循环嵌套（深度上限 3）。\n- 所有 runner 必须支持 ctx 取消，并在退出前调用 `sink.Flush()`。\n**产出**：`internal/executor/runner/*`、注册表。\n**验收**：每个 runner 有集成测试；SQL 超时后连接被真正取消；shell 超时后子进程无残留（`ps` 校验）。",
+      "deps": [
+        "T0406",
+        "T0501"
+      ],
+      "scope": [
+        "internal/executor/runner"
+      ],
+      "level": 13
+    },
+    {
+      "id": "T0507",
+      "title": "重试与失败策略",
+      "priority": "P0",
+      "estimate_days": 2.0,
+      "epic": "E05",
+      "epic_name": "调度与执行",
+      "source": "docs/tasks/E05-E06-调度与质量血缘.md",
+      "card": "**目标**：偶发失败自愈，真失败快速暴露。\n**要点**\n- 重试策略：`max`、`interval`、`backoff: fixed|exponential`、`retry_on`（错误码白名单：连接超时/死锁可重试，语法错误/权限拒绝不重试）。\n- 失败进入 `RETRY_WAIT`，记录 `next_retry_at`，调度器扫描到期后回 `QUEUED`；`attempt` 达上限 → `FAILED`。\n- 下游传播：节点 `FAILED` → 所有下游 `UPSTREAM_FAILED`；节点 `SKIPPED`（人工）→ 下游按 `skipPolicy`（`allow|forbid`）决定是否继续。\n- 连续失败 N 次的管道自动暂停调度并告警（防止雪崩）。\n**产出**：`internal/scheduler/retry.go`、`policy.go`。\n**验收**：语法错误不重试、超时重试 3 次；下游在 1 个周期内标记 `UPSTREAM_FAILED`；连续失败触发暂停。",
+      "deps": [
+        "T0505",
+        "T0506"
+      ],
+      "scope": [
+        "internal/scheduler"
+      ],
+      "level": 16
+    },
+    {
+      "id": "T0508",
+      "title": "补数与重跑",
+      "priority": "P0",
+      "estimate_days": 2.5,
+      "epic": "E05",
+      "epic_name": "调度与执行",
+      "source": "docs/tasks/E05-E06-调度与质量血缘.md",
+      "card": "**目标**：补历史数据是日常操作，必须安全。\n**要点**\n- `backfill(pipeline, from, to, params)`：按日期展开实例，受唯一键去重（已存在的跳过或按 `--force` 重置）。\n- 并发控制：同日期间按 DAG 层级并行，跨日期按 `max_concurrency` 限流；提供进度查询（总数/成功/失败/待跑）。\n- 重跑粒度：单节点、单节点+下游、整条管道；重跑保留历史 run，`attempt++`。\n- 补数任务可暂停/终止；终止后已排队实例置 `KILLED`。\n- 禁止对 `prod` 环境无确认的大范围补数（> 31 天需二次确认）。\n**产出**：`internal/scheduler/backfill/*`、API。\n**验收**：补 30 天数据无重复实例；终止后无新实例产生；进度接口数据与实际一致。",
+      "deps": [
+        "T0502",
+        "T0505"
+      ],
+      "scope": [
+        "internal/scheduler/backfill"
+      ],
+      "level": 16
+    },
+    {
+      "id": "T0509",
+      "title": "事件触发与传感器",
+      "priority": "P1",
+      "estimate_days": 2.0,
+      "epic": "E05",
+      "epic_name": "调度与执行",
+      "source": "docs/tasks/E05-E06-调度与质量血缘.md",
+      "card": "**目标**：不只是定时，还能等数据到。\n**要点**\n- `sensor` 三种：文件（S3/本地路径存在且大小稳定）、表（源表分区出现或行数 > 0）、HTTP（轮询接口返回满足条件）。\n- 轮询间隔、超时、退避可配；超时置 `FAILED(sensor_timeout)`。\n- 事件触发：接收外部 webhook（带签名校验）→ 生成实例；支持「文件到达即触发」。\n- 去重：同一事件 ID 幂等，重复投递不产生新实例。\n**产出**：`internal/pipeline/node/sensor/*`、`internal/api/http/webhook.go`。\n**验收**：文件 10s 后到达，sensor 在 2 个轮询周期内成功；重复 webhook 只触发一次。",
+      "deps": [
+        "T0506"
+      ],
+      "scope": [
+        "internal/api/http",
+        "internal/pipeline/node/sensor"
+      ],
+      "level": 14
+    },
+    {
+      "id": "T0510",
+      "title": "资源组与配额",
+      "priority": "P1",
+      "estimate_days": 1.5,
+      "epic": "E05",
+      "epic_name": "调度与执行",
+      "source": "docs/tasks/E05-E06-调度与质量血缘.md",
+      "card": "**目标**：大查询不饿死小任务。\n**要点**\n- 资源组维度：并发上限、单任务超时、连接池上限、可用引擎。\n- 任务提交前校验配额；超限排队而非拒绝，排队超时（默认 30 分钟）置 `FAILED(queue_timeout)`。\n- 采集每任务资源用量（CPU 时间、扫描字节），按管道聚合，为成本核算（T0808）提供数据。\n**产出**：`internal/scheduler/quota/*`、用量采集。\n**验收**：heavy 组打满时 default 组任务不受影响；用量数据可按管道汇总。",
+      "deps": [
+        "T0504"
+      ],
+      "scope": [
+        "internal/scheduler/quota"
+      ],
+      "level": 15
+    },
+    {
+      "id": "T0511",
+      "title": "日志采集与实时流",
+      "priority": "P0",
+      "estimate_days": 2.0,
+      "epic": "E05",
+      "epic_name": "调度与执行",
+      "source": "docs/tasks/E05-E06-调度与质量血缘.md",
+      "card": "**目标**：任务日志能实时看、能回溯。\n**要点**\n- 执行器按行采集，带 `seq/ts/level`，本地缓冲 200 行或 1s 批量写 `run_log`。\n- SSE 推送：`/instances/{id}/logs/stream`，支持 `Last-Event-ID` 断点续传；任务结束后推送 `state` 事件并关闭。\n- 日志脱敏：命中密码/token 正则的行替换为 `***`。\n- 归档：> 7 天日志压缩上传对象存储，DB 只留索引；查询归档走预签名 URL。\n**产出**：`internal/api/sse/logs.go`、`internal/obs/logstore/*`。\n**验收**：日志首行延迟 ≤ 1s；断线重连不丢不重；归档后仍可按 run 查询下载。",
+      "deps": [
+        "T0506"
+      ],
+      "scope": [
+        "internal/api/sse",
+        "internal/obs/logstore"
+      ],
+      "level": 14
+    },
+    {
+      "id": "T0512",
+      "title": "SLA 与告警",
+      "priority": "P1",
+      "estimate_days": 2.0,
+      "epic": "E05",
+      "epic_name": "调度与执行",
+      "source": "docs/tasks/E05-E06-调度与质量血缘.md",
+      "card": "**目标**：出问题主动通知，而不是等业务发现。\n**要点**\n- SLA 规则：必须在 `HH:mm` 前完成、最大执行时长、失败即告警、数据量为 0、同比波动 > X%。\n- 告警渠道插件化：webhook、邮件、飞书、钉钉、企业微信；模板可配。\n- 抑制与聚合：同一管道 5 分钟内同类告警合并；维护窗口内静默。\n- 告警记录可查、可标记处理状态，避免重复打扰。\n**产出**：`internal/obs/alert/*`、渠道实现、规则配置。\n**验收**：超时 1 分钟内收到 webhook；重复告警被合并；静默窗口内不发。",
+      "deps": [
+        "T0507",
+        "T0511"
+      ],
+      "scope": [
+        "internal/obs/alert"
+      ],
+      "level": 17
+    },
+    {
+      "id": "T0601",
+      "title": "质量规则 DSL",
+      "priority": "P0",
+      "estimate_days": 2.0,
+      "epic": "E06",
+      "epic_name": "质量与血缘",
+      "source": "docs/tasks/E05-E06-调度与质量血缘.md",
+      "card": "**目标**：质量规则可配置、可复用、可解释。\n**要点**\n- 内置类型：`not_null`、`unique`、`unique_combination`、`accepted_values`、`range`、`regex`、`referential`（引用另一模型主键）、`row_count_delta`（环比/同比阈值）、`custom_sql`（返回违规行）。\n- 规则编译为 SQL：违规计数 `SELECT COUNT(*) FROM t WHERE NOT (expr)`；抽样 `SELECT * FROM t WHERE NOT (expr) LIMIT 20`。\n- 所有规则必须有 `severity`（block/warn/info）与 `enabled`；block 规则失败阻断下游。\n- 支持字段级与表级（多列组合）规则；`custom_sql` 必须只读（禁止 DML 关键字，解析器校验）。\n**产出**：`internal/quality/compile.go`、规则 schema。\n**验收**：9 类规则各 2 个用例；`custom_sql` 含 `DELETE` 被拒；生成的 SQL 在四引擎可执行。",
+      "deps": [
+        "T0406"
+      ],
+      "scope": [
+        "internal/quality"
+      ],
+      "level": 11
+    },
+    {
+      "id": "T0602",
+      "title": "规则执行与结果",
+      "priority": "P0",
+      "estimate_days": 2.0,
+      "epic": "E06",
+      "epic_name": "质量与血缘",
+      "source": "docs/tasks/E05-E06-调度与质量血缘.md",
+      "card": "**目标**：每次跑数都留质量证据。\n**要点**\n- 质量节点作为 DAG 中独立节点执行，结果写 `quality_result`（通过率、违规数、样本、耗时）。\n- 样本脱敏后存储（high 级 PII 打码），最多 20 行。\n- 同一规则同一 `bizdate` 多次执行保留历史，取最新为当前状态。\n- 提供趋势 API：近 30 天通过率、违规数曲线。\n**产出**：`internal/quality/runner.go`、查询 API。\n**验收**：违规时样本正确；趋势接口返回 30 个点；重复执行不覆盖历史。",
+      "deps": [
+        "T0506",
+        "T0601"
+      ],
+      "scope": [
+        "internal/quality"
+      ],
+      "level": 14
+    },
+    {
+      "id": "T0603",
+      "title": "质量门禁",
+      "priority": "P0",
+      "estimate_days": 1.5,
+      "epic": "E06",
+      "epic_name": "质量与血缘",
+      "source": "docs/tasks/E05-E06-调度与质量血缘.md",
+      "card": "**目标**：脏数据不流到下游。\n**要点**\n- block 规则失败 → 当前节点 `FAILED(quality_block)`，下游 `UPSTREAM_FAILED`；warn 只告警不阻断。\n- 提供「强制放行」操作（需理由 + 审批记录），放行后下游继续并在数据上打标。\n- 隔离表：可选把违规行写入 `quarantine_<model>`，便于修复重放。\n**产出**：门禁逻辑、放行 API、隔离表写入。\n**验收**：block 失败后下游确实未执行；放行后下游执行且审计有记录。",
+      "deps": [
+        "T0507",
+        "T0602"
+      ],
+      "scope": [
+        "epic:E06"
+      ],
+      "level": 17
+    },
+    {
+      "id": "T0604",
+      "title": "自动 Profiling 与规则推荐",
+      "priority": "P2",
+      "estimate_days": 2.0,
+      "epic": "E06",
+      "epic_name": "质量与血缘",
+      "source": "docs/tasks/E05-E06-调度与质量血缘.md",
+      "card": "**目标**：新表接入自动给一套基础规则。\n**要点**\n- 对表采样（≤10 万行）统计：空值率、唯一度、min/max、枚举 Top20、正则命中率。\n- 推荐规则：唯一度=1 → `unique`；空值率=0 → `not_null`；枚举少 → `accepted_values`；数值 → `range`。\n- 推荐结果以「建议」形式展示，人工确认后才启用，避免误报泛滥。\n**产出**：`internal/quality/profile.go`、推荐 API。\n**验收**：样例表推荐命中 ≥ 3 条有效规则；未确认的建议不参与执行。",
+      "deps": [
+        "T0602"
+      ],
+      "scope": [
+        "internal/quality"
+      ],
+      "level": 15
+    },
+    {
+      "id": "T0605",
+      "title": "SQL 解析器接入",
+      "priority": "P0",
+      "estimate_days": 2.0,
+      "epic": "E06",
+      "epic_name": "质量与血缘",
+      "source": "docs/tasks/E05-E06-调度与质量血缘.md",
+      "card": "**目标**：为列级血缘提供 AST 能力。\n**要点**\n- 引入 `pingcap/tidb/parser`（MySQL 兼容），封装 `Parse(sql) (StmtNode, error)`；对不支持语法返回明确错误而非 panic。\n- 统一封装 `sqlparse` 包，隔离第三方依赖，未来可替换为其他 parser。\n- 处理 `?`/`$1` 占位符；模板渲染后的 SQL 才解析（保留原始 SQL 供回溯）。\n- 性能：单条 SQL 解析 ≤ 5ms；大 SQL（>100KB）限制并降级为表级血缘。\n**产出**：`internal/lineage/parser/parser.go`、错误封装、基准测试。\n**验收**：50 条真实业务 SQL 解析成功率 ≥ 95%；非法 SQL 返回结构化错误不 panic。",
+      "deps": [
+        "T0404"
+      ],
+      "scope": [
+        "internal/lineage/parser"
+      ],
+      "level": 10
+    },
+    {
+      "id": "T0606",
+      "title": "表级血缘",
+      "priority": "P0",
+      "estimate_days": 1.5,
+      "epic": "E06",
+      "epic_name": "质量与血缘",
+      "source": "docs/tasks/E05-E06-调度与质量血缘.md",
+      "card": "**目标**：知道每张表从哪来、到哪去。\n**要点**\n- 来源：管道节点 `ref()/src()` + `write.model`，发布时写入 `lineage_edge`（`src_table → dst_table`）。\n- 同一管道重复发布需先删除旧边再写新边（按 `pipeline_id` 维度），避免残留。\n- 查询 API：`?table=&direction=up|down&depth=n`，返回节点 + 边，前端直接渲染。\n- 图规模大时限制 `depth ≤ 5`，超出提示。\n**产出**：`internal/lineage/graph/table.go`、API。\n**验收**：发布管道后血缘边正确；重新发布不产生重复边；上下游方向正确。",
+      "deps": [
+        "T0409"
+      ],
+      "scope": [
+        "internal/lineage/graph"
+      ],
+      "level": 12
+    },
+    {
+      "id": "T0607",
+      "title": "列级血缘",
+      "priority": "P0",
+      "estimate_days": 3.0,
+      "epic": "E06",
+      "epic_name": "质量与血缘",
+      "source": "docs/tasks/E05-E06-调度与质量血缘.md",
+      "card": "**目标**：改一列能知道影响哪些指标。\n**要点**\n- 遍历 AST：收集 `TableRef`（含 CTE、子查询、别名作用域）→ 解析 `SelectField` 的列引用 → 用作用域链解析到源表列。\n- 处理：别名（`a.id AS order_id`）、表达式（`SUM(amount)` → 依赖 `amount`）、`JOIN ... ON`、`UNION`（逐分支合并）、`SELECT *`（回查模型 schema 展开）。\n- 无法确定的映射（函数嵌套过深、动态 SQL）标记 `confidence=low`，保留表级边。\n- 输出 `column_map: {dst_col: [src_col...]}` 存 `lineage_edge.column_map`。\n**产出**：`internal/lineage/parser/column.go`、测试集。\n**验收**：20 条含 CTE/JOIN/UNION 的 SQL 列映射准确率 ≥ 90%；`SELECT *` 能展开；低置信度被标记。",
+      "deps": [
+        "T0605",
+        "T0606"
+      ],
+      "scope": [
+        "internal/lineage/parser"
+      ],
+      "level": 13
+    },
+    {
+      "id": "T0608",
+      "title": "血缘图存储与查询",
+      "priority": "P0",
+      "estimate_days": 1.5,
+      "epic": "E06",
+      "epic_name": "质量与血缘",
+      "source": "docs/tasks/E05-E06-调度与质量血缘.md",
+      "card": "**目标**：查询要快，图要大。\n**要点**\n- 邻接表存 PG，热点路径内存缓存（LRU，5 分钟 TTL）；递归查询用 `WITH RECURSIVE` 限制深度。\n- 提供批量查询：一次返回多张表的血缘，供前端一次渲染。\n- 节点去重、边去重；支持按 `workspace` 过滤。\n- 提供 graph JSON 格式（nodes/edges）与 DOT 导出。\n**产出**：`internal/lineage/graph/store.go`、cache。\n**验收**：1 万条边下 depth=3 查询 ≤ 300ms；缓存命中率 > 80%。",
+      "deps": [
+        "T0607"
+      ],
+      "scope": [
+        "internal/lineage/graph"
+      ],
+      "level": 14
+    },
+    {
+      "id": "T0609",
+      "title": "影响分析",
+      "priority": "P0",
+      "estimate_days": 1.5,
+      "epic": "E06",
+      "epic_name": "质量与血缘",
+      "source": "docs/tasks/E05-E06-调度与质量血缘.md",
+      "card": "**目标**：变更前知道会炸哪些下游。\n**要点**\n- 输入表名/列名 → BFS 下游 → 输出受影响表、指标、看板、调度管道清单。\n- 结合 `metric` 与 `dashboard` 反向索引（指标依赖 dataset 的 base_model，看板依赖 dataset）。\n- 评估风险等级：影响生产 ADS 表或对外看板 → high；仅中间层 → medium。\n- 提供「变更预检」API，供 T0306 发布前调用，high 风险需显式确认。\n**产出**：`internal/lineage/impact.go`、API。\n**验收**：删除 DWD 列能列出 3 层下游与 2 个看板；风险等级判定符合规则。",
+      "deps": [
+        "T0608"
+      ],
+      "scope": [
+        "internal/lineage"
+      ],
+      "level": 15
+    },
+    {
+      "id": "T0610",
+      "title": "血缘前端接口联调",
+      "priority": "P1",
+      "estimate_days": 1.0,
+      "epic": "E06",
+      "epic_name": "质量与血缘",
+      "source": "docs/tasks/E05-E06-调度与质量血缘.md",
+      "card": "**目标**：接口先稳定，前端才好做。\n**要点**\n- 约定 graph 数据结构：`{nodes:[{id,type,layer,name,meta}], edges:[{source,target,columns,confidence}]}`。\n- 支持按层着色、按表聚焦（只显示 N 跳）、列级展开/收起。\n- 提供「路径查询」：两表之间的所有路径，最多 10 条。\n**产出**：graph API、路径查询、接口文档。\n**验收**：前端用 mock 数据即可完成渲染；路径查询返回结果不含环。",
+      "deps": [
+        "T0608"
+      ],
+      "scope": [
+        "epic:E06"
+      ],
+      "level": 15
+    },
+    {
+      "id": "T0701",
+      "title": "数据集定义",
+      "priority": "P0",
+      "estimate_days": 2.0,
+      "epic": "E07",
+      "epic_name": "语义层与 BI",
+      "source": "docs/tasks/E07-E08-BI与治理.md",
+      "card": "**目标**：把物理表封装成业务能理解的「主题」。\n**要点**\n- `dataset = base_model + joins + dimensions + measures + filters`；`joins` 支持 `left/inner`，必须有显式 `on` 条件，禁止笛卡尔积。\n- 维度：字段 + 显示名 + 类型（`categorical/time/number`）+ 是否可作为筛选；时间维度自动派生 `day/week/month/quarter/year` 粒度。\n- 度量：`agg(sum/count/count_distinct/avg/max/min)` + 表达式 + 格式（金额/百分比/整数）+ 单位。\n- 数据集只能引用 `dwd/dws/ads`，引用 `ods` 直接拒绝（保护原始层）。\n**产出**：`internal/semantic/dataset.go`、校验器。\n**验收**：引用 ods 被拒；join 无 on 条件被拒；维度派生粒度齐全。",
+      "deps": [
+        "T0406"
+      ],
+      "scope": [
+        "internal/semantic"
+      ],
+      "level": 11
+    },
+    {
+      "id": "T0702",
+      "title": "指标口径管理",
+      "priority": "P0",
+      "estimate_days": 2.0,
+      "epic": "E07",
+      "epic_name": "语义层与 BI",
+      "source": "docs/tasks/E07-E08-BI与治理.md",
+      "card": "**目标**：同一个「GMV」全公司只有一个算法。\n**要点**\n- 指标 = 名称（唯一）+ 所属 dataset + 表达式 + 聚合 + 格式化 + 业务口径说明 + 负责人。\n- 同名指标不允许重复定义；改名保留别名映射，避免看板失效。\n- 指标变更走版本：`metric_version` 记录表达式历史，看板绑定版本，避免口径漂移导致历史看板变化。\n- 支持指标血缘：指标 → dataset → 模型 → 源表，可在血缘图中展示。\n**产出**：`internal/semantic/metric.go`、版本表。\n**验收**：重复指标名返回 409；改口径后旧看板仍按旧版本渲染；血缘可查。",
+      "deps": [
+        "T0701"
+      ],
+      "scope": [
+        "internal/semantic"
+      ],
+      "level": 12
+    },
+    {
+      "id": "T0703",
+      "title": "查询构建器",
+      "priority": "P0",
+      "estimate_days": 3.0,
+      "epic": "E07",
+      "epic_name": "语义层与 BI",
+      "source": "docs/tasks/E07-E08-BI与治理.md",
+      "card": "**目标**：把「维度+度量+筛选」翻译成正确 SQL。\n**要点**\n- 生成结构：`SELECT dims, aggs FROM base [joins] WHERE filters AND rls GROUP BY dims [HAVING] ORDER BY ... LIMIT ...`。\n- 时间粒度用 `Dialect.DateTrunc`；同环比用窗口函数（`LAG`）或自连接，优先窗口（引擎支持时）。\n- 空结果处理：无 GROUP BY 的聚合查询必须返回一行（`SUM` 为 NULL 时转 0，按指标配置）。\n- 所有标识符走 `QuoteIdent`；筛选值参数化，禁止拼接。\n- 生成 SQL 带注释标明来源 dataset/metric，便于排查。\n**产出**：`internal/semantic/querybuilder.go`、golden 测试。\n**验收**：20 组查询快照正确；同环比在四引擎结果一致；SQL 注入用例（值含 `' OR 1=1`）不生效。",
+      "deps": [
+        "T0405",
+        "T0701"
+      ],
+      "scope": [
+        "internal/semantic"
+      ],
+      "level": 12
+    },
+    {
+      "id": "T0704",
+      "title": "查询 API 与结果协议",
+      "priority": "P0",
+      "estimate_days": 2.0,
+      "epic": "E07",
+      "epic_name": "语义层与 BI",
+      "source": "docs/tasks/E07-E08-BI与治理.md",
+      "card": "**目标**：前端拿到就能直接画图。\n**要点**\n- 请求：`{dimensions, measures, filters, timeRange, granularity, orderBy, limit, offset}`；响应：`{columns:[{name,label,type,format}], rows:[...], total, sql, took}`。\n- 行数上限默认 10000，超出返回截断标记；导出走独立接口（流式）。\n- 支持 `debug=true` 返回生成的 SQL（仅 admin）。\n- 查询超时默认 30s，可配；超时返回 `50003 query timeout` 而非 500。\n- 慢查询（> 5s）记录到 `slow_query` 表并在运维页可见。\n**产出**：`internal/api/http/dataset_query.go`。\n**验收**：返回列元数据完整；超过上限有截断标记；超时错误码正确。",
+      "deps": [
+        "T0105",
+        "T0703"
+      ],
+      "scope": [
+        "internal/api/http"
+      ],
+      "level": 13
+    },
+    {
+      "id": "T0705",
+      "title": "行级权限与列级脱敏",
+      "priority": "P0",
+      "estimate_days": 2.0,
+      "epic": "E07",
+      "epic_name": "语义层与 BI",
+      "source": "docs/tasks/E07-E08-BI与治理.md",
+      "card": "**目标**：不同人看到不同数据。\n**要点**\n- RLS 规则：`{dataset, column, operator, valueFrom: user.attr|static}`，编译为 SQL 条件注入 `WHERE`，必须在聚合前生效。\n- 用户属性来自 JWT claims（`region`、`dept`、`level`）；无匹配规则时默认拒绝（fail-closed）而非放行。\n- 列级脱敏：按 `column.pii` 与角色决定 `mask/replace/hide`；在 SELECT 列表就替换，不能让前端拿到明文。\n- 所有规则变更审计；提供「预览某用户将看到的 SQL」调试接口。\n**产出**：`internal/auth/rls.go`、mask 函数。\n**验收**：region=华东 的用户只能查到本区域数据；high PII 列对 viewer 角色返回 `***`；规则缺失时拒绝查询。",
+      "deps": [
+        "T0704",
+        "T0801",
+        "T0803"
+      ],
+      "scope": [
+        "internal/auth"
+      ],
+      "level": 14
+    },
+    {
+      "id": "T0706",
+      "title": "缓存与预聚合",
+      "priority": "P1",
+      "estimate_days": 2.0,
+      "epic": "E07",
+      "epic_name": "语义层与 BI",
+      "source": "docs/tasks/E07-E08-BI与治理.md",
+      "card": "**目标**：看板打开要快，别每次都扫全表。\n**要点**\n- 结果缓存 key = `hash(dataset + 规范化后的查询 + 用户权限指纹)`；TTL 按 dataset 配置（默认 5 分钟）。\n- 缓存失效：模型发布/补数完成时按 `dataset` 维度失效；也支持手动清空。\n- 预聚合：对高频看板配置「定时物化到 ADS」；查询命中预聚合表时自动改写 SQL。\n- 缓存后端抽象（内存/Redis），单机默认内存 LRU（上限 512MB）。\n**产出**：`internal/semantic/cache.go`、预聚合配置。\n**验收**：二次查询 p95 降低 80%；权限不同的两个用户不共享缓存；发布后缓存失效。",
+      "deps": [
+        "T0704"
+      ],
+      "scope": [
+        "internal/semantic"
+      ],
+      "level": 14
+    },
+    {
+      "id": "T0707",
+      "title": "图表配置模型",
+      "priority": "P0",
+      "estimate_days": 2.0,
+      "epic": "E07",
+      "epic_name": "语义层与 BI",
+      "source": "docs/tasks/E07-E08-BI与治理.md",
+      "card": "**目标**：图表配置可存、可迁移、可复用。\n**要点**\n- 配置：`{type, dataset, dimensions, measures, encoding:{x,y,series,size,color}, style, filters}`。\n- 支持类型：折线、柱状、堆叠柱、饼图、环形、指标卡、表格、散点、地图（按需）。\n- 编码映射校验：如饼图只能 1 维度 + 1 度量，校验失败给出明确提示。\n- 配置版本化，看板引用图表 ID，修改图表需确认是否影响引用它的看板。\n**产出**：`internal/bi/chart.go`、schema。\n**验收**：非法编码组合被拒；同一图表被 2 个看板引用时提示影响面。",
+      "deps": [
+        "T0704"
+      ],
+      "scope": [
+        "internal/bi"
+      ],
+      "level": 14
+    },
+    {
+      "id": "T0708",
+      "title": "看板模型",
+      "priority": "P1",
+      "estimate_days": 2.0,
+      "epic": "E07",
+      "epic_name": "语义层与 BI",
+      "source": "docs/tasks/E07-E08-BI与治理.md",
+      "card": "**目标**：拖拽布局、全局筛选、联动。\n**要点**\n- 栅格布局（24 列），每个图表存 `{x,y,w,h}`；响应式断点 3 档。\n- 全局筛选器绑定到多个图表的字段；联动：点击某图表的维度值 → 其他图表按该值过滤。\n- 看板级参数（如 `bizdate`）与 URL 同步，便于分享具体状态。\n- 保存草稿/发布两态；发布后生成快照，回滚可用。\n**产出**：`internal/bi/dashboard.go`、布局校验。\n**验收**：布局越界/重叠校验；URL 带参数打开后筛选生效；发布快照可回滚。",
+      "deps": [
+        "T0707"
+      ],
+      "scope": [
+        "internal/bi"
+      ],
+      "level": 15
+    },
+    {
+      "id": "T0709",
+      "title": "导出与订阅",
+      "priority": "P1",
+      "estimate_days": 2.0,
+      "epic": "E07",
+      "epic_name": "语义层与 BI",
+      "source": "docs/tasks/E07-E08-BI与治理.md",
+      "card": "**目标**：数据能带走、能定时送达。\n**要点**\n- 导出 CSV/Excel：流式写（不load全量到内存），大结果集走对象存储 + 预签名 URL。\n- 订阅：按 cron 生成快照（图片或 Excel）→ 邮件/webhook 推送；失败重试 3 次。\n- 导出记录审计（谁、何时、导出了什么、多少行），high 级数据导出需审批（可配置）。\n- 文件名规范：`{dashboard}_{yyyyMMddHHmm}.xlsx`。\n**产出**：`internal/bi/export.go`、`subscription.go`。\n**验收**：100 万行导出内存增长 < 200MB；订阅按时送达；导出记录可查。",
+      "deps": [
+        "T0708"
+      ],
+      "scope": [
+        "internal/bi"
+      ],
+      "level": 16
+    },
+    {
+      "id": "T0710",
+      "title": "分享与嵌入",
+      "priority": "P2",
+      "estimate_days": 1.5,
+      "epic": "E07",
+      "epic_name": "语义层与 BI",
+      "source": "docs/tasks/E07-E08-BI与治理.md",
+      "card": "**目标**：看板能发给不用登录的人。\n**要点**\n- 只读分享：生成 `share_token`（随机 32 位），可设有效期与密码；只读、不可导出（可配）。\n- iframe 嵌入：提供 embed 路由与 `X-Frame-Options` 白名单。\n- 分享链接的查询强制走该看板绑定的数据集与 RLS 的「匿名策略」，不允许越权。\n- 支持随时吊销 token。\n**产出**：分享 API、embed 路由。\n**验收**：吊销后链接立即失效；匿名访问不能查到未授权数据；iframe 在允许域名外被拒。",
+      "deps": [
+        "T0708",
+        "T0804"
+      ],
+      "scope": [
+        "epic:E07"
+      ],
+      "level": 16
+    },
+    {
+      "id": "T0801",
+      "title": "用户、角色与权限",
+      "priority": "P0",
+      "estimate_days": 2.0,
+      "epic": "E08",
+      "epic_name": "治理与安全",
+      "source": "docs/tasks/E07-E08-BI与治理.md",
+      "card": "**目标**：谁能看什么、改什么，说清楚。\n**要点**\n- 内置角色：`owner`（工作空间全权）、`admin`（系统配置）、`editor`（建模/编排）、`runner`（触发/重跑）、`viewer`（只读）。\n- 资源级 ACL：workspace / datasource / model / pipeline / dashboard 五类资源，支持「角色继承 + 单资源授权」。\n- Casbin model：`sub, dom(workspace), obj(resource), act`；策略存库，支持热加载。\n- 权限校验中间件在路由层完成，service 层再做一次资源归属校验（防越权 ID 猜测）。\n**产出**：`internal/auth/rbac/*`、casbin model、策略种子。\n**验收**：viewer 调用发布接口返回 403；跨 workspace 访问返回 404（不泄露存在性）。",
+      "deps": [
+        "T0105"
+      ],
+      "scope": [
+        "internal/auth/rbac"
+      ],
+      "level": 3
+    },
+    {
+      "id": "T0802",
+      "title": "认证与会话",
+      "priority": "P0",
+      "estimate_days": 1.5,
+      "epic": "E08",
+      "epic_name": "治理与安全",
+      "source": "docs/tasks/E07-E08-BI与治理.md",
+      "card": "**目标**：能登录、能接企业账号。\n**要点**\n- 本地账号：bcrypt（cost 12）+ 登录失败锁定（5 次 / 15 分钟）。\n- JWT：HS256，`access_token` 2h，`refresh_token` 7d；登出用黑名单（Redis 或 DB）。\n- 预留 OIDC：配置 `issuer/client_id/secret`，实现授权码流程；LDAP 作为备选。\n- 密码策略：长度 ≥ 10、含大小写数字；首次登录强制改密（可配）。\n**产出**：`internal/auth/*`、登录/刷新/登出 API。\n**验收**：错误密码 5 次后锁定；token 过期返回 401 且可刷新；OIDC 登录可跑通 mock server。",
+      "deps": [
+        "T0801"
+      ],
+      "scope": [
+        "internal/auth"
+      ],
+      "level": 4
+    },
+    {
+      "id": "T0803",
+      "title": "数据分级与脱敏",
+      "priority": "P0",
+      "estimate_days": 1.5,
+      "epic": "E08",
+      "epic_name": "治理与安全",
+      "source": "docs/tasks/E07-E08-BI与治理.md",
+      "card": "**目标**：敏感数据有标记、有策略、有执行。\n**要点**\n- 分级：`public/internal/confidential/secret`，映射到列的 `pii` 等级。\n- 脱敏策略：`mask`（保留首尾）、`hash`（加盐 SHA256）、`replace`（固定值）、`hide`（列不下发）。\n- 策略绑定「角色 + 资源」，在查询构建与导出两处同时生效（漏一处等于没做）。\n- 提供「脱敏预览」：给定角色与列，展示脱敏结果样例。\n**产出**：`internal/auth/mask.go`、策略配置。\n**验收**：同一列对 admin 明文、对 viewer 脱敏；导出文件同样脱敏；预览结果与实际一致。",
+      "deps": [
+        "T0209",
+        "T0801"
+      ],
+      "scope": [
+        "internal/auth"
+      ],
+      "level": 8
+    },
+    {
+      "id": "T0804",
+      "title": "审计日志",
+      "priority": "P0",
+      "estimate_days": 1.5,
+      "epic": "E08",
+      "epic_name": "治理与安全",
+      "source": "docs/tasks/E07-E08-BI与治理.md",
+      "card": "**目标**：关键操作可追责。\n**要点**\n- 记录范围：登录/登出、增删改、发布/回滚、触发/重跑/终止、权限变更、导出、分享。\n- 字段：`actor, action, resource_type, resource_id, before, after, ip, ua, request_id, ts`。\n- append-only：只允许插入，DB 层用独立账号（无 UPDATE/DELETE 权限）；可选哈希链（`prev_hash`）防篡改。\n- 查询：按人/资源/时间/动作过滤，支持导出。\n**产出**：`internal/auth/audit.go`、审计查询 API。\n**验收**：发布模型产生一条含 before/after 的记录；应用账号无法删除审计行；查询过滤准确。",
+      "deps": [
+        "T0105"
+      ],
+      "scope": [
+        "internal/auth"
+      ],
+      "level": 3
+    },
+    {
+      "id": "T0805",
+      "title": "多租户隔离",
+      "priority": "P1",
+      "estimate_days": 1.5,
+      "epic": "E08",
+      "epic_name": "治理与安全",
+      "source": "docs/tasks/E07-E08-BI与治理.md",
+      "card": "**目标**：一套部署服务多个团队，数据不串。\n**要点**\n- 隔离模型：共享库 + `workspace_id` 行级隔离（默认）；预留「独立 schema」模式给大客户。\n- 所有 repo 方法强制带 `workspace_id`（sqlc 查询模板统一注入），漏带由测试拦截（查询审计：扫描所有 SQL 是否含 workspace 条件）。\n- 资源配额：每 workspace 限制数据源数、管道数、日任务数、并发数。\n- 跨租户引用（A 的管道写 B 的模型）直接拒绝。\n**产出**：隔离规范、配额校验、审计测试。\n**验收**：构造跨租户请求返回 404；超配额创建返回 429；静态扫描无漏带 workspace 的查询。",
+      "deps": [
+        "T0801"
+      ],
+      "scope": [
+        "epic:E08"
+      ],
+      "level": 4
+    },
+    {
+      "id": "T0806",
+      "title": "密钥与凭据管理",
+      "priority": "P1",
+      "estimate_days": 1.0,
+      "epic": "E08",
+      "epic_name": "治理与安全",
+      "source": "docs/tasks/E07-E08-BI与治理.md",
+      "card": "**目标**：密码不泄露、可轮换。\n**要点**\n- 主密钥来自环境变量或 KMS；数据源密码 AES-256-GCM 加密，`secret.key_version` 支持轮换（新写用新版本，旧数据按需重加密）。\n- 日志/错误/审计中禁止出现密码与 token（正则过滤 + 单测）。\n- 提供 `godw secret rotate` 命令批量重加密。\n**产出**：`internal/auth/secret/*`、轮换命令。\n**验收**：全库搜索无明文密码；轮换后旧数据仍可解密；日志脱敏测试通过。",
+      "deps": [
+        "T0204"
+      ],
+      "scope": [
+        "internal/auth/secret"
+      ],
+      "level": 5
+    },
+    {
+      "id": "T0807",
+      "title": "合规与数据生命周期",
+      "priority": "P2",
+      "estimate_days": 1.0,
+      "epic": "E08",
+      "epic_name": "治理与安全",
+      "source": "docs/tasks/E07-E08-BI与治理.md",
+      "card": "**目标**：满足基本的合规要求。\n**要点**\n- 数据保留策略：按模型配置保留期，到期由维护任务归档/删除，并记录审计。\n- 导出审批：high 级数据导出需审批流（可先做「申请-批准」两态）。\n- 删除权：支持按主键删除指定用户数据（生成删除任务并留痕）。\n**产出**：保留策略配置、删除任务。\n**验收**：到期数据被归档且审计可查；未审批导出被拒。",
+      "deps": [
+        "T0803",
+        "T0804"
+      ],
+      "scope": [
+        "epic:E08"
+      ],
+      "level": 9
+    },
+    {
+      "id": "T0808",
+      "title": "用量与成本核算",
+      "priority": "P2",
+      "estimate_days": 1.5,
+      "epic": "E08",
+      "epic_name": "治理与安全",
+      "source": "docs/tasks/E07-E08-BI与治理.md",
+      "card": "**目标**：知道钱花在哪。\n**要点**\n- 采集：每任务扫描字节、CPU 时间、写入行数；存储按表大小日快照。\n- 归集：按 workspace / pipeline / model 聚合，支持按天/周/月查看。\n- 成本单价可配（元/GB 扫描、元/GB 存储），输出估算账单。\n- 提供 Top N 消耗排行，辅助优化。\n**产出**：`internal/obs/usage/*`、报表 API。\n**验收**：跑一条管道后用量可见；Top N 排行正确；月度汇总与明细一致。",
+      "deps": [
+        "T0506"
+      ],
+      "scope": [
+        "internal/obs/usage"
+      ],
+      "level": 14
+    },
+    {
+      "id": "T0901",
+      "title": "前端工程与设计系统",
+      "priority": "P0",
+      "estimate_days": 2.0,
+      "epic": "E09",
+      "epic_name": "前端与可视化",
+      "source": "docs/tasks/E09-E10-前端与交付.md",
+      "card": "**目标**：统一骨架，后续页面不用重复造壳。\n**要点**\n- Vite + React 18 + TS strict + Ant Design 5 + Tailwind（仅布局）；路由 `react-router` v6，按模块懒加载。\n- 目录：`pages/`（按域）、`components/`（通用）、`features/`（业务组件）、`api/`（生成代码 + fetch 封装）、`stores/`、`hooks/`。\n- 布局：左侧一级导航（数据源/模型/管道/运维/质量/血缘/BI/设置），顶部工作空间切换 + 环境标识（dev 用黄色条，prod 用红色条，防误操作）。\n- 主题：亮/暗双主题，主色可配；中英文 i18n（先做 zh-CN，en 预留 key）。\n- 统一 Loading / Empty / Error 三态组件；所有请求走 TanStack Query，含重试与失效策略。\n**产出**：工程骨架、布局、主题、请求层。\n**验收**：`pnpm build` 无 TS 错误；切换工作空间全站数据刷新；prod 环境视觉警示可见。",
+      "deps": [
+        "T0106"
+      ],
+      "scope": [
+        "epic:E09"
+      ],
+      "level": 2
+    },
+    {
+      "id": "T0902",
+      "title": "通用业务组件",
+      "priority": "P0",
+      "estimate_days": 3.0,
+      "epic": "E09",
+      "epic_name": "前端与可视化",
+      "source": "docs/tasks/E09-E10-前端与交付.md",
+      "card": "**目标**：表格、表单、SQL 编辑器是高频复用件。\n**要点**\n- `ProTable` 封装：列配置、分页、排序、筛选、列显隐、导出、批量选择；空态与骨架屏。\n- `SchemaForm`：由 JSON Schema 生成表单（模型/管道/质量规则共用），支持字段联动与校验信息定位。\n- `SqlEditor`：Monaco + 自定义补全（表名、列名、模板函数 `ref`/`src`/`macro`），格式化，只读模式，diff 模式。\n- `ConfirmDanger`：危险操作二次确认（输入资源名），记录操作原因。\n**产出**：`components/{ProTable,SchemaForm,SqlEditor,ConfirmDanger}`。\n**验收**：SchemaForm 能渲染模型 DSL 全部字段；SQL 编辑器补全含当前工作空间的表；表格 1 万行虚拟滚动流畅。",
+      "deps": [
+        "T0901"
+      ],
+      "scope": [
+        "components"
+      ],
+      "level": 3
+    },
+    {
+      "id": "T0903",
+      "title": "数据源与元数据浏览",
+      "priority": "P0",
+      "estimate_days": 2.0,
+      "epic": "E09",
+      "epic_name": "前端与可视化",
+      "source": "docs/tasks/E09-E10-前端与交付.md",
+      "card": "**目标**：接进来、看得见。\n**要点**\n- 数据源页：卡片列表（类型图标、状态灯、最后检测时间）、新建向导（选类型 → 填连接 → 测试 → 保存）、编辑（密码留空表示不改）。\n- 元数据浏览：左侧库/表树（可搜索、懒加载），右侧表详情（列、类型、注释、PII 标记、分区、行数、采集时间）。\n- 支持「一键生成 ODS 模型」按钮，跳到建模页并预填。\n**产出**：`pages/datasource/*`、`pages/metadata/*`。\n**验收**：新建数据源全程无需刷新；表树 5000 表滚动不卡；生成模型预填正确。",
+      "deps": [
+        "T0207",
+        "T0902"
+      ],
+      "scope": [
+        "pages/datasource",
+        "pages/metadata"
+      ],
+      "level": 7
+    },
+    {
+      "id": "T0904",
+      "title": "模型设计器",
+      "priority": "P0",
+      "estimate_days": 3.0,
+      "epic": "E09",
+      "epic_name": "前端与可视化",
+      "source": "docs/tasks/E09-E10-前端与交付.md",
+      "card": "**目标**：不写 YAML 也能建表。\n**要点**\n- 三栏：左-模型列表（按层分组），中-字段表格（增删改、拖拽排序、类型下拉带引擎提示），右-属性面板（分区/TTL/物化/标签）。\n- 顶部 Tab：字段 / DDL 预览 / 版本历史 / 血缘 / 质量规则。\n- 字段编辑实时校验（类型是否支持、主键是否可空），错误定位到行。\n- 版本对比：左右分栏 diff，高亮新增/删除/修改列；breaking 变更红色警示并禁用「直接发布」。\n**产出**：`pages/model/*`。\n**验收**：新增字段后 DDL 预览即时更新；发布 breaking 变更被前端拦截；版本 diff 与后端一致。",
+      "deps": [
+        "T0307",
+        "T0902"
+      ],
+      "scope": [
+        "pages/model"
+      ],
+      "level": 9
+    },
+    {
+      "id": "T0905",
+      "title": "管道可视化编排",
+      "priority": "P0",
+      "estimate_days": 5.0,
+      "epic": "E09",
+      "epic_name": "前端与可视化",
+      "source": "docs/tasks/E09-E10-前端与交付.md",
+      "card": "**目标**：这是产品的门面，必须好用。\n**要点**\n- 基于 AntV X6：自定义节点（图标+名称+状态徽标+资源组色条）、正交连线、锚点吸附、连线校验（禁止成环、禁止 source 有入边）。\n- 左侧节点面板（拖拽入画布），右侧属性面板（随选中节点切换表单，复用 `SchemaForm`）。\n- 画布能力：缩放（滚轮 + 快捷键）、框选、多选移动、对齐辅助线、自动布局（Dagre，左→右）、小地图、全屏。\n- 顶部工具栏：保存草稿、校验、Dry-run、发布、版本切换、撤销/重做（Ctrl+Z/Y）。\n- 节点状态：运行中呼吸灯、成功绿、失败红并显示错误角标；点击节点右侧抽屉展示日志（SSE）。\n- 快捷键：Delete 删除、Ctrl+C/V 复制粘贴、Ctrl+S 保存、空格拖拽画布。\n- 性能：500 节点时拖拽 ≥ 40fps，采用分层渲染与连线批量更新。\n**产出**：`pages/pipeline/editor/*`、`components/graph/*`。\n**验收**：拖出 10 节点连成 DAG 并发布成功；成环连线被拒绝并提示；500 节点画布拖拽流畅；刷新后布局还原。",
+      "deps": [
+        "T0402",
+        "T0902"
+      ],
+      "scope": [
+        "components/graph",
+        "pages/pipeline/editor"
+      ],
+      "level": 6
+    },
+    {
+      "id": "T0906",
+      "title": "运维中心",
+      "priority": "P0",
+      "estimate_days": 3.0,
+      "epic": "E09",
+      "epic_name": "前端与可视化",
+      "source": "docs/tasks/E09-E10-前端与交付.md",
+      "card": "**目标**：出了问题 30 秒内定位。\n**要点**\n- 实例列表：按管道/状态/日期筛选，支持批量重跑/终止；状态用色块 + 图标，失败行可展开错误摘要。\n- 甘特视图：按时间轴展示实例执行区间，颜色表状态，可缩放时间范围；支持按管道分组泳道。\n- 详情抽屉：基本信息、参数快照、渲染 SQL（只读，可复制）、日志（实时 SSE，带级别过滤与关键字搜索、自动滚动开关）、指标（读写行数、耗时）。\n- 手动触发弹窗：选择 bizdate、填参数、可选「仅试跑」。\n- 补数页面：选日期范围 → 预估实例数 → 提交 → 进度条与失败明细。\n**产出**：`pages/ops/*`。\n**验收**：失败实例 3 次点击内能看到错误 SQL 片段；日志实时刷新延迟 ≤ 1s；补数进度与实际一致。",
+      "deps": [
+        "T0508",
+        "T0902"
+      ],
+      "scope": [
+        "pages/ops"
+      ],
+      "level": 17
+    },
+    {
+      "id": "T0907",
+      "title": "血缘图",
+      "priority": "P1",
+      "estimate_days": 2.0,
+      "epic": "E09",
+      "epic_name": "前端与可视化",
+      "source": "docs/tasks/E09-E10-前端与交付.md",
+      "card": "**目标**：一眼看清上下游。\n**要点**\n- 用 X6 有向图，按层着色（ODS 灰、DWD 蓝、DWS 青、ADS 橙），节点显示表名与层徽标。\n- 交互：点击节点聚焦（只显示 N 跳）、双击展开下游、切换「表级/列级」、搜索定位、导出 PNG。\n- 列级模式：节点内展开列清单，连线连到具体列；低置信度连线用虚线。\n- 影响分析入口：选中表 → 「影响分析」→ 右侧列出受影响看板/指标，high 风险标红。\n**产出**：`pages/lineage/*`。\n**验收**：1000 节点图渲染 ≤ 2s；列级展开正确；风险清单与后端一致。",
+      "deps": [
+        "T0608",
+        "T0902"
+      ],
+      "scope": [
+        "pages/lineage"
+      ],
+      "level": 15
+    },
+    {
+      "id": "T0908",
+      "title": "质量看板",
+      "priority": "P1",
+      "estimate_days": 2.0,
+      "epic": "E09",
+      "epic_name": "前端与可视化",
+      "source": "docs/tasks/E09-E10-前端与交付.md",
+      "card": "**目标**：数据可信度可量化。\n**要点**\n- 总览：今日通过率、阻断规则数、告警趋势（近 30 天折线）。\n- 规则列表：按模型/严重级筛选，展示最近结果与通过率，支持一键启停。\n- 规则编辑：选模型 → 选列 → 选类型 → 配置参数（表单随类型变化）→ 试跑预览（返回违规样本）。\n- 违规明细：表格展示样本行，high PII 打码；支持跳转到对应实例。\n**产出**：`pages/quality/*`。\n**验收**：新增规则后试跑能返回样本；趋势图数据与 API 一致；启停即时生效。",
+      "deps": [
+        "T0603",
+        "T0902"
+      ],
+      "scope": [
+        "pages/quality"
+      ],
+      "level": 18
+    },
+    {
+      "id": "T0909",
+      "title": "BI 看板编辑器",
+      "priority": "P1",
+      "estimate_days": 4.0,
+      "epic": "E09",
+      "epic_name": "前端与可视化",
+      "source": "docs/tasks/E09-E10-前端与交付.md",
+      "card": "**目标**：业务能自己拖出一张看板。\n**要点**\n- 左侧：数据集 → 维度/度量列表（可搜索），拖入图表即可用。\n- 中间：栅格画布（24 列），图表卡片可拖拽/缩放/复制/删除，吸附对齐。\n- 右侧：图表配置（类型切换、字段拖到编码槽 x/y/series/color、样式、筛选）。\n- 顶部：全局筛选器配置（绑定字段、默认值、是否必填）、预览、保存、发布、分享。\n- 渲染：ECharts，统一主题；空数据、加载中、错误三态；大屏模式（全屏隐藏编辑区）。\n**产出**：`pages/bi/editor/*`、`components/charts/*`。\n**验收**：拖 4 个图表 + 1 个全局筛选并保存成功；类型切换保留字段映射；空数据展示友好提示。",
+      "deps": [
+        "T0708",
+        "T0902"
+      ],
+      "scope": [
+        "components/charts",
+        "pages/bi/editor"
+      ],
+      "level": 16
+    },
+    {
+      "id": "T0910",
+      "title": "权限与系统设置",
+      "priority": "P1",
+      "estimate_days": 2.0,
+      "epic": "E09",
+      "epic_name": "前端与可视化",
+      "source": "docs/tasks/E09-E10-前端与交付.md",
+      "card": "**目标**：管理员能自助完成配置。\n**要点**\n- 用户管理：列表、邀请、禁用、重置密码、分配角色。\n- 角色权限矩阵：资源类型 × 动作的勾选表，保存前显示影响面。\n- 工作空间设置：全局变量、默认时区、资源配额、保留策略。\n- 告警渠道配置：webhook/邮件/飞书，提供「发送测试消息」。\n- 审计日志页：筛选、详情 diff、导出。\n**产出**：`pages/settings/*`。\n**验收**：修改权限后目标用户下一次请求即生效；测试消息可达；审计 diff 可读。",
+      "deps": [
+        "T0801",
+        "T0902"
+      ],
+      "scope": [
+        "pages/settings"
+      ],
+      "level": 4
+    },
+    {
+      "id": "T1001",
+      "title": "一键部署",
+      "priority": "P0",
+      "estimate_days": 2.0,
+      "epic": "E10",
+      "epic_name": "交付与工程化",
+      "source": "docs/tasks/E09-E10-前端与交付.md",
+      "card": "**目标**：十分钟能跑起来。\n**要点**\n- `docker-compose.prod.yaml`：server、worker、postgres、redis、minio、可选 CH。\n- 首次启动自动执行迁移 + 创建管理员（密码打印到日志或通过环境变量指定）。\n- Helm chart：values 覆盖镜像、副本、资源、外部 DB、Ingress；`helm install godw ./deploy/helm`。\n- 健康检查、优雅退出、日志到 stdout（容器规范）。\n**产出**：compose、Helm chart、部署文档。\n**验收**：全新机器 `docker compose up -d` 后 3 分钟内可登录；`helm template` 无错误。",
+      "deps": [
+        "T0508"
+      ],
+      "scope": [
+        "epic:E10"
+      ],
+      "level": 17
+    },
+    {
+      "id": "T1002",
+      "title": "样例数据集与三条样例管道",
+      "priority": "P0",
+      "estimate_days": 2.0,
+      "epic": "E10",
+      "epic_name": "交付与工程化",
+      "source": "docs/tasks/E09-E10-前端与交付.md",
+      "card": "**目标**：开箱有东西可看，也是回归测试基线。\n**要点**\n- 数据集：订单（10 万行）、商品（1 万）、店铺（1000）、退款（2 万），含脏数据（空值、重复、异常金额）。\n- 三条管道：①订单日链路（ODS→DWD→DWS→ADS）；②退货款链路；③质量校验示例（故意让一条规则失败）。\n- 配套 3 个看板与 1 套指标（GMV、客单价、退款率）。\n- `make demo` 一键灌数 + 建模型 + 发布管道 + 触发一次。\n**产出**：`test/fixtures/*`、`deploy/demo/*`。\n**验收**：`make demo` 后登录能看到 3 个看板有数据；重跑结果一致。",
+      "deps": [
+        "T0512",
+        "T0709"
+      ],
+      "scope": [
+        "deploy/demo",
+        "test/fixtures"
+      ],
+      "level": 18
+    },
+    {
+      "id": "T1003",
+      "title": "压测与容量",
+      "priority": "P1",
+      "estimate_days": 2.0,
+      "epic": "E10",
+      "epic_name": "交付与工程化",
+      "source": "docs/tasks/E09-E10-前端与交付.md",
+      "card": "**目标**：知道能扛多少。\n**要点**\n- 场景：5000 实例/日回填、100 并发执行、元数据 10 万表、看板 50 QPS。\n- 工具：k6（API）+ 自建压测脚本（调度吞吐）；记录 p50/p95/p99、错误率、内存/CPU。\n- 输出报告：瓶颈定位（DB 连接池/调度扫描/锁竞争）与调优建议（索引、批量大小、并发数）。\n**产出**：`test/load/*`、压测报告 md。\n**验收**：500 实例/分钟调度无堆积；100 并发下错误率 < 1%；报告含具体瓶颈数据。",
+      "deps": [
+        "T0510",
+        "T0704"
+      ],
+      "scope": [
+        "test/load"
+      ],
+      "level": 16
+    },
+    {
+      "id": "T1004",
+      "title": "故障演练",
+      "priority": "P1",
+      "estimate_days": 1.5,
+      "epic": "E10",
+      "epic_name": "交付与工程化",
+      "source": "docs/tasks/E09-E10-前端与交付.md",
+      "card": "**目标**：异常场景不靠运气。\n**要点**\n- 演练项：杀 worker、杀调度器、DB 主备切换、引擎不可用、网络抖动、磁盘满、时钟漂移。\n- 每项验证：任务不丢、不重复、状态最终一致；恢复后自动续跑。\n- 记录演练结果与修复项，形成 checklist。\n**产出**：`docs/chaos.md`、演练脚本。\n**验收**：杀 worker 后任务 60s 内重派成功；DB 切换后 30s 内恢复服务；无重复写入（对比目标表行数）。",
+      "deps": [
+        "T0508"
+      ],
+      "scope": [
+        "epic:E10"
+      ],
+      "level": 17
+    },
+    {
+      "id": "T1005",
+      "title": "文档站",
+      "priority": "P1",
+      "estimate_days": 2.0,
+      "epic": "E10",
+      "epic_name": "交付与工程化",
+      "source": "docs/tasks/E09-E10-前端与交付.md",
+      "card": "**目标**：新人能自学，AI 能检索。\n**要点**\n- 结构：快速开始、核心概念（分层/模型/管道/实例）、DSL 参考（模型/管道/质量）、API 参考（OpenAPI 渲染）、运维手册、FAQ。\n- 用 VitePress 或 Docusaurus；代码块可复制；DSL 页有可运行示例。\n- 每篇文档标注「适用版本」，与代码同仓库更新。\n**产出**：`docs-site/*`。\n**验收**：从零按快速开始能在 15 分钟内跑通 demo；DSL 示例可直接复制使用。",
+      "deps": [
+        "T0410"
+      ],
+      "scope": [
+        "epic:E10"
+      ],
+      "level": 13
+    },
+    {
+      "id": "T1006",
+      "title": "CLI 完善",
+      "priority": "P2",
+      "estimate_days": 2.0,
+      "epic": "E10",
+      "epic_name": "交付与工程化",
+      "source": "docs/tasks/E09-E10-前端与交付.md",
+      "card": "**目标**：一切可脚本化、可进 GitOps。\n**要点**\n- `apply/plan/export` 实现 Terraform 式 diff（`+ ~ -`），破坏性变更需 `--force`。\n- `godw run --watch` 流式输出日志直到结束，退出码反映结果（0 成功 / 1 失败）。\n- `godw export` 导出的 YAML 能原样 `apply` 回去（往返一致性）。\n**产出**：`internal/cli/*`。\n**验收**：`export | apply` 往返无 diff；`run --watch` 失败时退出码为 1。",
+      "deps": [
+        "T0409"
+      ],
+      "scope": [
+        "internal/cli"
+      ],
+      "level": 12
+    },
+    {
+      "id": "T1007",
+      "title": "插件开发指南",
+      "priority": "P2",
+      "estimate_days": 1.5,
+      "epic": "E10",
+      "epic_name": "交付与工程化",
+      "source": "docs/tasks/E09-E10-前端与交付.md",
+      "card": "**目标**：别人能扩展，不用改核心。\n**要点**\n- 三类插件：Connector、Operator、QualityRule、AlertChannel，各有 `Register` 与示例。\n- 提供 `examples/plugin-mysql-audit` 这类最小可运行示例 + 测试套件。\n- 说明版本兼容策略（接口版本号、编译期注册）。\n**产出**：`docs/plugin.md`、`examples/`。\n**验收**：照文档新增一个假数据源，`connectortest` 通过。",
+      "deps": [
+        "T0205",
+        "T0408"
+      ],
+      "scope": [
+        "epic:E10"
+      ],
+      "level": 12
+    },
+    {
+      "id": "T1008",
+      "title": "可观测面板",
+      "priority": "P2",
+      "estimate_days": 1.0,
+      "epic": "E10",
+      "epic_name": "交付与工程化",
+      "source": "docs/tasks/E09-E10-前端与交付.md",
+      "card": "**目标**：平台自身可监控。\n**要点**\n- Prometheus 指标：调度延迟、队列长度、实例成功率、执行时长分位、DB 连接池、SSE 连接数。\n- Grafana dashboard JSON 入库，导入即用；关键指标配告警规则。\n**产出**：`deploy/grafana/*.json`。\n**验收**：导入后能看到实时曲线；杀一个 worker 指标有反映。",
+      "deps": [
+        "T0512"
+      ],
+      "scope": [
+        "deploy/grafana"
+      ],
+      "level": 18
+    },
+    {
+      "id": "T1009",
+      "title": "升级与兼容",
+      "priority": "P2",
+      "estimate_days": 1.5,
+      "epic": "E10",
+      "epic_name": "交付与工程化",
+      "source": "docs/tasks/E09-E10-前端与交付.md",
+      "card": "**目标**：升级不炸数据。\n**要点**\n- 版本策略：语义化版本；DB 迁移只增不改（新增列可空、不删列）；废弃字段保留两个 minor 版本。\n- 提供 `godw doctor --upgrade-check` 预检：迁移待执行项、不兼容配置、废弃 API 调用。\n- 回滚方案：镜像回滚 + 迁移 down（仅支持最近一个版本）。\n**产出**：升级文档、预检命令。\n**验收**：从 N-1 升级到 N 数据无损；预检能列出待执行迁移。",
+      "deps": [
+        "T1001"
+      ],
+      "scope": [
+        "epic:E10"
+      ],
+      "level": 18
+    },
+    {
+      "id": "T1010",
+      "title": "开源化准备",
+      "priority": "P2",
+      "estimate_days": 1.0,
+      "epic": "E10",
+      "epic_name": "交付与工程化",
+      "source": "docs/tasks/E09-E10-前端与交付.md",
+      "card": "**目标**：可对外、可协作。\n**要点**\n- LICENSE（Apache-2.0）、CONTRIBUTING、CODE_OF_CONDUCT、Issue/PR 模板、CODEOWNERS。\n- PR 检查清单：测试、文档、迁移、API 变更说明。\n- 安全策略 `SECURITY.md`（漏洞上报流程）。\n**产出**：仓库根目录治理文件。\n**验收**：新贡献者按 CONTRIBUTING 能提交一个通过 CI 的 PR。",
+      "deps": [
+        "T1001"
+      ],
+      "scope": [
+        "epic:E10"
+      ],
+      "level": 18
+    }
+  ]
+}

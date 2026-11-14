@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>任务 E09-E10 · GoDW 文档</title><style>
+:root{--bg:#0e1116;--bg-elev:#151a21;--line:#232b36;--text:#e6edf3;--dim:#9aa7b4;--mute:#6b7887;--accent:#4f8cff}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+.layout{display:grid;grid-template-columns:250px 1fr;min-height:100vh}
+aside{border-right:1px solid var(--line);padding:22px 0;position:sticky;top:0;height:100vh;overflow:auto}
+.brand{padding:0 20px 18px;font-weight:600;font-size:15px}
+.brand small{display:block;color:var(--mute);font-weight:400;font-size:10.5px;letter-spacing:.8px;text-transform:uppercase;margin-top:3px}
+nav a{display:block;padding:7px 20px;color:var(--dim);text-decoration:none;font-size:13px;border-left:2px solid transparent}
+nav a:hover{background:var(--bg-elev);color:var(--text)}
+nav a.active{color:#cfe0ff;border-left-color:var(--accent);background:#1d2836}
+main{padding:34px 44px 80px;max-width:900px}
+h1{font-size:26px;margin:0 0 18px}
+h2{font-size:19px;margin:32px 0 12px;padding-bottom:7px;border-bottom:1px solid var(--line)}
+h3{font-size:15.5px;margin:24px 0 8px}
+p,li{color:#cdd7e1}
+a{color:var(--accent)}
+code{background:#1b222b;padding:2px 5px;border-radius:4px;font-size:12.5px;font-family:ui-monospace,Menlo,Consolas,monospace}
+pre{background:#0b0e13;border:1px solid var(--line);border-radius:8px;padding:14px 16px;overflow:auto}
+pre code{background:none;padding:0}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:13px}
+th{text-align:left;background:#1b222b;padding:8px 11px;border:1px solid var(--line);font-weight:600}
+td{padding:8px 11px;border:1px solid var(--line)}
+blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);background:#141b24;color:var(--dim)}
+img{max-width:100%;border-radius:8px;border:1px solid var(--line)}
+</style></head>
+<body><div class="layout">
+<aside><div class="brand">GoDW<small>Documentation</small></div><nav><a href="index.html" class="">概览</a><a href="architecture.html" class="">总体架构</a><a href="metadata.html" class="">元数据模型</a><a href="interfaces.html" class="">核心抽象与接口</a><a href="ai.html" class="">AI 协作与验收</a><a href="unattended.html" class="">无人值守执行</a><a href="tasks-e01.html" class="">任务 E01-E02</a><a href="tasks-e03.html" class="">任务 E03-E04</a><a href="tasks-e05.html" class="">任务 E05-E06</a><a href="tasks-e07.html" class="">任务 E07-E08</a><a href="tasks-e09.html" class="active">任务 E09-E10</a><a href="perf.html" class="">性能与容量</a><a href="ops.html" class="">运维手册</a><a href="plugin.html" class="">插件开发指南</a><a href="upgrade.html" class="">升级与兼容</a><a href="contrib.html" class="">贡献指南</a><a href="changelog.html" class="">变更日志</a></nav></aside>
+<main><h1 id="e09-e10">E09 · 前端与可视化 ｜ E10 · 交付与工程化</h1>
+<blockquote>
+<p>前端不是「把接口包一层」。管道编排画布、实时日志、血缘图这三块决定了产品的专业度，必须有明确的交互规格，否则 AI 会写出「能点但不好用」的页面。</p>
+</blockquote>
+<hr />
+<h2 id="e09-24">E09 前端与可视化（24 人日）</h2>
+<h4 id="t0901-p0-2d">T0901 · 前端工程与设计系统  <code>P0</code> <code>2d</code></h4>
+<p><strong>目标</strong>：统一骨架，后续页面不用重复造壳。
+<strong>要点</strong>
+- Vite + React 18 + TS strict + Ant Design 5 + Tailwind（仅布局）；路由 <code>react-router</code> v6，按模块懒加载。
+- 目录：<code>pages/</code>（按域）、<code>components/</code>（通用）、<code>features/</code>（业务组件）、<code>api/</code>（生成代码 + fetch 封装）、<code>stores/</code>、<code>hooks/</code>。
+- 布局：左侧一级导航（数据源/模型/管道/运维/质量/血缘/BI/设置），顶部工作空间切换 + 环境标识（dev 用黄色条，prod 用红色条，防误操作）。
+- 主题：亮/暗双主题，主色可配；中英文 i18n（先做 zh-CN，en 预留 key）。
+- 统一 Loading / Empty / Error 三态组件；所有请求走 TanStack Query，含重试与失效策略。
+<strong>产出</strong>：工程骨架、布局、主题、请求层。
+<strong>验收</strong>：<code>pnpm build</code> 无 TS 错误；切换工作空间全站数据刷新；prod 环境视觉警示可见。</p>
+<h4 id="t0902-p0-3d">T0902 · 通用业务组件  <code>P0</code> <code>3d</code></h4>
+<p><strong>目标</strong>：表格、表单、SQL 编辑器是高频复用件。
+<strong>要点</strong>
+- <code>ProTable</code> 封装：列配置、分页、排序、筛选、列显隐、导出、批量选择；空态与骨架屏。
+- <code>SchemaForm</code>：由 JSON Schema 生成表单（模型/管道/质量规则共用），支持字段联动与校验信息定位。
+- <code>SqlEditor</code>：Monaco + 自定义补全（表名、列名、模板函数 <code>ref</code>/<code>src</code>/<code>macro</code>），格式化，只读模式，diff 模式。
+- <code>ConfirmDanger</code>：危险操作二次确认（输入资源名），记录操作原因。
+<strong>产出</strong>：<code>components/{ProTable,SchemaForm,SqlEditor,ConfirmDanger}</code>。
+<strong>验收</strong>：SchemaForm 能渲染模型 DSL 全部字段；SQL 编辑器补全含当前工作空间的表；表格 1 万行虚拟滚动流畅。</p>
+<h4 id="t0903-p0-2d">T0903 · 数据源与元数据浏览  <code>P0</code> <code>2d</code></h4>
+<p><strong>目标</strong>：接进来、看得见。
+<strong>要点</strong>
+- 数据源页：卡片列表（类型图标、状态灯、最后检测时间）、新建向导（选类型 → 填连接 → 测试 → 保存）、编辑（密码留空表示不改）。
+- 元数据浏览：左侧库/表树（可搜索、懒加载），右侧表详情（列、类型、注释、PII 标记、分区、行数、采集时间）。
+- 支持「一键生成 ODS 模型」按钮，跳到建模页并预填。
+<strong>产出</strong>：<code>pages/datasource/*</code>、<code>pages/metadata/*</code>。
+<strong>验收</strong>：新建数据源全程无需刷新；表树 5000 表滚动不卡；生成模型预填正确。</p>
+<h4 id="t0904-p0-3d">T0904 · 模型设计器  <code>P0</code> <code>3d</code></h4>
+<p><strong>目标</strong>：不写 YAML 也能建表。
+<strong>要点</strong>
+- 三栏：左-模型列表（按层分组），中-字段表格（增删改、拖拽排序、类型下拉带引擎提示），右-属性面板（分区/TTL/物化/标签）。
+- 顶部 Tab：字段 / DDL 预览 / 版本历史 / 血缘 / 质量规则。
+- 字段编辑实时校验（类型是否支持、主键是否可空），错误定位到行。
+- 版本对比：左右分栏 diff，高亮新增/删除/修改列；breaking 变更红色警示并禁用「直接发布」。
+<strong>产出</strong>：<code>pages/model/*</code>。
+<strong>验收</strong>：新增字段后 DDL 预览即时更新；发布 breaking 变更被前端拦截；版本 diff 与后端一致。</p>
+<h4 id="t0905-p0-5d">T0905 · 管道可视化编排  <code>P0</code> <code>5d</code></h4>
+<p><strong>目标</strong>：这是产品的门面，必须好用。
+<strong>要点</strong>
+- 基于 AntV X6：自定义节点（图标+名称+状态徽标+资源组色条）、正交连线、锚点吸附、连线校验（禁止成环、禁止 source 有入边）。
+- 左侧节点面板（拖拽入画布），右侧属性面板（随选中节点切换表单，复用 <code>SchemaForm</code>）。
+- 画布能力：缩放（滚轮 + 快捷键）、框选、多选移动、对齐辅助线、自动布局（Dagre，左→右）、小地图、全屏。
+- 顶部工具栏：保存草稿、校验、Dry-run、发布、版本切换、撤销/重做（Ctrl+Z/Y）。
+- 节点状态：运行中呼吸灯、成功绿、失败红并显示错误角标；点击节点右侧抽屉展示日志（SSE）。
+- 快捷键：Delete 删除、Ctrl+C/V 复制粘贴、Ctrl+S 保存、空格拖拽画布。
+- 性能：500 节点时拖拽 ≥ 40fps，采用分层渲染与连线批量更新。
+<strong>产出</strong>：<code>pages/pipeline/editor/*</code>、<code>components/graph/*</code>。
+<strong>验收</strong>：拖出 10 节点连成 DAG 并发布成功；成环连线被拒绝并提示；500 节点画布拖拽流畅；刷新后布局还原。</p>
+<h4 id="t0906-p0-3d">T0906 · 运维中心  <code>P0</code> <code>3d</code></h4>
+<p><strong>目标</strong>：出了问题 30 秒内定位。
+<strong>要点</strong>
+- 实例列表：按管道/状态/日期筛选，支持批量重跑/终止；状态用色块 + 图标，失败行可展开错误摘要。
+- 甘特视图：按时间轴展示实例执行区间，颜色表状态，可缩放时间范围；支持按管道分组泳道。
+- 详情抽屉：基本信息、参数快照、渲染 SQL（只读，可复制）、日志（实时 SSE，带级别过滤与关键字搜索、自动滚动开关）、指标（读写行数、耗时）。
+- 手动触发弹窗：选择 bizdate、填参数、可选「仅试跑」。
+- 补数页面：选日期范围 → 预估实例数 → 提交 → 进度条与失败明细。
+<strong>产出</strong>：<code>pages/ops/*</code>。
+<strong>验收</strong>：失败实例 3 次点击内能看到错误 SQL 片段；日志实时刷新延迟 ≤ 1s；补数进度与实际一致。</p>
+<h4 id="t0907-p1-2d">T0907 · 血缘图  <code>P1</code> <code>2d</code></h4>
+<p><strong>目标</strong>：一眼看清上下游。
+<strong>要点</strong>
+- 用 X6 有向图，按层着色（ODS 灰、DWD 蓝、DWS 青、ADS 橙），节点显示表名与层徽标。
+- 交互：点击节点聚焦（只显示 N 跳）、双击展开下游、切换「表级/列级」、搜索定位、导出 PNG。
+- 列级模式：节点内展开列清单，连线连到具体列；低置信度连线用虚线。
+- 影响分析入口：选中表 → 「影响分析」→ 右侧列出受影响看板/指标，high 风险标红。
+<strong>产出</strong>：<code>pages/lineage/*</code>。
+<strong>验收</strong>：1000 节点图渲染 ≤ 2s；列级展开正确；风险清单与后端一致。</p>
+<h4 id="t0908-p1-2d">T0908 · 质量看板  <code>P1</code> <code>2d</code></h4>
+<p><strong>目标</strong>：数据可信度可量化。
+<strong>要点</strong>
+- 总览：今日通过率、阻断规则数、告警趋势（近 30 天折线）。
+- 规则列表：按模型/严重级筛选，展示最近结果与通过率，支持一键启停。
+- 规则编辑：选模型 → 选列 → 选类型 → 配置参数（表单随类型变化）→ 试跑预览（返回违规样本）。
+- 违规明细：表格展示样本行，high PII 打码；支持跳转到对应实例。
+<strong>产出</strong>：<code>pages/quality/*</code>。
+<strong>验收</strong>：新增规则后试跑能返回样本；趋势图数据与 API 一致；启停即时生效。</p>
+<h4 id="t0909-bi-p1-4d">T0909 · BI 看板编辑器  <code>P1</code> <code>4d</code></h4>
+<p><strong>目标</strong>：业务能自己拖出一张看板。
+<strong>要点</strong>
+- 左侧：数据集 → 维度/度量列表（可搜索），拖入图表即可用。
+- 中间：栅格画布（24 列），图表卡片可拖拽/缩放/复制/删除，吸附对齐。
+- 右侧：图表配置（类型切换、字段拖到编码槽 x/y/series/color、样式、筛选）。
+- 顶部：全局筛选器配置（绑定字段、默认值、是否必填）、预览、保存、发布、分享。
+- 渲染：ECharts，统一主题；空数据、加载中、错误三态；大屏模式（全屏隐藏编辑区）。
+<strong>产出</strong>：<code>pages/bi/editor/*</code>、<code>components/charts/*</code>。
+<strong>验收</strong>：拖 4 个图表 + 1 个全局筛选并保存成功；类型切换保留字段映射；空数据展示友好提示。</p>
+<h4 id="t0910-p1-2d">T0910 · 权限与系统设置  <code>P1</code> <code>2d</code></h4>
+<p><strong>目标</strong>：管理员能自助完成配置。
+<strong>要点</strong>
+- 用户管理：列表、邀请、禁用、重置密码、分配角色。
+- 角色权限矩阵：资源类型 × 动作的勾选表，保存前显示影响面。
+- 工作空间设置：全局变量、默认时区、资源配额、保留策略。
+- 告警渠道配置：webhook/邮件/飞书，提供「发送测试消息」。
+- 审计日志页：筛选、详情 diff、导出。
+<strong>产出</strong>：<code>pages/settings/*</code>。
+<strong>验收</strong>：修改权限后目标用户下一次请求即生效；测试消息可达；审计 diff 可读。</p>
+<hr />
+<h2 id="e10-12">E10 · 交付与工程化（12 人日）</h2>
+<h4 id="t1001-p0-2d">T1001 · 一键部署  <code>P0</code> <code>2d</code></h4>
+<p><strong>目标</strong>：十分钟能跑起来。
+<strong>要点</strong>
+- <code>docker-compose.prod.yaml</code>：server、worker、postgres、redis、minio、可选 CH。
+- 首次启动自动执行迁移 + 创建管理员（密码打印到日志或通过环境变量指定）。
+- Helm chart：values 覆盖镜像、副本、资源、外部 DB、Ingress；<code>helm install godw ./deploy/helm</code>。
+- 健康检查、优雅退出、日志到 stdout（容器规范）。
+<strong>产出</strong>：compose、Helm chart、部署文档。
+<strong>验收</strong>：全新机器 <code>docker compose up -d</code> 后 3 分钟内可登录；<code>helm template</code> 无错误。</p>
+<h4 id="t1002-p0-2d">T1002 · 样例数据集与三条样例管道  <code>P0</code> <code>2d</code></h4>
+<p><strong>目标</strong>：开箱有东西可看，也是回归测试基线。
+<strong>要点</strong>
+- 数据集：订单（10 万行）、商品（1 万）、店铺（1000）、退款（2 万），含脏数据（空值、重复、异常金额）。
+- 三条管道：①订单日链路（ODS→DWD→DWS→ADS）；②退货款链路；③质量校验示例（故意让一条规则失败）。
+- 配套 3 个看板与 1 套指标（GMV、客单价、退款率）。
+- <code>make demo</code> 一键灌数 + 建模型 + 发布管道 + 触发一次。
+<strong>产出</strong>：<code>test/fixtures/*</code>、<code>deploy/demo/*</code>。
+<strong>验收</strong>：<code>make demo</code> 后登录能看到 3 个看板有数据；重跑结果一致。</p>
+<h4 id="t1003-p1-2d">T1003 · 压测与容量  <code>P1</code> <code>2d</code></h4>
+<p><strong>目标</strong>：知道能扛多少。
+<strong>要点</strong>
+- 场景：5000 实例/日回填、100 并发执行、元数据 10 万表、看板 50 QPS。
+- 工具：k6（API）+ 自建压测脚本（调度吞吐）；记录 p50/p95/p99、错误率、内存/CPU。
+- 输出报告：瓶颈定位（DB 连接池/调度扫描/锁竞争）与调优建议（索引、批量大小、并发数）。
+<strong>产出</strong>：<code>test/load/*</code>、压测报告 md。
+<strong>验收</strong>：500 实例/分钟调度无堆积；100 并发下错误率 &lt; 1%；报告含具体瓶颈数据。</p>
+<h4 id="t1004-p1-15d">T1004 · 故障演练  <code>P1</code> <code>1.5d</code></h4>
+<p><strong>目标</strong>：异常场景不靠运气。
+<strong>要点</strong>
+- 演练项：杀 worker、杀调度器、DB 主备切换、引擎不可用、网络抖动、磁盘满、时钟漂移。
+- 每项验证：任务不丢、不重复、状态最终一致；恢复后自动续跑。
+- 记录演练结果与修复项，形成 checklist。
+<strong>产出</strong>：<code>docs/chaos.md</code>、演练脚本。
+<strong>验收</strong>：杀 worker 后任务 60s 内重派成功；DB 切换后 30s 内恢复服务；无重复写入（对比目标表行数）。</p>
+<h4 id="t1005-p1-2d">T1005 · 文档站  <code>P1</code> <code>2d</code></h4>
+<p><strong>目标</strong>：新人能自学，AI 能检索。
+<strong>要点</strong>
+- 结构：快速开始、核心概念（分层/模型/管道/实例）、DSL 参考（模型/管道/质量）、API 参考（OpenAPI 渲染）、运维手册、FAQ。
+- 用 VitePress 或 Docusaurus；代码块可复制；DSL 页有可运行示例。
+- 每篇文档标注「适用版本」，与代码同仓库更新。
+<strong>产出</strong>：<code>docs-site/*</code>。
+<strong>验收</strong>：从零按快速开始能在 15 分钟内跑通 demo；DSL 示例可直接复制使用。</p>
+<h4 id="t1006-cli-p2-2d">T1006 · CLI 完善  <code>P2</code> <code>2d</code></h4>
+<p><strong>目标</strong>：一切可脚本化、可进 GitOps。
+<strong>要点</strong>
+- <code>apply/plan/export</code> 实现 Terraform 式 diff（<code>+ ~ -</code>），破坏性变更需 <code>--force</code>。
+- <code>godw run --watch</code> 流式输出日志直到结束，退出码反映结果（0 成功 / 1 失败）。
+- <code>godw export</code> 导出的 YAML 能原样 <code>apply</code> 回去（往返一致性）。
+<strong>产出</strong>：<code>internal/cli/*</code>。
+<strong>验收</strong>：<code>export | apply</code> 往返无 diff；<code>run --watch</code> 失败时退出码为 1。</p>
+<h4 id="t1007-p2-15d">T1007 · 插件开发指南  <code>P2</code> <code>1.5d</code></h4>
+<p><strong>目标</strong>：别人能扩展，不用改核心。
+<strong>要点</strong>
+- 三类插件：Connector、Operator、QualityRule、AlertChannel，各有 <code>Register</code> 与示例。
+- 提供 <code>examples/plugin-mysql-audit</code> 这类最小可运行示例 + 测试套件。
+- 说明版本兼容策略（接口版本号、编译期注册）。
+<strong>产出</strong>：<code>docs/plugin.md</code>、<code>examples/</code>。
+<strong>验收</strong>：照文档新增一个假数据源，<code>connectortest</code> 通过。</p>
+<h4 id="t1008-p2-1d">T1008 · 可观测面板  <code>P2</code> <code>1d</code></h4>
+<p><strong>目标</strong>：平台自身可监控。
+<strong>要点</strong>
+- Prometheus 指标：调度延迟、队列长度、实例成功率、执行时长分位、DB 连接池、SSE 连接数。
+- Grafana dashboard JSON 入库，导入即用；关键指标配告警规则。
+<strong>产出</strong>：<code>deploy/grafana/*.json</code>。
+<strong>验收</strong>：导入后能看到实时曲线；杀一个 worker 指标有反映。</p>
+<h4 id="t1009-p2-15d">T1009 · 升级与兼容  <code>P2</code> <code>1.5d</code></h4>
+<p><strong>目标</strong>：升级不炸数据。
+<strong>要点</strong>
+- 版本策略：语义化版本；DB 迁移只增不改（新增列可空、不删列）；废弃字段保留两个 minor 版本。
+- 提供 <code>godw doctor --upgrade-check</code> 预检：迁移待执行项、不兼容配置、废弃 API 调用。
+- 回滚方案：镜像回滚 + 迁移 down（仅支持最近一个版本）。
+<strong>产出</strong>：升级文档、预检命令。
+<strong>验收</strong>：从 N-1 升级到 N 数据无损；预检能列出待执行迁移。</p>
+<h4 id="t1010-p2-1d">T1010 · 开源化准备  <code>P2</code> <code>1d</code></h4>
+<p><strong>目标</strong>：可对外、可协作。
+<strong>要点</strong>
+- LICENSE（Apache-2.0）、CONTRIBUTING、CODE_OF_CONDUCT、Issue/PR 模板、CODEOWNERS。
+- PR 检查清单：测试、文档、迁移、API 变更说明。
+- 安全策略 <code>SECURITY.md</code>（漏洞上报流程）。
+<strong>产出</strong>：仓库根目录治理文件。
+<strong>验收</strong>：新贡献者按 CONTRIBUTING 能提交一个通过 CI 的 PR。</p></main>
+</div></body></html>

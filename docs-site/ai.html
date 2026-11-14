@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>AI 协作与验收 · GoDW 文档</title><style>
+:root{--bg:#0e1116;--bg-elev:#151a21;--line:#232b36;--text:#e6edf3;--dim:#9aa7b4;--mute:#6b7887;--accent:#4f8cff}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+.layout{display:grid;grid-template-columns:250px 1fr;min-height:100vh}
+aside{border-right:1px solid var(--line);padding:22px 0;position:sticky;top:0;height:100vh;overflow:auto}
+.brand{padding:0 20px 18px;font-weight:600;font-size:15px}
+.brand small{display:block;color:var(--mute);font-weight:400;font-size:10.5px;letter-spacing:.8px;text-transform:uppercase;margin-top:3px}
+nav a{display:block;padding:7px 20px;color:var(--dim);text-decoration:none;font-size:13px;border-left:2px solid transparent}
+nav a:hover{background:var(--bg-elev);color:var(--text)}
+nav a.active{color:#cfe0ff;border-left-color:var(--accent);background:#1d2836}
+main{padding:34px 44px 80px;max-width:900px}
+h1{font-size:26px;margin:0 0 18px}
+h2{font-size:19px;margin:32px 0 12px;padding-bottom:7px;border-bottom:1px solid var(--line)}
+h3{font-size:15.5px;margin:24px 0 8px}
+p,li{color:#cdd7e1}
+a{color:var(--accent)}
+code{background:#1b222b;padding:2px 5px;border-radius:4px;font-size:12.5px;font-family:ui-monospace,Menlo,Consolas,monospace}
+pre{background:#0b0e13;border:1px solid var(--line);border-radius:8px;padding:14px 16px;overflow:auto}
+pre code{background:none;padding:0}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:13px}
+th{text-align:left;background:#1b222b;padding:8px 11px;border:1px solid var(--line);font-weight:600}
+td{padding:8px 11px;border:1px solid var(--line)}
+blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);background:#141b24;color:var(--dim)}
+img{max-width:100%;border-radius:8px;border:1px solid var(--line)}
+</style></head>
+<body><div class="layout">
+<aside><div class="brand">GoDW<small>Documentation</small></div><nav><a href="index.html" class="">概览</a><a href="architecture.html" class="">总体架构</a><a href="metadata.html" class="">元数据模型</a><a href="interfaces.html" class="">核心抽象与接口</a><a href="ai.html" class="active">AI 协作与验收</a><a href="unattended.html" class="">无人值守执行</a><a href="tasks-e01.html" class="">任务 E01-E02</a><a href="tasks-e03.html" class="">任务 E03-E04</a><a href="tasks-e05.html" class="">任务 E05-E06</a><a href="tasks-e07.html" class="">任务 E07-E08</a><a href="tasks-e09.html" class="">任务 E09-E10</a><a href="perf.html" class="">性能与容量</a><a href="ops.html" class="">运维手册</a><a href="plugin.html" class="">插件开发指南</a><a href="upgrade.html" class="">升级与兼容</a><a href="contrib.html" class="">贡献指南</a><a href="changelog.html" class="">变更日志</a></nav></aside>
+<main><h1 id="04-ai">04 · AI 协作与验收规范</h1>
+<blockquote>
+<p>这份文档约束「怎么把这个项目交给 AI 做」。目标不是让 AI 写得更快，而是让它的产出<strong>可合并、可回归、可追责</strong>。</p>
+</blockquote>
+<hr />
+<h2 id="1">1. 一次只喂一张任务卡</h2>
+<p>把整个文档丢给 AI，它必然贪多求全、写出一堆跑不起来的骨架。正确做法：</p>
+<pre><code>你是一名 Go 后端工程师，正在实现 GoDW 数据仓库系统的 T0406 任务。
+
+必读材料（按顺序）：
+1. docs/03-核心抽象与接口.md 第 6 节（SQL 渲染与写入策略）
+2. docs/02-元数据模型.md 第 4 节（幂等与重跑规则）
+3. docs/tasks/E03-E04-模型与管道.md 的 T0406 卡片
+
+约束：
+- 只改 internal/sqlx/write.go 及其测试，不碰其他页面/模块
+- 必须实现 6 种策略，不支持的策略返回 ErrUnsupported，不要静默降级
+- 所有 SQL 生成必须走 dialect，禁止硬编码引擎语法
+- 表驱动测试 + golden 快照，覆盖 4 引擎
+
+交付：
+- 变更文件清单
+- 每个策略的实现选择（例如 ClickHouse 的 merge 用哪种方案，为什么）
+- `go test ./internal/sqlx/...` 输出
+- 你认为的风险点
+</code></pre>
+<p><strong>三条硬规则</strong>
+1. <strong>上下文只给需要的</strong>：一张卡 + 两张相关文档，不要给全仓库。
+2. <strong>边界写死</strong>：允许改哪些文件，不允许动哪些。
+3. <strong>要求自证</strong>：贴测试输出，不贴等于没做。</p>
+<hr />
+<h2 id="2">2. 编码红线</h2>
+<table>
+<thead>
+<tr>
+<th>禁止</th>
+<th>原因</th>
+<th>替代</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>在 handler 里写业务逻辑</td>
+<td>无法复用、难测</td>
+<td>handler 只做参数校验 + 调 service</td>
+</tr>
+<tr>
+<td>直接 <code>db.Query</code> 绕过 repo</td>
+<td>事务与租户隔离失效</td>
+<td>走 repo / sqlc</td>
+</tr>
+<tr>
+<td>字符串拼接 SQL</td>
+<td>注入、方言错乱</td>
+<td>参数化 + <code>QuoteIdent</code></td>
+</tr>
+<tr>
+<td><code>fmt.Errorf("failed: %v", err)</code></td>
+<td>丢堆栈、断链</td>
+<td><code>errs.Wrap(err, code, msg)</code></td>
+</tr>
+<tr>
+<td>无条件 <code>UPDATE state=?</code></td>
+<td>并发下状态错乱</td>
+<td>条件更新 + 影响行数校验</td>
+</tr>
+<tr>
+<td>goroutine 里用请求 ctx 却不处理取消</td>
+<td>goroutine 泄漏</td>
+<td>派生 ctx + <code>defer cancel()</code></td>
+</tr>
+<tr>
+<td>裸 <code>time.Now()</code></td>
+<td>不可测试、时区错</td>
+<td>注入 <code>clock.Clock</code></td>
+</tr>
+<tr>
+<td>用 <code>float64</code> 存金额</td>
+<td>精度丢失</td>
+<td><code>decimal.Decimal</code> / 字符串</td>
+</tr>
+<tr>
+<td>静默降级（不支持就当成功）</td>
+<td>数据错得无声无息</td>
+<td>返回 <code>ErrUnsupported</code></td>
+</tr>
+<tr>
+<td>前端 <code>any</code> 满天飞</td>
+<td>接口一改就崩</td>
+<td>用 OpenAPI 生成类型</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="3-dod">3. 完成定义（DoD）</h2>
+<p>一张任务卡只有同时满足以下六条才算完成：</p>
+<ol>
+<li><strong>代码</strong>：实现任务卡「要点」中的全部条目，无 TODO 遗留（预留项须在卡上标注 <code>P2</code>）。</li>
+<li><strong>测试</strong>：核心包覆盖率 ≥ 80%，整体 ≥ 70%；异常分支有对应用例（不只是 happy path）。</li>
+<li><strong>迁移</strong>：涉及 schema 变更的，必须提供 up/down 迁移并本地验证。</li>
+<li><strong>契约</strong>：涉及 API 的，<code>openapi.yaml</code> 已更新且 <code>make api-gen</code> 无 diff。</li>
+<li><strong>文档</strong>：新增配置项、DSL 字段、错误码已写入对应文档。</li>
+<li><strong>可观测</strong>：关键路径有日志（含 request_id/instance_id）与指标埋点。</li>
+</ol>
+<hr />
+<h2 id="4">4. 测试矩阵</h2>
+<table>
+<thead>
+<tr>
+<th>层级</th>
+<th>范围</th>
+<th>工具</th>
+<th>门禁</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>单元</td>
+<td>纯函数（编译、渲染、解析、状态机）</td>
+<td><code>testing</code> + 表驱动</td>
+<td>覆盖率 ≥ 80%</td>
+</tr>
+<tr>
+<td>Golden</td>
+<td>生成的 SQL / DDL / 图表配置</td>
+<td><code>golden</code> 文件对比</td>
+<td>变更需人工确认</td>
+</tr>
+<tr>
+<td>集成</td>
+<td>repo、连接器、执行器</td>
+<td>testcontainers（PG/MySQL/CH）+ DuckDB</td>
+<td>PR 必跑</td>
+</tr>
+<tr>
+<td>契约</td>
+<td>API 与 OpenAPI 一致</td>
+<td><code>oapi-codegen</code> + <code>oasdiff</code></td>
+<td>breaking 需标签</td>
+</tr>
+<tr>
+<td>E2E</td>
+<td>demo 三条管道全链路</td>
+<td>compose + 断言 ADS 数据</td>
+<td>main 分支必跑</td>
+</tr>
+<tr>
+<td>压测</td>
+<td>调度吞吐、查询并发</td>
+<td>k6 + 自建脚本</td>
+<td>里程碑验收跑一次</td>
+</tr>
+<tr>
+<td>混沌</td>
+<td>杀进程、断网、DB 切换</td>
+<td>shell 脚本</td>
+<td>M5 前完成一轮</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Golden 测试的纪律</strong>：快照变化必须在 PR 描述里解释「为什么变」。不允许 <code>-update</code> 一把梭。</p>
+<hr />
+<h2 id="5">5. 阶段验收脚本</h2>
+<p>每个里程碑结束必须能跑通对应脚本，否则不算交付：</p>
+<pre><code class="language-bash"># M1 地基
+make up &amp;&amp; make migrate &amp;&amp; godw doctor
+
+# M2 元数据
+godw datasource add --type postgres --name pg_main --dsn &quot;$DSN&quot;
+godw datasource test pg_main
+godw meta sync pg_main &amp;&amp; godw meta tables pg_main | head
+
+# M3 建模
+godw validate -f warehouse/dwd_order_detail.yaml
+godw apply -f warehouse/dwd_order_detail.yaml
+godw ddl dwd_order_detail --env prod
+
+# M4 管道
+godw pipeline validate -f warehouse/daily_order.yaml
+godw pipeline dry-run daily_order --bizdate 20251110
+godw pipeline run daily_order --bizdate 20251110 --watch
+
+# M5 调度
+godw pipeline publish daily_order
+godw instance list --pipeline daily_order --state FAILED
+godw backfill daily_order --from 20251101 --to 20251107
+
+# M6 质量与血缘
+godw quality run dwd_order_detail --bizdate 20251110
+godw lineage table dwd_order_detail --direction down --depth 3
+
+# M7 BI
+curl -s -X POST localhost:8080/api/v1/datasets/1/query -d '{&quot;dimensions&quot;:[&quot;dt&quot;],&quot;measures&quot;:[&quot;gmv&quot;]}'
+</code></pre>
+<hr />
+<h2 id="6-ai">6. 领域坑清单（AI 最容易写错的地方）</h2>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>坑</th>
+<th>正确做法</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>时区混用</td>
+<td>全链路存 UTC，展示按工作空间时区；<code>bizdate</code> 是「业务日」不是「自然日」，由调度器按配置时区计算</td>
+</tr>
+<tr>
+<td>2</td>
+<td>金额精度</td>
+<td>统一 <code>DECIMAL(18,4)</code>，Go 侧用 <code>decimal.Decimal</code>，JSON 序列化为字符串</td>
+</tr>
+<tr>
+<td>3</td>
+<td>分区爆炸</td>
+<td>分区粒度不得细于小时；按天/月分区；小文件合并策略写入维护任务</td>
+</tr>
+<tr>
+<td>4</td>
+<td>ClickHouse 去重</td>
+<td><code>ReplacingMergeTree</code> 查询需 <code>FINAL</code> 或 <code>argMax</code>，否则读到重复行；merge 策略必须在文档里写明</td>
+</tr>
+<tr>
+<td>5</td>
+<td>重跑产生重复</td>
+<td>写入必须幂等；<code>append</code> 仅用于日志类不可变数据；其余用 <code>overwrite_partition</code>/<code>merge</code></td>
+</tr>
+<tr>
+<td>6</td>
+<td><code>SELECT *</code> 血缘</td>
+<td>必须回查模型 schema 展开列，否则列级血缘全丢</td>
+</tr>
+<tr>
+<td>7</td>
+<td>大结果集 OOM</td>
+<td>一律流式（<code>Stream</code>/游标），禁止 <code>[]map[string]any</code> 全量加载</td>
+</tr>
+<tr>
+<td>8</td>
+<td>连接泄漏</td>
+<td><code>rows.Close()</code> 用 <code>defer</code>；连接池按数据源隔离</td>
+</tr>
+<tr>
+<td>9</td>
+<td>调度双跑</td>
+<td>多副本必须 advisory lock；唯一索引兜底</td>
+</tr>
+<tr>
+<td>10</td>
+<td>长事务锁表</td>
+<td>分发/判定用短事务 + 批量；DDL 不在事务里等锁</td>
+</tr>
+<tr>
+<td>11</td>
+<td>SQL 注入</td>
+<td>值参数化，标识符白名单 + <code>QuoteIdent</code></td>
+</tr>
+<tr>
+<td>12</td>
+<td>日志泄密</td>
+<td>密码/token 正则脱敏；SQL 参数打码</td>
+</tr>
+<tr>
+<td>13</td>
+<td>前端状态错乱</td>
+<td>服务端状态交给 TanStack Query，本地 UI 状态才用 Zustand</td>
+</tr>
+<tr>
+<td>14</td>
+<td>画布性能</td>
+<td>连线批量更新、节点虚拟化，禁止每个节点一个 React 重渲染</td>
+</tr>
+<tr>
+<td>15</td>
+<td>权限漏判</td>
+<td>service 层必须再校验资源归属，不能只靠路由中间件</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="7-review">7. 评审清单（人工 review 用）</h2>
+<ul>
+<li>[ ] 新增 SQL 是否都能在目标引擎执行（有没有 golden/集成测试）</li>
+<li>[ ] 所有状态变更是否条件更新</li>
+<li>[ ] 新接口是否带 workspace 过滤与权限校验</li>
+<li>[ ] 错误是否带错误码，能否被前端区分处理</li>
+<li>[ ] 是否有 N+1 查询（列表接口尤其）</li>
+<li>[ ] 大表操作是否走分区裁剪</li>
+<li>[ ] 新增配置项是否有默认值且写进示例配置</li>
+<li>[ ] 日志是否含上下文 ID，是否可能打印敏感信息</li>
+<li>[ ] 前端是否处理了 loading/empty/error 三态</li>
+<li>[ ] 破坏性变更是否影响已有版本与运行中实例</li>
+</ul>
+<hr />
+<h2 id="8-mvp">8. 如果只做 MVP：裁剪顺序</h2>
+<p>资源有限时，按以下顺序砍，砍掉的都不影响架构完整性：</p>
+<table>
+<thead>
+<tr>
+<th>保留（不可砍）</th>
+<th>可延后</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>元数据 + 4 连接器</td>
+<td>Doris/Hive/S3/Kafka 连接器</td>
+</tr>
+<tr>
+<td>模型编译 + 分层约束</td>
+<td>SCD2、物化视图</td>
+</tr>
+<tr>
+<td>管道 DAG + 6 写入策略</td>
+<td>内置算子（先只留 SQL 节点）</td>
+</tr>
+<tr>
+<td>调度 + 重试 + 补数 + 日志</td>
+<td>事件触发、传感器、资源组</td>
+</tr>
+<tr>
+<td>质量 3 类核心规则（非空/唯一/枚举）</td>
+<td>profiling 推荐、隔离表、自定义规则</td>
+</tr>
+<tr>
+<td>表级血缘</td>
+<td>列级血缘、影响分析</td>
+</tr>
+<tr>
+<td>语义层 + 查询 + 2 种图表</td>
+<td>看板联动、订阅、嵌入</td>
+</tr>
+<tr>
+<td>RBAC 三角色 + 审计</td>
+<td>多租户配额、成本核算、OIDC</td>
+</tr>
+</tbody>
+</table>
+<p><strong>MVP 目标</strong>：一条 ODS→DWD→DWS→ADS 链路能定时跑、能重跑、能看日志、能出一张图。这比「十个模块都半成品」有价值得多。</p>
+<hr />
+<h2 id="9">9. 推荐实施顺序（关键路径）</h2>
+<pre><code>T0101 → T0104 → T0107 → T0102/T0103 → T0105/T0109   （地基，串行）
+   ↓
+T0201 → T0202 → T0204 → T0205 → T0206               （数据进得来）
+   ↓
+T0301 → T0302 → T0303 → T0305 → T0307               （模型立得住）
+   ↓
+T0401 → T0402 → T0404 → T0405 → T0406 → T0410       （管道跑得通）
+   ↓
+T0501 → T0503 → T0504 → T0505 → T0506 → T0507 → T0508（调度稳得住）
+   ↓
+T0701 → T0703 → T0704 → T0705                        （业务看得懂）
+</code></pre>
+<p>并行支线：
+- <code>T0901/T0902</code> 可从 T0105 完成后启动，<code>T0905</code> 等 T0401/T0402 的 DSL 稳定后开工。
+- <code>T0605/T0606</code> 可在 T0409 发布流程完成后插入，不阻塞主线。
+- <code>T0801/T0802</code> 建议在 M4 之前完成，否则后期补权限会改动大量 handler。</p>
+<hr />
+<h2 id="10">10. 一句话原则</h2>
+<blockquote>
+<p><strong>宁可少一个功能，不可多一条不可重跑的链路。</strong>
+数仓系统的价值不在功能数量，而在「每天跑出来的数是对的、错了能查、改了不炸」。</p>
+</blockquote></main>
+</div></body></html>

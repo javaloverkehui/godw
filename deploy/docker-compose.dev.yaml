@@ -1,0 +1,82 @@
+# 本地依赖。生产不建议照搬：元数据库需独立部署并开启备份。
+name: godw-dev
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: godw
+      POSTGRES_PASSWORD: godw
+      POSTGRES_DB: godw
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./init/01_bootstrap.sql:/docker-entrypoint-initdb.d/01_bootstrap.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U godw -d godw"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: godw
+      MYSQL_DATABASE: dw
+      MYSQL_USER: godw
+      MYSQL_PASSWORD: godw
+    command: ["--default-authentication-plugin=mysql_native_password", "--character-set-server=utf8mb4"]
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysqldata:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-pgodw"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24-alpine
+    environment:
+      CLICKHOUSE_DB: dw
+      CLICKHOUSE_USER: godw
+      CLICKHOUSE_PASSWORD: godw
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    volumes:
+      - chdata:/var/lib/clickhouse
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: godw
+      MINIO_ROOT_PASSWORD: godw12345
+    ports:
+      - "9002:9000"
+      - "9001:9001"
+    volumes:
+      - miniodata:/data
+
+volumes:
+  pgdata:
+  mysqldata:
+  chdata:
+  redisdata:
+  miniodata:

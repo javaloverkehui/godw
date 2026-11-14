@@ -1,0 +1,10 @@
+kind: Metric
+name: order_cnt
+displayName: 订单量
+model: dws_order_daily
+agg: sum
+expr: order_cnt
+timeColumn: dt
+dimensions: [status]
+unit: 单
+description: 按天汇总的订单数

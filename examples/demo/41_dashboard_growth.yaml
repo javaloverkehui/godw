@@ -1,0 +1,19 @@
+kind: Dashboard
+name: growth_trend
+description: 结构看板：成交与订单按状态拆分
+cards:
+  - title: 成交额按状态
+    metric: gmv
+    days: 30
+    dimension: status
+  - title: 订单量按状态
+    metric: order_cnt
+    days: 30
+    dimension: status
+  - title: 买家数趋势
+    metric: buyer_cnt
+    days: 30
+  - title: 退款金额按原因
+    metric: refund_amount
+    days: 30
+    dimension: reason

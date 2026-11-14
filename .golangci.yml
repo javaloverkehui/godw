@@ -1,0 +1,54 @@
+# GoDW 依赖边界。违反即构建失败。
+# 规则来源：docs/03-核心抽象与接口.md 第 1 节
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  disable-all: true
+  enable:
+    - depguard
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - gofmt
+    - goimports
+    - misspell
+    - bodyclose
+    - rowserrcheck
+    - sqlclosecheck
+
+linters-settings:
+  depguard:
+    rules:
+      main:
+        files:
+          - "$all"
+          - "!$test"
+        allow:
+          - "$gostd"
+          - "github.com/godw/godw"
+          - "github.com/jackc/pgx"
+          - "gopkg.in/yaml.v3"
+      # 领域层不得反向依赖 api / service
+      no-api-backflow:
+        files:
+          - "**/internal/meta/repo/**"
+          - "**/internal/meta/model/**"
+          - "**/internal/connector/**"
+          - "**/internal/dialect/**"
+          - "**/internal/executor/**"
+        deny:
+          - pkg: "github.com/godw/godw/internal/api"
+            desc: "领域与基础设施层禁止依赖 API 层"
+          - pkg: "github.com/godw/godw/internal/meta/service"
+            desc: "仓储与连接器禁止依赖业务服务层"
+      no-utils-dump:
+        files:
+          - "$all"
+        deny:
+          - pkg: "github.com/godw/godw/internal/utils"
+            desc: "禁止 utils 大杂烩，按领域分包"

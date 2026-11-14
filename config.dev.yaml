@@ -1,0 +1,36 @@
+# 本地开发配置。敏感项不落盘，启动时用环境变量注入：
+#   GODW_DB_PASSWORD=postgres GODW_AUTH_JWT_SECRET=dev-secret-change-me go run ./cmd/godw-server
+env: dev
+
+server:
+  addr: ":8080"
+  embed_ui: true
+
+db:
+  host: 127.0.0.1
+  port: 5432
+  user: godw          # 与 deploy/docker-compose.dev.yaml 的 POSTGRES_USER 保持一致
+  database: godw
+  ssl_mode: disable
+  max_conns: 20
+  min_conns: 2
+
+auth:
+  jwt_secret: ""
+  token_ttl_min: 720
+  bootstrap_admin: admin@godw.local
+  bootstrap_pass: admin12345
+
+scheduler:
+  tick_sec: 10
+  lease_sec: 90
+  max_concurrent: 8
+  enabled: true
+
+log:
+  level: info
+  format: text
+
+executor:
+  work_dir: ./data
+  max_rows: 200000

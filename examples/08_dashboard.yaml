@@ -1,0 +1,15 @@
+kind: Dashboard
+name: ops_overview
+description: 经营总览：成交、订单与结构
+cards:
+  - title: 成交总额
+    metric: gmv
+    days: 30
+  - title: 订单量
+    metric: order_cnt
+    days: 30
+  - title: 成交额趋势（按状态拆分）
+    metric: gmv
+    days: 30
+    dimension: status
+    span: 2

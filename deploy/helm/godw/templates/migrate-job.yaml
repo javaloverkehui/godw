@@ -1,0 +1,45 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "godw.fullname" . }}-migrate
+  labels: {{- include "godw.labels" . | nindent 4 }}
+  annotations:
+    # 在 server 启动前完成建表；helm upgrade 时重新执行（幂等）
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-5"
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        {{- include "godw.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: migrate
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+      containers:
+        - name: migrate
+          image: {{ include "godw.image" . }}
+          command: ["/app/godw-cli"]
+          args: ["migrate", "--config", "/etc/godw/config.yaml"]
+          env:
+            - name: GODW_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "godw.dbSecretName" . }}
+                  key: {{ if .Values.postgresql.enabled }}password{{ else }}{{ .Values.externalDatabase.passwordKey }}{{ end }}
+            - name: GODW_AUTH_JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "godw.jwtSecretName" . }}
+                  key: jwt-secret
+          volumeMounts:
+            - name: config
+              mountPath: /etc/godw
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "godw.fullname" . }}

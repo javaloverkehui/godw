@@ -1,0 +1,30 @@
+kind: Model
+name: ads_refund_dashboard
+layer: ads
+description: 退款看板：笔数、金额与退款率
+datasource: pg_dw
+schema: ads
+columns:
+  - name: dt
+    type: date
+    nullable: false
+    comment: 统计日期
+  - name: refund_cnt
+    type: bigint
+    nullable: false
+    comment: 退款笔数
+  - name: refund_amount
+    type: decimal
+    nullable: false
+    comment: 退款金额
+  - name: order_cnt
+    type: bigint
+    nullable: false
+    comment: 当日订单数
+  - name: refund_rate
+    type: decimal
+    nullable: false
+    comment: 退款率（百分数，笔数口径）
+primary_key: [dt]
+unique_key: [dt]
+partition_by: [dt]

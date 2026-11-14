@@ -1,0 +1,43 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "godw.fullname" . }}
+  labels: {{- include "godw.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+    env: {{ .Values.env | default "prod" }}
+    server:
+      addr: ":{{ .Values.server.port }}"
+      embed_ui: true
+    db:
+      {{- if .Values.postgresql.enabled }}
+      host: {{ include "godw.fullname" . }}-postgresql
+      port: 5432
+      user: {{ .Values.postgresql.auth.username }}
+      database: {{ .Values.postgresql.auth.database }}
+      {{- else }}
+      host: {{ required "externalDatabase.host 必填" .Values.externalDatabase.host }}
+      port: {{ .Values.externalDatabase.port }}
+      user: {{ .Values.externalDatabase.user }}
+      database: {{ .Values.externalDatabase.database }}
+      {{- end }}
+      ssl_mode: {{ if .Values.postgresql.enabled }}disable{{ else }}{{ .Values.externalDatabase.sslMode }}{{ end }}
+      max_conns: 20
+      min_conns: 2
+    auth:
+      token_ttl_min: {{ .Values.auth.tokenTTLMin }}
+      bootstrap_admin: {{ .Values.auth.bootstrapAdmin }}
+    scheduler:
+      tick_sec: 10
+      lease_sec: 90
+      max_concurrent: 8
+      enabled: {{ .Values.server.schedulerEnabled }}
+    log:
+      level: {{ .Values.log.level }}
+      format: {{ .Values.log.format }}
+    executor:
+      work_dir: /data
+      max_rows: {{ .Values.executor.maxRows }}
+    semantic:
+      cache_ttl_sec: {{ .Values.semantic.cacheTTLSec }}
+      export_dir: {{ .Values.semantic.exportDir }}

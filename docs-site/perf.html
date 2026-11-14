@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>性能与容量 · GoDW 文档</title><style>
+:root{--bg:#0e1116;--bg-elev:#151a21;--line:#232b36;--text:#e6edf3;--dim:#9aa7b4;--mute:#6b7887;--accent:#4f8cff}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+.layout{display:grid;grid-template-columns:250px 1fr;min-height:100vh}
+aside{border-right:1px solid var(--line);padding:22px 0;position:sticky;top:0;height:100vh;overflow:auto}
+.brand{padding:0 20px 18px;font-weight:600;font-size:15px}
+.brand small{display:block;color:var(--mute);font-weight:400;font-size:10.5px;letter-spacing:.8px;text-transform:uppercase;margin-top:3px}
+nav a{display:block;padding:7px 20px;color:var(--dim);text-decoration:none;font-size:13px;border-left:2px solid transparent}
+nav a:hover{background:var(--bg-elev);color:var(--text)}
+nav a.active{color:#cfe0ff;border-left-color:var(--accent);background:#1d2836}
+main{padding:34px 44px 80px;max-width:900px}
+h1{font-size:26px;margin:0 0 18px}
+h2{font-size:19px;margin:32px 0 12px;padding-bottom:7px;border-bottom:1px solid var(--line)}
+h3{font-size:15.5px;margin:24px 0 8px}
+p,li{color:#cdd7e1}
+a{color:var(--accent)}
+code{background:#1b222b;padding:2px 5px;border-radius:4px;font-size:12.5px;font-family:ui-monospace,Menlo,Consolas,monospace}
+pre{background:#0b0e13;border:1px solid var(--line);border-radius:8px;padding:14px 16px;overflow:auto}
+pre code{background:none;padding:0}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:13px}
+th{text-align:left;background:#1b222b;padding:8px 11px;border:1px solid var(--line);font-weight:600}
+td{padding:8px 11px;border:1px solid var(--line)}
+blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);background:#141b24;color:var(--dim)}
+img{max-width:100%;border-radius:8px;border:1px solid var(--line)}
+</style></head>
+<body><div class="layout">
+<aside><div class="brand">GoDW<small>Documentation</small></div><nav><a href="index.html" class="">概览</a><a href="architecture.html" class="">总体架构</a><a href="metadata.html" class="">元数据模型</a><a href="interfaces.html" class="">核心抽象与接口</a><a href="ai.html" class="">AI 协作与验收</a><a href="unattended.html" class="">无人值守执行</a><a href="tasks-e01.html" class="">任务 E01-E02</a><a href="tasks-e03.html" class="">任务 E03-E04</a><a href="tasks-e05.html" class="">任务 E05-E06</a><a href="tasks-e07.html" class="">任务 E07-E08</a><a href="tasks-e09.html" class="">任务 E09-E10</a><a href="perf.html" class="active">性能与容量</a><a href="ops.html" class="">运维手册</a><a href="plugin.html" class="">插件开发指南</a><a href="upgrade.html" class="">升级与兼容</a><a href="contrib.html" class="">贡献指南</a><a href="changelog.html" class="">变更日志</a></nav></aside>
+<main><h1 id="_1">性能与容量</h1>
+<blockquote>
+<p>实测环境：4 vCPU / 8 GB，PostgreSQL 16 与本服务同机，<code>max_conns=20</code>。
+数据规模：<code>ods.order</code> 15 万行、30 个业务日期分区。</p>
+</blockquote>
+<h2 id="1">1. 读路径</h2>
+<p><code>godw-bench -c 10 -d 8s -s read</code> 的实测结果：</p>
+<table>
+<thead>
+<tr>
+<th>指标</th>
+<th>数值</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>总请求</td>
+<td>59,935</td>
+</tr>
+<tr>
+<td>吞吐</td>
+<td><strong>7,491 QPS</strong></td>
+</tr>
+<tr>
+<td>p50</td>
+<td>1 ms</td>
+</tr>
+<tr>
+<td>p90</td>
+<td>1 ms</td>
+</tr>
+<tr>
+<td>p99</td>
+<td><strong>61 ms</strong></td>
+</tr>
+<tr>
+<td>最大</td>
+<td>76 ms</td>
+</tr>
+<tr>
+<td>失败</td>
+<td>9（压测结束瞬间的 context 取消，非服务错误）</td>
+</tr>
+</tbody>
+</table>
+<p>压测覆盖三个接口：模型列表、实例列表、影响分析。99 分位 61 ms 主要来自影响分析的递归 CTE。</p>
+<h3 id="_2">瓶颈判断</h3>
+<ul>
+<li><strong>QPS 上不去的是数据库连接池</strong>，不是 HTTP 层。<code>max_conns=20</code> 时，10 并发已把池占满，再提并发只会增加排队。</li>
+<li>指标查询若命中缓存，p99 可降到 3 ms 以内；未命中时要扫 <code>dws_order_daily</code> 全表（30 天约 90 行，代价很低）。</li>
+<li>影响分析的递归深度每加 1 层约多 8–12 ms。<code>depth=5</code> 覆盖四层建模足够，不建议盲目调大。</li>
+</ul>
+<h2 id="2">2. 写路径</h2>
+<p><code>godw-bench -c 5 -d 10s -s write</code> 打 <code>POST /pipelines/{name}/run</code>：</p>
+<table>
+<thead>
+<tr>
+<th>指标</th>
+<th>数值</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>吞吐</td>
+<td>约 120 实例/秒（创建，不等执行）</td>
+</tr>
+<tr>
+<td>p99</td>
+<td>210 ms</td>
+</tr>
+</tbody>
+</table>
+<p>真正的执行吞吐由 worker 决定，单 worker 单实例约 200 ms（10 万行 ODS→DWD→DWS→ADS 全链路）。<strong>worker 数量是线性扩展的主要手段</strong>。</p>
+<h2 id="3">3. 容量规划</h2>
+<table>
+<thead>
+<tr>
+<th>维度</th>
+<th>单实例能力</th>
+<th>扩展方式</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>并发任务</td>
+<td>4（默认 <code>--concurrency</code>）</td>
+<td>加 worker 副本</td>
+</tr>
+<tr>
+<td>日调度任务</td>
+<td>约 5 万（<code>SKIP LOCKED</code> 领取）</td>
+<td>加 worker；元数据库升配</td>
+</tr>
+<tr>
+<td>元数据表</td>
+<td>千万级实例记录</td>
+<td><code>instance</code> 按 <code>created_at</code> 分区（见下）</td>
+</tr>
+<tr>
+<td>血缘边</td>
+<td>十万级</td>
+<td>列级边按 <code>workspace_id</code> 分区</td>
+</tr>
+</tbody>
+</table>
+<h3 id="_3">实例表增长</h3>
+<p>按每小时 100 个实例估算，一年约 87 万行，仍在单表舒适区。超过 500 万行时按周分区：</p>
+<pre><code class="language-sql">-- 示例：按周分区（需重建表，建议在维护窗口做）
+CREATE TABLE instance_p2026w45 PARTITION OF instance
+  FOR VALUES FROM ('2026-11-02') TO ('2026-11-09');
+</code></pre>
+<h2 id="4">4. 关键参数</h2>
+<table>
+<thead>
+<tr>
+<th>参数</th>
+<th>默认</th>
+<th>调优建议</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>db.max_conns</code></td>
+<td>20</td>
+<td>按 <code>worker 数 × 4 + 20</code> 估算；PG 侧 <code>max_connections</code> 要留余量</td>
+</tr>
+<tr>
+<td><code>scheduler.lease_sec</code></td>
+<td>90</td>
+<td>小于最长节点耗时会导致误回收；大任务调到 300</td>
+</tr>
+<tr>
+<td><code>scheduler.tick_sec</code></td>
+<td>10</td>
+<td>低于 5 秒收益递减，DB 压力上升</td>
+</tr>
+<tr>
+<td><code>executor.max_rows</code></td>
+<td>200000</td>
+<td>超过这个行数的结果会被截断并记警告</td>
+</tr>
+<tr>
+<td><code>semantic.cache_ttl_sec</code></td>
+<td>60</td>
+<td>报表类可到 300；要求实时则设 0</td>
+</tr>
+</tbody>
+</table>
+<h2 id="5">5. 已知性能债</h2>
+<ol>
+<li><strong><code>SELECT *</code> 会让列级血缘缺失</strong>，不影响性能但影响治理质量。</li>
+<li><strong>看板一次请求串行取所有卡片</strong>。10 张卡片以上建议前端改成并发请求，或引入预聚合。</li>
+<li><strong>导出走全量内存</strong>。超过百万行应改为游标流式写 CSV（当前上限 5 分钟 / 由 <code>MaxRows</code> 兜底）。</li>
+<li><strong>指标查询没有下推分区裁剪</strong>。<code>WHERE dt &gt;= ...</code> 依赖数据库自身的分区裁剪，PG 10+ 会自动做。</li>
+</ol>
+<h2 id="6">6. 复现实测</h2>
+<pre><code class="language-bash"># 读
+./bin/godw-bench -c 10 -d 30s -s read
+# 写
+./bin/godw-bench -c 5 -d 20s -s write
+# 混合
+./bin/godw-bench -c 20 -d 60s -s mixed
+</code></pre>
+<p>输出含 p50/p90/p99 与错误分布；有 5xx 时退出码为 1，可直接接进 CI。</p></main>
+</div></body></html>

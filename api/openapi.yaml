@@ -1,0 +1,544 @@
+openapi: 3.1.0
+info:
+  title: GoDW API
+  version: 0.1.0
+  description: |
+    数据仓库控制面接口。所有响应统一为 `{code, message, data, requestId}`，
+    `code=0` 表示成功；非 0 时 `message` 可直接展示，`data` 携带定位信息（如 `problems`）。
+
+    认证：`Authorization: Bearer <jwt>`。`env=dev` 时允许匿名，便于本地调试。
+    角色：`viewer` 只读；`editor` 可写元数据与触发；`admin` 额外可删数据源。
+servers:
+  - url: http://localhost:8080
+security:
+  - bearerAuth: []
+
+paths:
+  /healthz:
+    get:
+      security: []
+      summary: 存活检查
+      responses:
+        "200": { description: 进程存活 }
+  /readyz:
+    get:
+      security: []
+      summary: 就绪检查（数据库与 schema 版本）
+      responses:
+        "200": { description: 就绪 }
+        "503": { description: 数据库不可达或未迁移 }
+
+  /api/v1/auth/login:
+    post:
+      security: []
+      summary: 登录换取令牌
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string }
+                password: { type: string, format: password }
+      responses:
+        "200":
+          description: 登录成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          token: { type: string }
+                          user: { $ref: "#/components/schemas/User" }
+        "401": { description: 邮箱或密码错误 }
+
+  /api/v1/me:
+    get:
+      summary: 当前身份
+      responses:
+        "200": { description: 当前用户与工作空间 }
+
+  /api/v1/overview:
+    get:
+      summary: 工作台汇总
+      responses:
+        "200":
+          description: 计数与最近实例
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          datasources: { type: integer }
+                          datasets: { type: integer }
+                          models: { type: integer }
+                          pipelines: { type: integer }
+                          instances:
+                            type: array
+                            items: { $ref: "#/components/schemas/Instance" }
+
+  /api/v1/datasource-types:
+    get:
+      summary: 已注册的数据源类型
+      responses:
+        "200": { description: 类型列表 }
+
+  /api/v1/datasources:
+    get:
+      summary: 数据源列表（凭证脱敏）
+      responses:
+        "200":
+          description: 列表
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: "#/components/schemas/Datasource" }
+    post:
+      summary: 接入数据源（先连通性探测，失败不入库）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, type]
+              properties:
+                name: { type: string, example: pg_dw }
+                type: { type: string, enum: [postgres, mysql, clickhouse] }
+                config:
+                  type: object
+                  additionalProperties: true
+                  example: { host: 127.0.0.1, port: 5432, database: dw, user: postgres }
+                secret:
+                  type: object
+                  additionalProperties: { type: string }
+                  example: { password: "******" }
+      responses:
+        "201": { description: 已创建 }
+        "400": { description: 连接失败或参数非法 }
+        "409": { description: 名称已存在 }
+
+  /api/v1/datasources/{name}:
+    delete:
+      summary: 删除数据源（级联删除采集结果）
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: 已删除 }
+        "404": { description: 不存在 }
+
+  /api/v1/datasources/{name}/test:
+    post:
+      summary: 重新探测连通性并记录状态
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: 连接正常 }
+        "400": { description: 连接失败 }
+
+  /api/v1/datasources/{name}/collect:
+    post:
+      summary: 采集库表元数据
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: 采集完成
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          tables: { type: integer }
+
+  /api/v1/datasets:
+    get:
+      summary: 已采集的表结构
+      parameters:
+        - { name: datasourceId, in: query, schema: { type: string } }
+        - { name: page, in: query, schema: { type: integer, default: 1 } }
+        - { name: pageSize, in: query, schema: { type: integer, default: 200, maximum: 200 } }
+      responses:
+        "200":
+          description: 分页结果
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      data:
+                        allOf:
+                          - $ref: "#/components/schemas/Page"
+
+  /api/v1/models:
+    get:
+      summary: 模型列表
+      responses:
+        "200":
+          description: 列表
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: "#/components/schemas/Model" }
+    post:
+      summary: 提交模型（可发布并建表）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [yaml]
+              properties:
+                yaml: { type: string, description: ModelSpec 的 YAML }
+                publish: { type: boolean, default: false }
+                apply: { type: boolean, default: false, description: 是否执行建表 DDL }
+      responses:
+        "201": { description: 已保存新版本 }
+        "400": { description: 定义不合法（data.problems 列出全部问题） }
+
+  /api/v1/models/preview:
+    post:
+      summary: 只编译 DDL，不落库
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [yaml]
+              properties:
+                yaml: { type: string }
+      responses:
+        "200": { description: 返回 ddl 字段 }
+        "400": { description: 定义不合法 }
+
+  /api/v1/models/{name}/versions:
+    get:
+      summary: 模型版本历史
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: 版本列表 }
+
+  /api/v1/models/{name}/rollback:
+    post:
+      summary: 回滚到指定版本（只切换 active_version，不改 DDL）
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [version]
+              properties:
+                version: { type: integer }
+      responses:
+        "200": { description: 已回滚 }
+
+  /api/v1/pipelines:
+    get:
+      summary: 管道列表
+      responses:
+        "200": { description: 列表 }
+    post:
+      summary: 提交管道（校验 DAG 与依赖模型）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [yaml]
+              properties:
+                yaml: { type: string }
+                publish: { type: boolean, default: false }
+      responses:
+        "201": { description: 已保存新版本 }
+        "400": { description: 存在环、依赖缺失或参数未声明 }
+
+  /api/v1/pipelines/{name}/trigger:
+    post:
+      summary: 触发一次运行
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                bizDate: { type: string, format: date, description: 默认今天 }
+                params: { type: object, additionalProperties: true }
+      responses:
+        "200": { description: 返回 instance 与 created 标记（false 表示幂等复用） }
+
+  /api/v1/pipelines/{name}/enabled:
+    put:
+      summary: 启停调度
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enabled]
+              properties:
+                enabled: { type: boolean }
+      responses:
+        "200": { description: 已更新 }
+
+  /api/v1/instances:
+    get:
+      summary: 实例列表
+      parameters:
+        - { name: limit, in: query, schema: { type: integer, default: 50, maximum: 200 } }
+      responses:
+        "200": { description: 列表 }
+
+  /api/v1/instances/{id}:
+    get:
+      summary: 实例详情（含节点与质量结果）
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: 详情 }
+        "404": { description: 不存在 }
+
+  /api/v1/instances/{id}/events:
+    get:
+      summary: 实例状态流（SSE）
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: text/event-stream，事件 status/done
+          content:
+            text/event-stream:
+              schema: { type: string }
+
+  /api/v1/instances/{id}/retry:
+    post:
+      summary: 重跑（复用原版本快照与业务日期）
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: 新实例 }
+
+  /api/v1/metrics:
+    get:
+      summary: 指标列表
+      responses:
+        "200": { description: 列表 }
+    post:
+      summary: 定义指标
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [yaml]
+              properties:
+                yaml: { type: string }
+      responses:
+        "201": { description: 已保存 }
+
+  /api/v1/metrics/{name}/query:
+    get:
+      summary: 查询指标序列
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+        - { name: from, in: query, schema: { type: string, format: date } }
+        - { name: to, in: query, schema: { type: string, format: date } }
+        - { name: granularity, in: query, schema: { type: string, enum: [day, week, month] } }
+        - { name: dimension, in: query, schema: { type: string } }
+      responses:
+        "200":
+          description: 序列
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      data: { $ref: "#/components/schemas/Series" }
+        "400": { description: 维度未在指标中声明 }
+
+  /api/v1/quality:
+    get:
+      summary: 实例的质量结果
+      parameters:
+        - { name: instanceId, in: query, required: true, schema: { type: string } }
+      responses:
+        "200": { description: 结果列表 }
+
+  /api/v1/lineage:
+    get:
+      summary: 血缘图
+      responses:
+        "200":
+          description: 节点与边
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          nodes: { type: array, items: { type: string } }
+                          edges:
+                            type: array
+                            items:
+                              type: object
+                              properties:
+                                source: { type: string }
+                                target: { type: string }
+
+  /api/v1/audit:
+    get:
+      summary: 审计日志
+      parameters:
+        - { name: limit, in: query, schema: { type: integer, default: 100, maximum: 500 } }
+      responses:
+        "200": { description: 日志列表 }
+
+  /api/v1/worker/run-once:
+    post:
+      summary: 触发执行一轮（调试用，等价于一次 worker 轮询）
+      responses:
+        "200": { description: 返回 ran 标记 }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    Envelope:
+      type: object
+      required: [code, message]
+      properties:
+        code: { type: integer, description: 0 表示成功 }
+        message: { type: string }
+        data: {}
+        requestId: { type: string }
+
+    Page:
+      type: object
+      properties:
+        items: { type: array, items: {} }
+        total: { type: integer }
+        page: { type: integer }
+        pageSize: { type: integer }
+
+    User:
+      type: object
+      properties:
+        id: { type: string }
+        email: { type: string }
+        displayName: { type: string }
+        role: { type: string, enum: [admin, editor, viewer] }
+
+    Datasource:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        type: { type: string }
+        config: { type: object, additionalProperties: true }
+        status: { type: string, enum: [unknown, ok, error] }
+        lastError: { type: string }
+        checkedAt: { type: string, format: date-time }
+
+    Model:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        layer: { type: string, enum: [ods, dwd, dws, ads, dim] }
+        description: { type: string }
+        activeVersion: { type: integer }
+        ddl: { type: string }
+        spec: { type: object, additionalProperties: true }
+
+    Instance:
+      type: object
+      properties:
+        id: { type: string }
+        pipelineId: { type: string }
+        pipelineName: { type: string }
+        pipelineVersion: { type: integer }
+        bizDate: { type: string, format: date }
+        triggerType: { type: string, enum: [manual, schedule, backfill, retry] }
+        status: { type: string, enum: [queued, running, success, failed, canceled, waiting] }
+        error: { type: string }
+        startedAt: { type: string, format: date-time }
+        finishedAt: { type: string, format: date-time }
+        tasks:
+          type: array
+          items:
+            type: object
+            properties:
+              nodeId: { type: string }
+              nodeType: { type: string }
+              status: { type: string, enum: [pending, running, success, failed, skipped, blocked] }
+              rowsAffected: { type: integer }
+              durationMs: { type: integer }
+              error: { type: string }
+
+    Series:
+      type: object
+      properties:
+        metric: { type: string }
+        unit: { type: string }
+        sql: { type: string }
+        points:
+          type: array
+          items:
+            type: object
+            properties:
+              ts: { type: string, format: date }
+              dim: { type: string }
+              value: { type: number }

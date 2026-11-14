@@ -1,0 +1,86 @@
+# 默认值即「单机可跑」：内置 PostgreSQL，控制面与数据面各一副本。
+# 生产建议：externalDatabase.enabled=true 指向托管 PG，并把副本数与资源上调。
+
+env: prod
+
+image:
+  repository: godw/godw
+  tag: "0.1.0"
+  pullPolicy: IfNotPresent
+
+# 控制面：HTTP API + 调度器 + 内嵌控制台
+server:
+  replicaCount: 1
+  port: 8080
+  resources:
+    requests: { cpu: 200m, memory: 256Mi }
+    limits: { cpu: "1", memory: 1Gi }
+  # 调度器只能有一个实例在跑，否则同一 cron 会被多次判定（幂等键兜底但不优雅）
+  schedulerEnabled: true
+
+# 数据面：领取实例并执行
+worker:
+  replicaCount: 2
+  resources:
+    requests: { cpu: 300m, memory: 512Mi }
+    limits: { cpu: "2", memory: 2Gi }
+  # shell 节点需要写工作目录，用 emptyDir 时会随 Pod 消失
+  persistence:
+    enabled: false
+    size: 10Gi
+    storageClass: ""
+
+# 内置数据库（仅适合开发/演示）
+postgresql:
+  enabled: true
+  image: postgres:16-alpine
+  auth:
+    username: godw
+    password: godw-dev-password
+    database: godw
+  persistence:
+    size: 20Gi
+    storageClass: ""
+
+# 外部数据库优先：启用后忽略内置 PG
+externalDatabase:
+  enabled: false
+  host: ""
+  port: 5432
+  user: godw
+  database: godw
+  sslMode: require
+  # 密码放在 Secret 里，不要写进 values
+  existingSecret: ""
+  passwordKey: password
+
+auth:
+  # 必须覆盖：helm install --set auth.jwtSecret=...
+  jwtSecret: ""
+  tokenTTLMin: 720
+  bootstrapAdmin: admin@godw.local
+  bootstrapPass: ""
+  existingSecret: ""
+
+semantic:
+  cacheTTLSec: 60
+  exportDir: /data/exports
+
+executor:
+  maxRows: 200000
+
+log:
+  level: info
+  format: json
+
+ingress:
+  enabled: false
+  className: ""
+  host: godw.local
+  tlsSecret: ""
+
+# 监控：ServiceMonitor 需要 Prometheus Operator
+serviceMonitor:
+  enabled: false
+  interval: 30s
+  labels: {}

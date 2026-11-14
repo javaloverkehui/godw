@@ -1,0 +1,10 @@
+kind: Metric
+name: refund_amount
+displayName: 退款金额
+model: dws_refund_daily
+agg: sum
+expr: refund_amount
+timeColumn: dt
+dimensions: [reason]
+unit: 元
+description: 按天汇总的退款金额，可下钻到退款原因

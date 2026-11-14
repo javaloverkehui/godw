@@ -1,0 +1,30 @@
+kind: Model
+name: dws_order_daily
+layer: dws
+description: 订单日汇总，按状态拆分
+datasource: pg_dw
+schema: dws
+columns:
+  - name: dt
+    type: date
+    nullable: false
+    comment: 统计日期
+  - name: status
+    type: string
+    nullable: false
+    comment: 订单状态
+  - name: order_cnt
+    type: bigint
+    nullable: false
+    comment: 订单数
+  - name: gmv
+    type: decimal
+    nullable: false
+    comment: 成交金额
+  - name: user_cnt
+    type: bigint
+    nullable: false
+    comment: 去重用户数
+primary_key: [dt, status]
+unique_key: [dt, status]
+partition_by: [dt]

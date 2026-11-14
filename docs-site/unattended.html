@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>无人值守执行 · GoDW 文档</title><style>
+:root{--bg:#0e1116;--bg-elev:#151a21;--line:#232b36;--text:#e6edf3;--dim:#9aa7b4;--mute:#6b7887;--accent:#4f8cff}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+.layout{display:grid;grid-template-columns:250px 1fr;min-height:100vh}
+aside{border-right:1px solid var(--line);padding:22px 0;position:sticky;top:0;height:100vh;overflow:auto}
+.brand{padding:0 20px 18px;font-weight:600;font-size:15px}
+.brand small{display:block;color:var(--mute);font-weight:400;font-size:10.5px;letter-spacing:.8px;text-transform:uppercase;margin-top:3px}
+nav a{display:block;padding:7px 20px;color:var(--dim);text-decoration:none;font-size:13px;border-left:2px solid transparent}
+nav a:hover{background:var(--bg-elev);color:var(--text)}
+nav a.active{color:#cfe0ff;border-left-color:var(--accent);background:#1d2836}
+main{padding:34px 44px 80px;max-width:900px}
+h1{font-size:26px;margin:0 0 18px}
+h2{font-size:19px;margin:32px 0 12px;padding-bottom:7px;border-bottom:1px solid var(--line)}
+h3{font-size:15.5px;margin:24px 0 8px}
+p,li{color:#cdd7e1}
+a{color:var(--accent)}
+code{background:#1b222b;padding:2px 5px;border-radius:4px;font-size:12.5px;font-family:ui-monospace,Menlo,Consolas,monospace}
+pre{background:#0b0e13;border:1px solid var(--line);border-radius:8px;padding:14px 16px;overflow:auto}
+pre code{background:none;padding:0}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:13px}
+th{text-align:left;background:#1b222b;padding:8px 11px;border:1px solid var(--line);font-weight:600}
+td{padding:8px 11px;border:1px solid var(--line)}
+blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);background:#141b24;color:var(--dim)}
+img{max-width:100%;border-radius:8px;border:1px solid var(--line)}
+</style></head>
+<body><div class="layout">
+<aside><div class="brand">GoDW<small>Documentation</small></div><nav><a href="index.html" class="">概览</a><a href="architecture.html" class="">总体架构</a><a href="metadata.html" class="">元数据模型</a><a href="interfaces.html" class="">核心抽象与接口</a><a href="ai.html" class="">AI 协作与验收</a><a href="unattended.html" class="active">无人值守执行</a><a href="tasks-e01.html" class="">任务 E01-E02</a><a href="tasks-e03.html" class="">任务 E03-E04</a><a href="tasks-e05.html" class="">任务 E05-E06</a><a href="tasks-e07.html" class="">任务 E07-E08</a><a href="tasks-e09.html" class="">任务 E09-E10</a><a href="perf.html" class="">性能与容量</a><a href="ops.html" class="">运维手册</a><a href="plugin.html" class="">插件开发指南</a><a href="upgrade.html" class="">升级与兼容</a><a href="contrib.html" class="">贡献指南</a><a href="changelog.html" class="">变更日志</a></nav></aside>
+<main><h1 id="05">05 · 无人值守执行方案</h1>
+<blockquote>
+<p>需求：100 张任务卡要连续跑完；App 可能退到后台、沙箱可能休眠、进程可能随时被杀；<strong>中断不能导致任务停摆或重复劳动</strong>。</p>
+</blockquote>
+<h2 id="1">1. 先说结论</h2>
+<p><strong>执行任务的模型本身无法在自己被杀死后继续运行。</strong> 所以真正的解法不是「让进程不死」，而是：</p>
+<blockquote>
+<p><strong>把「什么时候继续干」交给沙箱之外的调度器；把「干到哪了」写进磁盘上的状态机。</strong></p>
+</blockquote>
+<p>任何时刻被杀，最多损失<strong>当前这一张卡未提交的改动</strong>；下一次唤醒自动从断点继续，不会重头再来，也不会重复已完成的任务。</p>
+<h2 id="2">2. 三种方案对比</h2>
+<table>
+<thead>
+<tr>
+<th>方案</th>
+<th>调度在哪</th>
+<th>需要 App 常开</th>
+<th>断点续跑</th>
+<th>适用</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>A. 平台定时任务</strong>（推荐）</td>
+<td>云端</td>
+<td>否</td>
+<td>是</td>
+<td>没有常开机器，想最快跑起来</td>
+</tr>
+<tr>
+<td><strong>B. 自有机器 cron + agent CLI</strong></td>
+<td>你的 Mac/服务器</td>
+<td>否</td>
+<td>是</td>
+<td>有常开机器，要求最稳、可改调度</td>
+</tr>
+<tr>
+<td><strong>C. 人工分段推进</strong></td>
+<td>你</td>
+<td>是</td>
+<td>是</td>
+<td>关键节点需要人判断，或任务本身要讨论</td>
+</tr>
+</tbody>
+</table>
+<p>三者可以混用：<strong>A 跑日常，B 做兜底，C 在里程碑验收</strong>。</p>
+<h2 id="3">3. 核心机制：状态机 + 单任务提交 + 互斥锁</h2>
+<pre><code>        ┌────────── next ──────────┐
+        ▼                          │
+    pending ──▶ running ──▶ done ──┘（依赖满足后解锁下游）
+        ▲           │
+        │           ├── fail（&lt;3 次）──▶ pending
+        │           ├── fail（≥3 次）──▶ blocked（跳过，不阻塞无关任务）
+        │           └── handoff（时间到）─▶ pending（保留笔记）
+        └──────── reset（人工修复后）
+</code></pre>
+<p>四条保证：</p>
+<ol>
+<li><strong>单任务提交</strong>：一次只做一张卡，做完立即 git commit。半成品不会污染主分支太久。</li>
+<li><strong>互斥锁</strong>：<code>runner/.locks/&lt;worker&gt;.lock</code> 记录 task/pid/开始时间；同一个 worker 重叠唤醒直接退出。</li>
+<li><strong>陈旧锁接管</strong>：锁超过 90 分钟视为进程已死，下一次唤醒自动接管并把该任务退回 <code>pending</code>。</li>
+<li><strong>失败升级</strong>：同一张卡失败/交接 3 次 → <code>blocked</code>，继续做别的；依赖它的任务自动跳过，最后集中处理。</li>
+</ol>
+<h2 id="4">4. 已经搭好的东西</h2>
+<pre><code>runner/
+├── build_tasks.py      从 docs/tasks/*.md 解析任务 + 手工校准的依赖表 → tasks.json
+├── tasks.json          100 个任务：id/标题/优先级/人日/依赖/文件范围(scope)/层级
+├── tick.py             状态机：next / done / fail / handoff / plan / report
+├── state.json          唯一真相：每卡状态、尝试次数、备注、commit、worker
+├── CURRENT.md          当前任务说明（单 worker）
+├── PROGRESS.md         人读进度板
+├── PROMPT.txt          单 worker 的定时任务提示词
+├── PROMPT-worker.txt   多 worker 提示词模板（替换 {WORKER}）
+├── .locks/             每个 worker 一把锁（运行时生成）
+└── .state.lock         状态文件读写锁（防止并发写坏）
+</code></pre>
+<p><strong>任务清单不是手写的</strong>：<code>build_tasks.py</code> 从五份任务卡 Markdown 解析生成，改了卡片重新跑一次即可。当前结果：<strong>100 个任务、191 人日</strong>。</p>
+<p>依赖不是「同 Epic 顺延」，而是<strong>手工校准的硬依赖</strong>：只有「不做 A 就没法做 B」才连边。效果：</p>
+<ul>
+<li>关键路径 <strong>41 人日</strong>（原来串行是 191 人日）</li>
+<li>最大可并行宽度 <strong>9</strong>（第 14 层）</li>
+<li>可立即开工的任务 1 个（T0101），之后迅速展开</li>
+</ul>
+<h2 id="5-tick">5. 一轮（tick）的完整流程</h2>
+<pre><code class="language-bash">cd /workspace/数据仓库
+
+# ① 领任务（拿锁、写 CURRENT.md、打印提示词）
+python3 runner/tick.py next --budget 45
+
+# ② 执行：读 CURRENT.md，按任务卡实现、写测试、跑测试
+#    完成后提交
+git add -A &amp;&amp; git commit -m &quot;feat(T0101): 仓库骨架&quot;
+
+# ③ 收尾（三选一）
+python3 runner/tick.py done    --note &quot;实现并通过 go test ./...&quot;
+python3 runner/tick.py fail    --note &quot;编译错误 xxx，已尝试 yyy&quot;
+python3 runner/tick.py handoff --note &quot;完成 A；未完成 B；下一步 C&quot;
+</code></pre>
+<p><code>next</code> 做了五件事：检查锁 → 选出依赖已满足且不与在跑任务冲突的任务 → 尝试次数 +1 → 生成 <code>CURRENT.md</code>（含任务卡原文、必读文档、上一次的失败笔记）→ 打印本轮提示词。</p>
+<p><strong>关键设计：失败信息会写进下一次的 <code>CURRENT.md</code>。</strong> 模型上下文每次都是新的，但「上次为什么失败」不会丢。</p>
+<h3 id="51-worker-worktree">5.1 并行执行：多 worker + 独立 worktree</h3>
+<p>单 worker 是一条流水线；要提高吞吐就开 2–3 个 worker，每个 worker 有<strong>独立的 git worktree 和分支</strong>，互不干扰。</p>
+<pre><code class="language-bash"># 看依赖分层与「哪几个任务可以同时开工」
+python3 runner/tick.py plan
+
+# 三个 worker 各自领任务（会自动错开同目录的任务）
+python3 runner/tick.py next --worker w1 --budget 45
+python3 runner/tick.py next --worker w2 --budget 45
+python3 runner/tick.py next --worker w3 --budget 45
+</code></pre>
+<p>领到任务后会打印工作目录，例如：</p>
+<pre><code>【T0305】跨引擎类型映射矩阵
+worker w2　预算 45 分钟
+工作目录：/workspace/.godw-worktrees/w2（分支 task/T0305-w2）
+</code></pre>
+<p>Agent 进入该目录写代码、commit，然后<strong>回到主仓库</strong>执行：</p>
+<pre><code class="language-bash">python3 /workspace/数据仓库/runner/tick.py done --worker w2 --note &quot;...&quot;
+</code></pre>
+<p><code>done</code> 会做四件事：检查 worktree 是否干净 → <code>go build ./...</code> 预检 → 串行合并回主分支 → 删除 worktree。</p>
+<p><strong>冲突如何避免</strong>（三道）：</p>
+<table>
+<thead>
+<tr>
+<th>机制</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>依赖</td>
+<td>硬依赖未完成，不进入候选</td>
+</tr>
+<tr>
+<td>文件范围（scope）</td>
+<td>从任务卡「产出」自动提取目录；两个任务目录重叠则不并发，另一个 worker 会跳过它</td>
+</tr>
+<tr>
+<td>范围未知</td>
+<td>产出里没有路径的任务视为「与所有任务冲突」，只能单独跑（宁可慢，不可撞）</td>
+</tr>
+</tbody>
+</table>
+<p><strong>限制</strong>：合并是串行的（<code>.merge.lock</code>），并行收益主要在「写代码 + 跑测试」阶段；合并阶段会短暂排队。合并冲突会直接标 <code>blocked</code> 并保留分支，人工处理。</p>
+<h3 id="52-worker">5.2 开几个 worker 合适</h3>
+<table>
+<thead>
+<tr>
+<th>worker 数</th>
+<th>适用</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>刚起步、T0101 还没做完</td>
+<td>前 2 层任务几乎都依赖基座，并行意义不大</td>
+</tr>
+<tr>
+<td>2</td>
+<td>稳妥提速</td>
+<td>一个做后端主线，一个做前端/治理支线</td>
+</tr>
+<tr>
+<td>3</td>
+<td>推荐上限</td>
+<td>再多会因为合并排队与 scope 冲突互相等待</td>
+</tr>
+<tr>
+<td>&gt;3</td>
+<td>不建议</td>
+<td>上下文切换与合并冲突的收益递减</td>
+</tr>
+</tbody>
+</table>
+<h2 id="6-a">6. 方案 A：平台定时任务（推荐）</h2>
+<p>在 App 的「自动化 / 定时任务」里建任务。<strong>单 worker 建 1 个；并行建 3 个，<code>{WORKER}</code> 分别填 <code>w1</code>/<code>w2</code>/<code>w3</code>。</strong></p>
+<table>
+<thead>
+<tr>
+<th>配置项</th>
+<th>建议值</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>频率</td>
+<td>每 30 分钟</td>
+</tr>
+<tr>
+<td>单次超时</td>
+<td>60 分钟（必须 ≥ 预算 + 15 分钟）</td>
+</tr>
+<tr>
+<td>执行环境</td>
+<td>云端（与 App 是否打开无关）</td>
+</tr>
+<tr>
+<td>提示词</td>
+<td><code>runner/PROMPT-worker.txt</code>，替换 <code>{WORKER}</code></td>
+</tr>
+</tbody>
+</table>
+<p>单 worker 提示词（<code>runner/PROMPT.txt</code>，直接复制）：</p>
+<pre><code>你是 GoDW 项目的自动执行工程师。本轮严格按步骤执行，不要做额外的事：
+
+1. 运行：cd /workspace/数据仓库 &amp;&amp; python3 runner/tick.py next --budget 45
+2. 如果输出「已有任务在跑」或「全部完成」，立即结束本轮，不要修改任何文件。
+3. 否则读取 runner/CURRENT.md，按其中的任务卡完成实现。
+4. 只改与该任务相关的文件；必须运行相关测试；通过后 git commit。
+5. 最后必须执行 tick.py done / fail / handoff 之一（命令在 CURRENT.md 末尾）。
+禁止修改 runner/state.json 与 runner/tasks.json。
+</code></pre>
+<p>多 worker 提示词（<code>{WORKER}</code> 替换为 w1/w2/w3）：</p>
+<pre><code>你是 GoDW 项目的自动执行工程师，代号 {WORKER}。本轮严格按步骤执行：
+
+1. 运行：cd /workspace/数据仓库 &amp;&amp; python3 runner/tick.py next --worker {WORKER} --budget 45
+2. 如果输出「没有可领取的任务」或「全部完成」，立即结束本轮。
+3. cd 到输出的 worktree 目录（在 {WORKER} 自己的 CURRENT.md 里），按任务卡实现。
+4. 只改与该任务相关的文件；必须运行相关测试；通过后在该 worktree 里 git commit。
+5. 回到主仓库执行：python3 /workspace/数据仓库/runner/tick.py done --worker {WORKER} --note &quot;...&quot;
+   失败/超时用 fail / handoff，同样带 --worker {WORKER}。
+禁止在主仓库直接改代码；禁止修改 runner/state.json 与 runner/tasks.json。
+</code></pre>
+<p>为什么是 30 分钟一次：任务提前完成时下一轮会空跑（几秒退出，成本可忽略）；任务超时则由 <code>handoff</code> 保住进度。<strong>同一个 worker 的重复唤醒会被锁挡住</strong>；不同 worker 会被 scope 冲突规则错开。</p>
+<p>如果平台单次最长只能跑 20 分钟，把 <code>--budget</code> 降到 15、超时设 20，用更高频率补偿。</p>
+<h2 id="7-b-cron">7. 方案 B：自有机器 cron（最稳）</h2>
+<p>适合你有常开的 Mac mini / 云主机，且项目代码在本地（不依赖沙箱）。</p>
+<pre><code class="language-bash"># crontab -e
+*/30 * * * * cd /Users/kenny/work/godw &amp;&amp; \
+  /path/to/agent-cli --headless -p &quot;$(cat runner/PROMPT.txt)&quot; \
+  &gt;&gt; runner/logs/cron.log 2&gt;&amp;1
+</code></pre>
+<p>要点：
+- <code>PROMPT.txt</code> 就是第 6 节那段提示词（固定不变）。
+- 用 <code>flock</code> 包一层防重入：<code>flock -n runner/.cronlock ...</code>。
+- 日志按天切分，失败时把最后 50 行发到告警渠道。
+- 如果部署在服务器，建议用 <code>systemd timer</code> 替代 cron，能看到失败状态与重试记录。</p>
+<h2 id="8">8. 中断语义（最重要的部分）</h2>
+<table>
+<thead>
+<tr>
+<th>中断时机</th>
+<th>结果</th>
+<th>恢复方式</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>next</code> 刚跑完，还没动代码</td>
+<td>任务停在 <code>running</code>，锁未过期</td>
+<td>等 90 分钟后自动接管，或删 <code>runner/.locks/&lt;worker&gt;.lock</code> 后立即 <code>next</code></td>
+</tr>
+<tr>
+<td>改了一半代码，未 commit</td>
+<td>工作区有未提交改动，任务 <code>running</code></td>
+<td>下一次 <code>next</code> 接管后，<code>CURRENT.md</code> 会附上「上次尝试」笔记；模型先看 <code>git status</code> 再决定复用还是丢弃</td>
+</tr>
+<tr>
+<td>已 commit，未 <code>done</code></td>
+<td>代码已保存，状态仍 <code>running</code></td>
+<td>接管后重跑测试，通过则 <code>done</code></td>
+</tr>
+<tr>
+<td><code>done</code> 后被杀</td>
+<td>状态已落盘，进度已 +1</td>
+<td>无影响，下一轮领新任务</td>
+</tr>
+<tr>
+<td><code>fail</code> 后达上限</td>
+<td>标记 <code>blocked</code></td>
+<td>人工修复后 <code>reset &lt;ID&gt;</code> 重新入队</td>
+</tr>
+</tbody>
+</table>
+<p><strong>唯一可能丢的是「未 commit 的当前任务改动」</strong>，最多一张卡的工作量。这也是要求「每完成一个可工作阶段就保存」的原因。</p>
+<h3 id="81">8.1 如果沙箱被重建</h3>
+<p>上面的方案默认「同一个工作区在两次唤醒之间保留」。如果平台的定时任务每次给你一个全新沙箱，就再加一层保险：</p>
+<ol>
+<li><strong>代码推到远端</strong>：<code>done</code> 之后除了 commit，再 <code>git push</code>（失败不阻塞，下一轮重试）。</li>
+<li><strong>进度跟着代码走</strong>：<code>runner/state.json</code> 与 <code>runner/tasks.json</code> 一起提交，<strong>不要写进 <code>.gitignore</code></strong>。</li>
+<li><strong>唤醒时自愈</strong>：提示词里加一句「若 <code>/workspace/数据仓库</code> 不存在，先 <code>git clone &lt;repo&gt;</code> 再继续」。</li>
+<li>克隆后 <code>tick.py next</code> 会读到 <code>state.json</code>，从中断处继续，而不是从 T0101 重来。</li>
+</ol>
+<p>这样即使沙箱是全新的，最坏情况也只是重跑当前那一张卡。</p>
+<h2 id="9">9. 质量闸门（防止跑得越快错得越远）</h2>
+<ol>
+<li><strong>每卡必测</strong>：<code>CURRENT.md</code> 明确要求跑 <code>go build ./...</code> 与相关 <code>go test</code>，不通过不许 <code>done</code>。</li>
+<li><strong>每卡必提交</strong>：commit message 带任务 ID，出问题可精确回滚到任意一张卡。</li>
+<li><strong>三个人工检查点</strong>（各 30 分钟）：
+   - <strong>M3 后（T0307 完成）</strong>：看模型编译与分层约束是否符合预期，此时纠正成本最低。
+   - <strong>M5 后（T0512 完成）</strong>：跑一次真实的「调度→失败→重试→补数」，确认可靠性。
+   - <strong>M7 后（T0710 完成）</strong>：打开看板看数，确认端到端可用。</li>
+<li><strong>每 20 张卡看一次 <code>PROGRESS.md</code></strong>：若 <code>blocked</code> 超过 5 个，停下来人工处理，不要让自动化空转。</li>
+</ol>
+<h2 id="10">10. 节奏预估</h2>
+<table>
+<thead>
+<tr>
+<th>指标</th>
+<th>单 worker</th>
+<th>3 worker</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>任务数</td>
+<td>100</td>
+<td>100</td>
+</tr>
+<tr>
+<td>单轮预算</td>
+<td>45 分钟</td>
+<td>45 分钟</td>
+</tr>
+<tr>
+<td>平均每卡轮次</td>
+<td>1.5–2.5 轮</td>
+<td>1.5–2.5 轮</td>
+</tr>
+<tr>
+<td>总轮次</td>
+<td>150–220</td>
+<td>160–240（含冲突重排）</td>
+</tr>
+<tr>
+<td>机器时间</td>
+<td>3–5 天</td>
+<td>2–3 天</td>
+</tr>
+<tr>
+<td>叠加失败重试与人工检查点</td>
+<td><strong>实际 2–3 周</strong></td>
+<td><strong>实际 1.5–2 周</strong></td>
+</tr>
+</tbody>
+</table>
+<p>并行不是线性加速：合并要排队，scope 冲突会让某些 worker 空转，复杂卡依然会连续占用同一个 worker。<strong>3 个 worker 的实测收益通常在 1.5 倍左右，不是 3 倍。</strong></p>
+<p>不要期待「一夜跑完 191 人日」——AI 写代码快，但<strong>验证慢</strong>，而且任务卡之间的一致性需要检查点兜底。</p>
+<h2 id="11">11. 这套方案不能保证什么</h2>
+<ul>
+<li><strong>不能保证一次写对</strong>：复杂卡（T0406 写入策略、T0607 列级血缘、T0905 画布）大概率要 2–3 轮。</li>
+<li><strong>不能保证风格统一</strong>：上下文每次重置，只能靠 <code>docs/03</code> 的契约与 <code>CURRENT.md</code> 的必读清单约束。</li>
+<li><strong>不能保证依赖判断最优</strong>：依赖是手工校准的，scope 是从「产出」路径推断的；跨模块重构仍可能撞车，撞了会标 <code>blocked</code> 保留分支，需要人工合。</li>
+<li><strong>平台配额与超时是硬约束</strong>：单轮超时若小于预算，任务会被腰斩，只能降预算、提频率。</li>
+<li><strong>并行会放大不一致</strong>：两个 worker 同时引入同一套工具的不同用法，合并后需要一次统一（检查点时做）。</li>
+</ul>
+<h2 id="12">12. 现在就能开始</h2>
+<pre><code class="language-bash">cd /workspace/数据仓库
+python3 runner/tick.py status              # 100 pending
+python3 runner/tick.py plan                # 看关键路径与并行分层
+python3 runner/tick.py next                # 单 worker：领 T0101
+python3 runner/tick.py next --worker w1    # 多 worker：各领各的
+</code></pre>
+<p>然后把第 6 节的提示词贴进定时任务，频率 30 分钟。之后你只需要偶尔看一眼 <code>runner/PROGRESS.md</code>。</p></main>
+</div></body></html>

@@ -1,0 +1,436 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>概览 · GoDW 文档</title><style>
+:root{--bg:#0e1116;--bg-elev:#151a21;--line:#232b36;--text:#e6edf3;--dim:#9aa7b4;--mute:#6b7887;--accent:#4f8cff}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+.layout{display:grid;grid-template-columns:250px 1fr;min-height:100vh}
+aside{border-right:1px solid var(--line);padding:22px 0;position:sticky;top:0;height:100vh;overflow:auto}
+.brand{padding:0 20px 18px;font-weight:600;font-size:15px}
+.brand small{display:block;color:var(--mute);font-weight:400;font-size:10.5px;letter-spacing:.8px;text-transform:uppercase;margin-top:3px}
+nav a{display:block;padding:7px 20px;color:var(--dim);text-decoration:none;font-size:13px;border-left:2px solid transparent}
+nav a:hover{background:var(--bg-elev);color:var(--text)}
+nav a.active{color:#cfe0ff;border-left-color:var(--accent);background:#1d2836}
+main{padding:34px 44px 80px;max-width:900px}
+h1{font-size:26px;margin:0 0 18px}
+h2{font-size:19px;margin:32px 0 12px;padding-bottom:7px;border-bottom:1px solid var(--line)}
+h3{font-size:15.5px;margin:24px 0 8px}
+p,li{color:#cdd7e1}
+a{color:var(--accent)}
+code{background:#1b222b;padding:2px 5px;border-radius:4px;font-size:12.5px;font-family:ui-monospace,Menlo,Consolas,monospace}
+pre{background:#0b0e13;border:1px solid var(--line);border-radius:8px;padding:14px 16px;overflow:auto}
+pre code{background:none;padding:0}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:13px}
+th{text-align:left;background:#1b222b;padding:8px 11px;border:1px solid var(--line);font-weight:600}
+td{padding:8px 11px;border:1px solid var(--line)}
+blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);background:#141b24;color:var(--dim)}
+img{max-width:100%;border-radius:8px;border:1px solid var(--line)}
+</style></head>
+<body><div class="layout">
+<aside><div class="brand">GoDW<small>Documentation</small></div><nav><a href="index.html" class="active">概览</a><a href="architecture.html" class="">总体架构</a><a href="metadata.html" class="">元数据模型</a><a href="interfaces.html" class="">核心抽象与接口</a><a href="ai.html" class="">AI 协作与验收</a><a href="unattended.html" class="">无人值守执行</a><a href="tasks-e01.html" class="">任务 E01-E02</a><a href="tasks-e03.html" class="">任务 E03-E04</a><a href="tasks-e05.html" class="">任务 E05-E06</a><a href="tasks-e07.html" class="">任务 E07-E08</a><a href="tasks-e09.html" class="">任务 E09-E10</a><a href="perf.html" class="">性能与容量</a><a href="ops.html" class="">运维手册</a><a href="plugin.html" class="">插件开发指南</a><a href="upgrade.html" class="">升级与兼容</a><a href="contrib.html" class="">贡献指南</a><a href="changelog.html" class="">变更日志</a></nav></aside>
+<main><h1 id="godw-go">GoDW · 通用数据仓库系统（Go）</h1>
+<blockquote>
+<p>元数据驱动、引擎无关、单二进制可跑的数据仓库平台，覆盖 <code>数据接入 → ODS → DWD → DWS → ADS → 看板</code> 全链路。建模、管道、质量、调度、血缘、界面都可配置、可版本化、可回滚。</p>
+</blockquote>
+<p><strong>当前状态：可运行。</strong> 不是设计稿——本文档描述的能力已经在仓库里实现并通过端到端验证（10 万行样例数据跑通四层链路，节点级结果、质量门禁、血缘、审计均可查）。</p>
+<hr />
+<h2 id="0">0. 五分钟跑起来</h2>
+<pre><code class="language-bash"># 1) 起一个 PostgreSQL（元数据库与样例业务库共用即可）
+docker compose -f deploy/docker-compose.dev.yaml up -d postgres
+
+# 2) 配置：敏感项只走环境变量，不落盘
+export GODW_DB_PASSWORD=godw
+export GODW_AUTH_JWT_SECRET=$(openssl rand -hex 16)
+
+# 3) 建表 → 自检 → 灌样例数据 → 发布模型与管道
+make migrate
+make doctor
+make seed
+
+# 4) 启动控制面（内嵌调度与执行器）
+make run
+# 浏览器打开 http://localhost:8080
+</code></pre>
+<p>没有 Docker 也可以：本机装好 PostgreSQL，改 <code>config.dev.yaml</code> 的 <code>db.host/user/database</code>，同样三行命令跑起来。</p>
+<p>冒烟脚本会真的跑一遍完整链路并校验每个节点：</p>
+<pre><code class="language-bash">bash scripts/smoke.sh
+</code></pre>
+<pre><code>1/5 健康检查
+2/5 触发管道 order_daily（业务日期 2026-11-09）
+3/5 触发执行
+5/5 校验产物
+    src_order              success  rows=100000 21ms
+    dwd_order              success  rows=100000 560ms
+    q_dwd_order            success  rows=0 57ms
+    dws_order_daily        success  rows=3 87ms
+    ads_order_dashboard    success  rows=1 61ms
+    全部节点成功
+冒烟通过
+</code></pre>
+<h2 id="01">0.1 已经实现的能力</h2>
+<table>
+<thead>
+<tr>
+<th>层</th>
+<th>能力</th>
+<th>关键实现</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>接入</td>
+<td>PostgreSQL / MySQL / ClickHouse 连接器，能力矩阵 + 连接池复用</td>
+<td><code>internal/connector</code>、<code>internal/dialect</code></td>
+</tr>
+<tr>
+<td>元数据</td>
+<td>库表结构采集入库，字段类型/注释/行数/大小</td>
+<td><code>datasource</code> + <code>dataset</code> 表、<code>CollectMetadata</code></td>
+</tr>
+<tr>
+<td>建模</td>
+<td>YAML 定义模型 → 校验 → 编译 DDL → 版本化发布/回滚</td>
+<td><code>internal/modelc</code>、<code>model_version</code> 快照</td>
+</tr>
+<tr>
+<td>管道</td>
+<td>YAML 编排 DAG → 成环/依赖/参数校验 → 分层并发执行</td>
+<td><code>internal/pipeline/compile</code>、<code>node.Executor</code></td>
+</tr>
+<tr>
+<td>写入</td>
+<td>append / overwrite / upsert / overwrite_partition 四种策略，有事务则包事务</td>
+<td>按 <code>Capability</code> 自动降级</td>
+</tr>
+<tr>
+<td>调度</td>
+<td>标准 5 段 cron、T-1 派发、幂等键、<code>SKIP LOCKED</code> 领取、租约心跳、僵尸回收</td>
+<td><code>internal/scheduler</code>、<code>instance</code> 状态机</td>
+</tr>
+<tr>
+<td>质量</td>
+<td>not_null / unique / accepted_values / range / row_count / custom_sql，error 级阻断下游</td>
+<td><code>internal/quality</code></td>
+</tr>
+<tr>
+<td>血缘</td>
+<td>提交管道时记录模型上下游，图查询与可视化</td>
+<td><code>lineage_edge</code></td>
+</tr>
+<tr>
+<td>治理</td>
+<td>JWT 登录、RBAC 写权限、凭证 AES-GCM 加密、审计日志</td>
+<td><code>internal/auth</code>、<code>cryptox</code></td>
+</tr>
+<tr>
+<td>语义层</td>
+<td>指标定义（聚合白名单 + 维度校验）、时间序列查询、多指标看板</td>
+<td><code>internal/semantic</code></td>
+</tr>
+<tr>
+<td>界面</td>
+<td>内嵌控制台：工作台、数据源、表结构、模型、管道、指标、看板、实例、血缘、质量、审计</td>
+<td><code>internal/api/http/ui</code>（零构建，<code>go:embed</code>）</td>
+</tr>
+<tr>
+<td>交付</td>
+<td>单二进制、migrate/doctor/apply/run/seed CLI、Compose、多阶段镜像、CI</td>
+<td><code>cmd/</code>、<code>deploy/</code>、<code>.github/workflows</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="_1">界面</h3>
+<p>控制台随二进制内嵌，不需要单独部署前端。</p>
+<table>
+<thead>
+<tr>
+<th>工作台</th>
+<th>管道编排</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><img alt="" src="docs/screenshots/overview.png" /></td>
+<td><img alt="" src="docs/screenshots/pipelines.png" /></td>
+</tr>
+</tbody>
+</table>
+<table>
+<thead>
+<tr>
+<th>模型与 DDL</th>
+<th>指标趋势</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><img alt="" src="docs/screenshots/models.png" /></td>
+<td><img alt="" src="docs/screenshots/metrics.png" /></td>
+</tr>
+</tbody>
+</table>
+<table>
+<thead>
+<tr>
+<th>看板</th>
+<th>实例运维</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><img alt="" src="docs/screenshots/dashboards.png" /></td>
+<td><img alt="" src="docs/screenshots/instances.png" /></td>
+</tr>
+</tbody>
+</table>
+<h3 id="_2">进度</h3>
+<p>100 张任务卡中 <strong>38 张已完成</strong>（核心链路闭环），其余为增强项：OpenAPI 生成、列级血缘、多维下钻与看板、细粒度 RBAC、Helm/压测。清单与依赖见 <code>runner/tasks.json</code>，实现与设计的差异记录在 <a href="interfaces.html">docs/03 §10</a>。</p>
+<h2 id="02">0.2 设计文档与任务拆解</h2>
+<p>以下文档仍然有效，是实现的契约与后续迭代的路线图（100 张任务卡已转成机器可读清单）：</p>
+<hr />
+<h2 id="1-airflow">1. 为什么不是再造一个 Airflow</h2>
+<table>
+<thead>
+<tr>
+<th>系统</th>
+<th>值得借鉴</th>
+<th>我们补齐的缺口</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Apache Airflow</td>
+<td>DAG 调度、Operator 生态、回填</td>
+<td>Python 栈重、缺数仓分层语义、无内置建模与 BI</td>
+</tr>
+<tr>
+<td>Dagster</td>
+<td>资产（Asset）思维、类型系统</td>
+<td>学习曲线陡、Go 生态缺失</td>
+</tr>
+<tr>
+<td>dbt</td>
+<td>模型/测试/文档一体、SQL 优先</td>
+<td>只管 T+D 转换，不管采集、调度与展示</td>
+</tr>
+<tr>
+<td>DolphinScheduler</td>
+<td>可视化编排、多租户</td>
+<td>建模与语义层薄弱、插件开发成本高</td>
+</tr>
+<tr>
+<td>DataWorks / 阿里云</td>
+<td>全链路分层与数据地图</td>
+<td>闭源、绑定云厂商</td>
+</tr>
+<tr>
+<td>Metabase / Superset</td>
+<td>自助 BI、语义层</td>
+<td>不做 ETL 与调度</td>
+</tr>
+</tbody>
+</table>
+<p><strong>GoDW 的定位</strong>：把「建模 DSL + DAG 编排 + 分层治理 + 语义层 BI」收进一个 Go 单体（可拆 worker），单二进制可跑，规模上能顶到万级日任务。</p>
+<hr />
+<h2 id="2">2. 六条通用性设计原则</h2>
+<ol>
+<li><strong>一切皆元数据</strong>：数据源、模型、管道、质量规则、指标、看板全部是带版本的元数据对象；YAML 可导出、可 <code>git diff</code>、可 <code>apply</code>。</li>
+<li><strong>引擎无关</strong>：<code>Connector</code> + <code>Dialect</code> + <code>Capability</code> 三层抽象，同一份模型/管道可跑在 PostgreSQL、MySQL、ClickHouse、Doris、DuckDB 上，方言差异由能力矩阵降级处理。</li>
+<li><strong>分层内建</strong>：<code>ODS/DWD/DWS/ADS</code> 不是命名约定，而是强约束——层间引用规则、命名前缀、分区规范、生命周期由编译器校验。</li>
+<li><strong>插件化</strong>：连接器、算子、质量规则、告警渠道、认证方式均通过注册表扩展，新增一种数据源不改核心代码。</li>
+<li><strong>可重跑即正确</strong>：每次写入带 <code>run_id</code> / <code>bizdate</code> 审计列，写入策略保证幂等；重跑使用渲染快照，避免语义漂移。</li>
+<li><strong>多环境多租户</strong>：<code>workspace → env(dev/staging/prod)</code> 两级隔离，模型与管道一次定义、按环境绑定数据源。</li>
+</ol>
+<hr />
+<h2 id="3">3. 文档索引</h2>
+<table>
+<thead>
+<tr>
+<th>文档</th>
+<th>内容</th>
+<th>读者</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="architecture.html">docs/01-总体架构.md</a></td>
+<td>分层架构、组件职责、部署拓扑、技术选型与理由</td>
+<td>全员</td>
+</tr>
+<tr>
+<td><a href="metadata.html">docs/02-元数据模型.md</a></td>
+<td>核心表 DDL、索引、状态机、幂等键</td>
+<td>后端</td>
+</tr>
+<tr>
+<td><a href="interfaces.html">docs/03-核心抽象与接口.md</a></td>
+<td>Go 包结构、核心 interface、DSL 语法、API 契约</td>
+<td>后端</td>
+</tr>
+<tr>
+<td><a href="tasks-e01.html">docs/tasks/E01-E02-基座与元数据.md</a></td>
+<td>工程基座、数据源接入、元数据采集</td>
+<td>后端</td>
+</tr>
+<tr>
+<td><a href="tasks-e03.html">docs/tasks/E03-E04-模型与管道.md</a></td>
+<td>分层建模、DDL 编译、SQL 模板、写入策略</td>
+<td>后端</td>
+</tr>
+<tr>
+<td><a href="tasks-e05.html">docs/tasks/E05-E06-调度与质量血缘.md</a></td>
+<td>调度执行、补数、质量门禁、列级血缘</td>
+<td>后端</td>
+</tr>
+<tr>
+<td><a href="tasks-e07.html">docs/tasks/E07-E08-BI与治理.md</a></td>
+<td>语义层、查询 API、看板、RBAC、审计</td>
+<td>后端</td>
+</tr>
+<tr>
+<td><a href="tasks-e09.html">docs/tasks/E09-E10-前端与交付.md</a></td>
+<td>可视化编排、运维中心、部署与压测</td>
+<td>前端/运维</td>
+</tr>
+<tr>
+<td><a href="ai.html">docs/04-AI协作与验收规范.md</a></td>
+<td>任务卡怎么喂给 AI、编码红线、DoD、测试矩阵</td>
+<td>全员</td>
+</tr>
+<tr>
+<td><a href="unattended.html">docs/05-无人值守执行方案.md</a></td>
+<td>断点续跑、定时唤醒、失败升级的落地方案</td>
+<td>运维/负责人</td>
+</tr>
+<tr>
+<td><code>runner/</code></td>
+<td>无人值守执行器：<code>tick.py</code> 状态机 + <code>tasks.json</code> + 进度板</td>
+<td>运维</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="4">4. 里程碑</h2>
+<table>
+<thead>
+<tr>
+<th>里程碑</th>
+<th>范围</th>
+<th>交付物（可演示）</th>
+<th>人日</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>M1</strong> 地基</td>
+<td>E01</td>
+<td><code>make up &amp;&amp; make migrate &amp;&amp; godw doctor</code> 全绿</td>
+<td>11</td>
+</tr>
+<tr>
+<td><strong>M2</strong> 数据进得来</td>
+<td>E02</td>
+<td>接入 4 类数据源，元数据自动采集，表结构可视</td>
+<td>19.5</td>
+</tr>
+<tr>
+<td><strong>M3</strong> 模型立得住</td>
+<td>E03</td>
+<td>YAML 定义模型 → 一键生成 DDL → 发布/回滚</td>
+<td>17</td>
+</tr>
+<tr>
+<td><strong>M4</strong> 管道跑得通</td>
+<td>E04</td>
+<td>可视化编排一条 ODS→DWD→DWS→ADS 管道并试跑</td>
+<td>23</td>
+</tr>
+<tr>
+<td><strong>M5</strong> 调度稳得住</td>
+<td>E05</td>
+<td>定时调度、失败重试、补数、日志实时查看</td>
+<td>26</td>
+</tr>
+<tr>
+<td><strong>M6</strong> 数据信得过</td>
+<td>E06</td>
+<td>质量规则 + 门禁 + 列级血缘 + 影响分析</td>
+<td>18</td>
+</tr>
+<tr>
+<td><strong>M7</strong> 业务看得懂</td>
+<td>E07</td>
+<td>语义层指标、自助查询、拖拽看板、导出订阅</td>
+<td>20.5</td>
+</tr>
+<tr>
+<td><strong>M8</strong> 平台管得住</td>
+<td>E08</td>
+<td>登录/RBAC/脱敏/审计/多租户</td>
+<td>11.5</td>
+</tr>
+<tr>
+<td><strong>M9</strong> 界面用得顺</td>
+<td>E09</td>
+<td>全部前端页面，与后端联调完成</td>
+<td>28</td>
+</tr>
+<tr>
+<td><strong>M10</strong> 交付可运行</td>
+<td>E10</td>
+<td>一键部署、样例数据集、压测报告、文档站</td>
+<td>16.5</td>
+</tr>
+</tbody>
+</table>
+<p><strong>合计 191 人日</strong>（与 <code>runner/tasks.json</code> 逐卡汇总一致）。2 名后端 + 1 名前端 + AI 辅助，约 <strong>12–14 周</strong>。
+关键路径：<code>E01 → E02 → E03 → E04 → E05 → E07</code>；<code>E09</code> 从 E04 起并行；<code>E06/E08</code> 可与 E05 并行。</p>
+<hr />
+<h2 id="5">5. 一条端到端样例（验收主线）</h2>
+<pre><code>MySQL(业务库)  --采集--&gt;  ods_order (ODS，按 dt 分区，原样保留 + 审计列)
+                             │
+                   清洗/去重/类型规范
+                             ▼
+                        dwd_order_detail (DWD，明细，主键 order_id+sku_id)
+                             │
+                  按日/按店铺聚合
+                             ▼
+                     dws_order_shop_1d (DWS，轻度汇总)
+                             │
+                    面向看板的宽表
+                             ▼
+                      ads_order_dashboard (ADS)
+                             │
+                  语义层 dataset: 订单主题
+                             ▼
+                  BI 看板：GMV / 客单价 / 退款率
+</code></pre>
+<p>这条链路会作为 <strong>M4/M5/M7 的联合验收用例</strong>，每日调度、可补数、可重跑、有质量校验、有血缘。</p>
+<hr />
+<h2 id="6">6. 现在怎么开始</h2>
+<pre><code class="language-bash"># 查看包结构约定
+cat docs/03-核心抽象与接口.md
+
+# 领取第一张任务卡
+cat docs/tasks/E01-E02-基座与元数据.md   # T0101
+</code></pre>
+<p>每张任务卡的格式固定为：</p>
+<pre><code>#### Txxxx · 任务名   `优先级` `预估`
+**目标**：一句话说清为什么做
+**要点**：实现路径、关键算法、易错点
+**产出**：要新建/修改的文件
+**验收**：可自动执行的判定条件
+</code></pre>
+<hr />
+<h2 id="7">7. 无人值守执行</h2>
+<p>任务卡已转成机器可读清单（100 条，<code>runner/tasks.json</code>），依赖是手工校准的硬依赖，关键路径 41 人日、最大并行宽度 9。配套一个带锁、带重试、带断点续跑的状态机：</p>
+<pre><code class="language-bash">cd /workspace/数据仓库
+python3 runner/tick.py status      # 总览
+python3 runner/tick.py plan        # 依赖分层 + 哪些任务能并行
+python3 runner/tick.py next        # 领取任务，生成 CURRENT.md
+python3 runner/tick.py done --note &quot;实现并通过测试&quot;   # 或 fail / handoff
+python3 runner/tick.py report      # 刷新 PROGRESS.md
+</code></pre>
+<p>单 worker 用 <code>PROMPT.txt</code>；要并行就建 3 个定时任务，分别用 <code>PROMPT-worker.txt</code> 并把 <code>{WORKER}</code> 换成 <code>w1</code>/<code>w2</code>/<code>w3</code>，每个 worker 在独立 git worktree 里干活，按文件范围自动错开。完整方案见 <a href="unattended.html">docs/05-无人值守执行方案.md</a>。</p></main>
+</div></body></html>

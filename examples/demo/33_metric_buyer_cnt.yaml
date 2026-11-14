@@ -1,0 +1,10 @@
+kind: Metric
+name: buyer_cnt
+displayName: 买家数
+model: ads_order_dashboard
+agg: sum
+expr: buyer_cnt
+timeColumn: dt
+dimensions: []
+unit: 人
+description: 当日下单的去重用户数

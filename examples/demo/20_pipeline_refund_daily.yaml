@@ -1,0 +1,115 @@
+kind: Pipeline
+name: refund_daily
+description: 退款 ODS → DWD → DWS → ADS 日更链路
+schedule: "30 2 * * *"
+timezone: Asia/Shanghai
+params:
+  - name: biz_date
+    type: date
+    required: true
+    description: 业务日期，默认 T-1
+
+nodes:
+  # 退款表只有 order_id，用户维度必须回订单表取。
+  # 这里保留 LEFT JOIN 而不是 INNER JOIN：订单缺失的退款也要进 DWD，
+  # 由下游的 not_null 规则暴露出来，而不是在入口被静默丢掉。
+  - id: src_refund
+    type: source
+    datasource: pg_dw
+    sql: |
+      SELECT r.refund_id, r.order_id, o.user_id, r.amount, r.reason, r.status, r.dt
+      FROM ods.refund r
+      LEFT JOIN ods."order" o ON o.order_id = r.order_id
+      WHERE r.dt = ${biz_date}
+
+  - id: dwd_refund
+    type: sql
+    name: 退款明细清洗
+    depends_on: [src_refund]
+    datasource: pg_dw
+    model: dwd_refund
+    write_mode: upsert
+    sql: |
+      SELECT refund_id,
+             order_id,
+             COALESCE(user_id, 0) AS user_id,
+             amount,
+             reason,
+             status,
+             dt
+      FROM (SELECT r.refund_id, r.order_id, o.user_id, r.amount, r.reason, r.status, r.dt
+            FROM ods.refund r
+            LEFT JOIN ods."order" o ON o.order_id = r.order_id
+            WHERE r.dt = ${biz_date}) t
+
+  - id: q_dwd_refund
+    type: quality
+    depends_on: [dwd_refund]
+    model: dwd_refund
+    config:
+      rules:
+        - name: refund_id_unique
+          kind: unique
+          column: refund_id
+          severity: error
+        - name: refund_amount_positive
+          kind: range
+          column: amount
+          min: 0
+          severity: error
+        # 退款金额超过订单金额是业务异常，先告警不拦截：
+        # 数据修好之前卡住整条链路，会让当天所有退款数据都不可见。
+        - name: refund_reason_enum
+          kind: accepted_values
+          column: reason
+          values: [质量问题, 尺码不符, 物流慢, 不喜欢, 商家发错]
+          severity: warn
+
+  - id: dws_refund_daily
+    type: sql
+    depends_on: [q_dwd_refund]
+    datasource: pg_dw
+    model: dws_refund_daily
+    write_mode: overwrite_partition
+    sql: |
+      SELECT dt,
+             reason,
+             COUNT(*)                AS refund_cnt,
+             SUM(amount)             AS refund_amount,
+             COUNT(DISTINCT user_id) AS user_cnt
+      FROM dwd.dwd_refund
+      WHERE dt = ${biz_date}
+      GROUP BY dt, reason
+
+  # 分母取当天下单量：跨管道读 dws_order_daily，因为退款率的口径是
+  # 「退款笔数 / 订单笔数」，两边必须来自同一个业务日期分区。
+  - id: ads_refund_dashboard
+    type: sql
+    depends_on: [dws_refund_daily]
+    datasource: pg_dw
+    model: ads_refund_dashboard
+    write_mode: overwrite_partition
+    sql: |
+      WITH r AS (
+        SELECT dt,
+               SUM(refund_cnt)    AS refund_cnt,
+               SUM(refund_amount) AS refund_amount
+        FROM dws.dws_refund_daily
+        WHERE dt = ${biz_date}
+        GROUP BY dt
+      ),
+      o AS (
+        SELECT dt, SUM(order_cnt) AS order_cnt
+        FROM dws.dws_order_daily
+        WHERE dt = ${biz_date}
+        GROUP BY dt
+      )
+      SELECT COALESCE(r.dt, o.dt)                          AS dt,
+             COALESCE(r.refund_cnt, 0)                     AS refund_cnt,
+             COALESCE(r.refund_amount, 0)                  AS refund_amount,
+             COALESCE(o.order_cnt, 0)                      AS order_cnt,
+             -- 直接产出百分数（13.32 而不是 0.1332）：unit 只是展示标签，
+             -- 不做隐式换算，否则导出 CSV 的人会拿到一个不知道该乘几的数。
+             COALESCE(ROUND(r.refund_cnt::numeric * 100
+                            / NULLIF(o.order_cnt, 0), 2), 0) AS refund_rate
+      FROM r FULL JOIN o ON o.dt = r.dt

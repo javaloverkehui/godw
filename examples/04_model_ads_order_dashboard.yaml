@@ -1,0 +1,34 @@
+kind: Model
+name: ads_order_dashboard
+layer: ads
+description: 经营看板：订单量、GMV、退款率
+datasource: pg_dw
+schema: ads
+columns:
+  - name: dt
+    type: date
+    nullable: false
+    comment: 统计日期
+  - name: total_orders
+    type: bigint
+    nullable: false
+    comment: 总订单数
+  - name: total_gmv
+    type: decimal
+    nullable: false
+    comment: 总成交额
+  - name: refund_orders
+    type: bigint
+    nullable: false
+    comment: 退款订单数
+  - name: refund_rate
+    type: decimal
+    nullable: false
+    comment: 退款率（百分数）
+  - name: buyer_cnt
+    type: bigint
+    nullable: false
+    comment: 下单用户数
+primary_key: [dt]
+unique_key: [dt]
+partition_by: [dt]

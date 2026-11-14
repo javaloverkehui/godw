@@ -1,0 +1,21 @@
+kind: Dashboard
+name: refund_analysis
+description: 退款分析：规模、占比与原因结构
+cards:
+  - title: 退款金额
+    metric: refund_amount
+    days: 30
+  - title: 退款笔数
+    metric: refund_cnt
+    days: 30
+  # 退款率与原因结构都占满整行：4 张卡按 2×2 排会剩下半行空白，
+  # 而这两张一个看总量、一个看结构，都值得更宽的画布。
+  - title: 退款率
+    metric: refund_rate
+    days: 30
+    span: 2
+  - title: 退款原因结构
+    metric: refund_amount
+    days: 30
+    dimension: reason
+    span: 2

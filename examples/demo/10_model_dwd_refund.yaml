@@ -1,0 +1,38 @@
+kind: Model
+name: dwd_refund
+layer: dwd
+description: 退款明细清洗，关联订单补齐用户维度
+datasource: pg_dw
+schema: dwd
+columns:
+  - name: refund_id
+    type: bigint
+    nullable: false
+    comment: 退款单号
+  - name: order_id
+    type: bigint
+    nullable: false
+    comment: 原订单号
+  - name: user_id
+    type: bigint
+    nullable: false
+    comment: 下单用户
+  - name: amount
+    type: decimal
+    nullable: false
+    comment: 退款金额
+  - name: reason
+    type: string
+    nullable: false
+    comment: 退款原因
+  - name: status
+    type: string
+    nullable: false
+    comment: 退款状态
+  - name: dt
+    type: date
+    nullable: false
+    comment: 分区日期
+primary_key: [refund_id]
+unique_key: [refund_id]
+partition_by: [dt]

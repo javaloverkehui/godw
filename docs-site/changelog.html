@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>变更日志 · GoDW 文档</title><style>
+:root{--bg:#0e1116;--bg-elev:#151a21;--line:#232b36;--text:#e6edf3;--dim:#9aa7b4;--mute:#6b7887;--accent:#4f8cff}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+.layout{display:grid;grid-template-columns:250px 1fr;min-height:100vh}
+aside{border-right:1px solid var(--line);padding:22px 0;position:sticky;top:0;height:100vh;overflow:auto}
+.brand{padding:0 20px 18px;font-weight:600;font-size:15px}
+.brand small{display:block;color:var(--mute);font-weight:400;font-size:10.5px;letter-spacing:.8px;text-transform:uppercase;margin-top:3px}
+nav a{display:block;padding:7px 20px;color:var(--dim);text-decoration:none;font-size:13px;border-left:2px solid transparent}
+nav a:hover{background:var(--bg-elev);color:var(--text)}
+nav a.active{color:#cfe0ff;border-left-color:var(--accent);background:#1d2836}
+main{padding:34px 44px 80px;max-width:900px}
+h1{font-size:26px;margin:0 0 18px}
+h2{font-size:19px;margin:32px 0 12px;padding-bottom:7px;border-bottom:1px solid var(--line)}
+h3{font-size:15.5px;margin:24px 0 8px}
+p,li{color:#cdd7e1}
+a{color:var(--accent)}
+code{background:#1b222b;padding:2px 5px;border-radius:4px;font-size:12.5px;font-family:ui-monospace,Menlo,Consolas,monospace}
+pre{background:#0b0e13;border:1px solid var(--line);border-radius:8px;padding:14px 16px;overflow:auto}
+pre code{background:none;padding:0}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:13px}
+th{text-align:left;background:#1b222b;padding:8px 11px;border:1px solid var(--line);font-weight:600}
+td{padding:8px 11px;border:1px solid var(--line)}
+blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);background:#141b24;color:var(--dim)}
+img{max-width:100%;border-radius:8px;border:1px solid var(--line)}
+</style></head>
+<body><div class="layout">
+<aside><div class="brand">GoDW<small>Documentation</small></div><nav><a href="index.html" class="">概览</a><a href="architecture.html" class="">总体架构</a><a href="metadata.html" class="">元数据模型</a><a href="interfaces.html" class="">核心抽象与接口</a><a href="ai.html" class="">AI 协作与验收</a><a href="unattended.html" class="">无人值守执行</a><a href="tasks-e01.html" class="">任务 E01-E02</a><a href="tasks-e03.html" class="">任务 E03-E04</a><a href="tasks-e05.html" class="">任务 E05-E06</a><a href="tasks-e07.html" class="">任务 E07-E08</a><a href="tasks-e09.html" class="">任务 E09-E10</a><a href="perf.html" class="">性能与容量</a><a href="ops.html" class="">运维手册</a><a href="plugin.html" class="">插件开发指南</a><a href="upgrade.html" class="">升级与兼容</a><a href="contrib.html" class="">贡献指南</a><a href="changelog.html" class="active">变更日志</a></nav></aside>
+<main><h1 id="_1">变更日志</h1>
+<p>格式遵循 <a href="https://keepachangelog.com/zh-CN/1.1.0/">Keep a Changelog</a>，
+版本号遵循 <a href="https://semver.org/lang/zh-CN/">语义化版本</a>。</p>
+<h2 id="unreleased">[Unreleased]</h2>
+<h3 id="_2">计划</h3>
+<ul>
+<li>看板拖拽布局（当前用 YAML 的 <code>span</code> 控制）</li>
+<li>指标预聚合表与自动回填</li>
+<li>列级血缘的窗口函数支持</li>
+</ul>
+<h2 id="010-2026-11-11">[0.1.0] - 2026-11-11</h2>
+<p>首个可用版本：ETL → ODS → DWD → DWS → ADS → BI 全链路打通。</p>
+<h3 id="added">Added</h3>
+<p><strong>接入</strong>
+- PostgreSQL / MySQL / ClickHouse 连接器，<code>Capability</code> 能力矩阵
+- 元数据采集：schema → table → columns，逐表失败隔离
+- 数据源凭证 AES-256-GCM 加密存储，接口不回传明文</p>
+<p><strong>建模</strong>
+- YAML 模型定义 → 校验 → DDL 编译（4 方言）
+- 版本化发布，发布版本不可变，支持回滚
+- 表、列、分区、唯一键、质量的完整校验，问题一次性收集</p>
+<p><strong>管道</strong>
+- 严格 YAML 解析，成环/依赖/参数/节点字段校验
+- 7 类节点：source / sql / quality / sink / shell / http / branch
+- 4 种写入策略：append / overwrite / upsert / overwrite_partition
+- 有 <code>Transactor</code> 的引擎包事务，失败整体回滚
+- SQL 模板 <code>${var}</code> 渲染，值按字面量转义，杜绝注入</p>
+<p><strong>调度</strong>
+- 5 段 cron，T-1 派发，重启补偿窗口
+- 幂等键（schedule/backfill 为 <code>pipeline_id:biz_date</code>）
+- <code>SKIP LOCKED</code> 领取 + 租约心跳 + 僵尸回收
+- 补数 CLI，按日期区间批量建实例</p>
+<p><strong>质量与血缘</strong>
+- 6 类规则：not_null / unique / accepted_values / range / row_count / custom
+- error 级门禁阻断下游，warn 只记录
+- 表级血缘（depends_on）+ 列级血缘（SQL 解析）
+- 影响分析：从某列向下追溯所有受影响的下游列</p>
+<p><strong>语义层</strong>
+- 指标定义（聚合白名单 + 维度校验），不开放任意 SQL
+- 时间序列查询，按天/周/月聚合，支持维度拆分
+- 多指标看板，<code>span</code> 控制布局
+- 指标结果缓存，实例结束后自动失效</p>
+<p><strong>治理</strong>
+- JWT 登录 + RBAC（admin/editor/viewer）
+- 列级脱敏（partial/hash/email/phone/full）与数据分级
+- 行级权限，支持 <code>${user}</code> / <code>${role}</code> 占位符
+- 审计日志，写操作全留痕
+- 多租户：工作区隔离、成员管理、工作区切换
+- 公开分享链接，可设过期时间</p>
+<p><strong>交付</strong>
+- 单二进制 + <code>go:embed</code> 内嵌控制台，10 个页面
+- CLI：migrate / doctor / apply / run / seed / backfill / lineage / profile / export / lint
+- 管道可视化编排：拖拽、连线、双击编辑，保存即写回 YAML
+- Docker Compose、多阶段镜像、Helm Chart
+- GitHub Actions：lint / test / build / e2e
+- Prometheus <code>/metrics</code>，手写导出器无额外依赖
+- 文档站生成脚本（<code>scripts/build_docs.py</code>）</p>
+<h3 id="_3">设计取舍</h3>
+<table>
+<thead>
+<tr>
+<th>项</th>
+<th>选择</th>
+<th>理由</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>调度中间件</td>
+<td>不引入 Kafka/Temporal</td>
+<td>PG 的 <code>SKIP LOCKED</code> + 租约，少一个组件</td>
+</tr>
+<tr>
+<td>SQL 访问层</td>
+<td>pgx 手写 SQL</td>
+<td>血缘递归、实例分页用生成器反而难维护</td>
+</tr>
+<tr>
+<td>前端</td>
+<td>原生 JS + <code>go:embed</code></td>
+<td>单二进制可用，无 npm 构建链</td>
+</tr>
+<tr>
+<td>指标表达式</td>
+<td>只允许列名 + 聚合白名单</td>
+<td>指标是业务口径，不该成为注入面</td>
+</tr>
+<tr>
+<td>日志</td>
+<td><code>log/slog</code></td>
+<td>标准库够用，少一个依赖</td>
+</tr>
+<tr>
+<td>指标导出</td>
+<td>手写 Prometheus 文本格式</td>
+<td>指标集小，不值得引入 client_golang</td>
+</tr>
+</tbody>
+</table></main>
+</div></body></html>

@@ -1,0 +1,40 @@
+# 构建产物与运行时数据
+bin/
+data/
+dist/
+*.log
+*.out
+cover.out
+
+# 本地配置：含口令，禁止入库
+config.yaml
+config.prod.yaml
+config.local.yaml
+config.win.yaml
+
+# 无人值守执行器运行时
+runner/.locks/
+runner/.state.lock
+runner/.merge.lock
+runner/CURRENT.md
+runner/__pycache__/
+.godw-worktrees/
+
+# 编辑器
+.idea/
+.vscode/
+.DS_Store
+
+# 误留在根目录的本地构建产物
+/godw-cli
+/godw-server
+/godw-worker
+
+# 仓库不上传：AI 协作文档与 IDE/工具目录
+.github/
+.workbuddy/
+.idea/
+
+# 无人值守执行器的运行时状态（生成物/易变）
+runner/state.json
+runner/.locks/

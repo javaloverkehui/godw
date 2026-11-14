@@ -1,0 +1,166 @@
+# 生产部署编排。
+#
+# 与 dev 的区别（每一条都为了「出错时能查、能不丢数据」）：
+#   - 元数据库独立卷 + 每日备份，不和应用容器同生共死；
+#   - 应用镜像只读根文件系统，临时目录挂 tmpfs；
+#   - server 与 worker 分进程、分别限资源，避免一个跑批把控制面拖死；
+#   - 首次启动自动迁移并在日志里打印初始管理员密码（只打印一次）；
+#   - 健康检查走 /readyz（含 schema 版本），不是简单的端口探测。
+#
+# 用法：
+#   cp .env.example .env && vi .env        # 至少改 GODW_DB_PASSWORD / GODW_JWT_SECRET
+#   docker compose -f docker-compose.prod.yaml up -d
+#   docker compose -f docker-compose.prod.yaml logs -f server | grep 初始管理员
+
+name: godw-prod
+
+x-app: &app
+  image: ${GODW_IMAGE:-ghcr.io/godw/godw:latest}
+  restart: unless-stopped
+  read_only: true
+  tmpfs:
+    - /tmp
+  security_opt:
+    - no-new-privileges:true
+  environment:
+    GODW_ENV: prod
+    GODW_DB_HOST: postgres
+    GODW_DB_PORT: "5432"
+    GODW_DB_USER: ${GODW_DB_USER:-godw}
+    GODW_DB_PASSWORD: ${GODW_DB_PASSWORD:?必须设置 GODW_DB_PASSWORD}
+    GODW_DB_DATABASE: ${GODW_DB_DATABASE:-godw}
+    GODW_AUTH_JWT_SECRET: ${GODW_JWT_SECRET:?必须设置 GODW_JWT_SECRET}
+    GODW_AUTH_BOOTSTRAP_ADMIN: ${GODW_ADMIN_EMAIL:-admin@godw.local}
+    GODW_AUTH_BOOTSTRAP_PASS: ${GODW_ADMIN_PASSWORD:-}
+    GODW_LOG_FORMAT: json
+  logging:
+    driver: json-file
+    options:
+      max-size: "50m"
+      max-file: "5"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${GODW_DB_USER:-godw}
+      POSTGRES_PASSWORD: ${GODW_DB_PASSWORD:?必须设置 GODW_DB_PASSWORD}
+      POSTGRES_DB: ${GODW_DB_DATABASE:-godw}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./backup:/backup
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${GODW_DB_USER:-godw} -d ${GODW_DB_DATABASE:-godw}"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    # 元数据库不对外暴露端口：只在 compose 内网可达。
+    expose:
+      - "5432"
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${GODW_MINIO_USER:-godw}
+      MINIO_ROOT_PASSWORD: ${GODW_MINIO_PASSWORD:?必须设置 GODW_MINIO_PASSWORD}
+    volumes:
+      - miniodata:/data
+    ports:
+      - "${GODW_MINIO_CONSOLE_PORT:-9001}:9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+
+  # 可选分析引擎。要启就把 profile 加上：
+  #   docker compose -f docker-compose.prod.yaml --profile olap up -d
+  clickhouse:
+    image: clickhouse/clickhouse-server:24-alpine
+    profiles: ["olap"]
+    restart: unless-stopped
+    environment:
+      CLICKHOUSE_DB: ${GODW_CH_DB:-dw}
+      CLICKHOUSE_USER: ${GODW_CH_USER:-godw}
+      CLICKHOUSE_PASSWORD: ${GODW_CH_PASSWORD:-change-me}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    volumes:
+      - chdata:/var/lib/clickhouse
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    expose:
+      - "9000"
+      - "8123"
+
+  # 迁移是一次性任务：跑完即退出，server 用 depends_on 等它成功。
+  migrate:
+    <<: *app
+    command: ["--config", "/app/config.yaml", "-migrate"]
+    read_only: true
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  server:
+    <<: *app
+    command: ["--config", "/app/config.yaml"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    ports:
+      - "${GODW_HTTP_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD", "/app/godw-cli", "health", "--addr", "http://127.0.0.1:8080"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+    stop_grace_period: 30s
+
+  worker:
+    <<: *app
+    command: ["--config", "/app/config.yaml"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    volumes:
+      - workdir:/app/data
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+    stop_grace_period: 60s
+
+volumes:
+  pgdata:
+  redisdata:
+  miniodata:
+  chdata:
+  workdir:

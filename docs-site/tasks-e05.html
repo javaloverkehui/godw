@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>任务 E05-E06 · GoDW 文档</title><style>
+:root{--bg:#0e1116;--bg-elev:#151a21;--line:#232b36;--text:#e6edf3;--dim:#9aa7b4;--mute:#6b7887;--accent:#4f8cff}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+.layout{display:grid;grid-template-columns:250px 1fr;min-height:100vh}
+aside{border-right:1px solid var(--line);padding:22px 0;position:sticky;top:0;height:100vh;overflow:auto}
+.brand{padding:0 20px 18px;font-weight:600;font-size:15px}
+.brand small{display:block;color:var(--mute);font-weight:400;font-size:10.5px;letter-spacing:.8px;text-transform:uppercase;margin-top:3px}
+nav a{display:block;padding:7px 20px;color:var(--dim);text-decoration:none;font-size:13px;border-left:2px solid transparent}
+nav a:hover{background:var(--bg-elev);color:var(--text)}
+nav a.active{color:#cfe0ff;border-left-color:var(--accent);background:#1d2836}
+main{padding:34px 44px 80px;max-width:900px}
+h1{font-size:26px;margin:0 0 18px}
+h2{font-size:19px;margin:32px 0 12px;padding-bottom:7px;border-bottom:1px solid var(--line)}
+h3{font-size:15.5px;margin:24px 0 8px}
+p,li{color:#cdd7e1}
+a{color:var(--accent)}
+code{background:#1b222b;padding:2px 5px;border-radius:4px;font-size:12.5px;font-family:ui-monospace,Menlo,Consolas,monospace}
+pre{background:#0b0e13;border:1px solid var(--line);border-radius:8px;padding:14px 16px;overflow:auto}
+pre code{background:none;padding:0}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:13px}
+th{text-align:left;background:#1b222b;padding:8px 11px;border:1px solid var(--line);font-weight:600}
+td{padding:8px 11px;border:1px solid var(--line)}
+blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);background:#141b24;color:var(--dim)}
+img{max-width:100%;border-radius:8px;border:1px solid var(--line)}
+</style></head>
+<body><div class="layout">
+<aside><div class="brand">GoDW<small>Documentation</small></div><nav><a href="index.html" class="">概览</a><a href="architecture.html" class="">总体架构</a><a href="metadata.html" class="">元数据模型</a><a href="interfaces.html" class="">核心抽象与接口</a><a href="ai.html" class="">AI 协作与验收</a><a href="unattended.html" class="">无人值守执行</a><a href="tasks-e01.html" class="">任务 E01-E02</a><a href="tasks-e03.html" class="">任务 E03-E04</a><a href="tasks-e05.html" class="active">任务 E05-E06</a><a href="tasks-e07.html" class="">任务 E07-E08</a><a href="tasks-e09.html" class="">任务 E09-E10</a><a href="perf.html" class="">性能与容量</a><a href="ops.html" class="">运维手册</a><a href="plugin.html" class="">插件开发指南</a><a href="upgrade.html" class="">升级与兼容</a><a href="contrib.html" class="">贡献指南</a><a href="changelog.html" class="">变更日志</a></nav></aside>
+<main><h1 id="e05-e06">E05 · 调度与执行 ｜ E06 · 质量与血缘</h1>
+<blockquote>
+<p>本组是整个系统最容易「看起来能跑、实际不可靠」的部分。所有任务都必须覆盖<strong>并发、崩溃、重复触发</strong>三类异常，不允许只实现happy path。</p>
+</blockquote>
+<hr />
+<h2 id="e05-20">E05 调度与执行（20 人日）</h2>
+<h4 id="t0501-p0-2d">T0501 · 实例模型与状态机  <code>P0</code> <code>2d</code></h4>
+<p><strong>目标</strong>：任务状态机是整个平台的真相来源。
+<strong>要点</strong>
+- 状态枚举与 <code>docs/02</code> 第 3.1 节一致；所有迁移走 <code>Transition(ctx, id, from, to, patch)</code>，SQL 条件更新，影响行数 0 视为冲突并返回明确错误。
+- 禁止任何 <code>UPDATE ... SET state=?</code> 无条件更新；禁止在业务代码里直接写 state 字符串，用常量 + 校验函数 <code>CanTransit(from,to)</code>。
+- 状态迁移表驱动测试：合法迁移全通过、非法迁移全被拒（矩阵覆盖）。
+- 终态（SUCCESS/FAILED/KILLED/SKIPPED/UPSTREAM_FAILED）不可再迁移（除人工重跑重置 attempt）。
+<strong>产出</strong>：<code>internal/scheduler/state.go</code>、<code>Transition</code> 实现、状态图文档。
+<strong>验收</strong>：并发 100 goroutine 对同一实例做同一迁移，只有 1 个成功；状态矩阵测试全绿。</p>
+<h4 id="t0502-p0-2d">T0502 · 依赖解析与就绪判定  <code>P0</code> <code>2d</code></h4>
+<p><strong>目标</strong>：上游没成功，下游绝不启动。
+<strong>要点</strong>
+- 依据 <code>pipeline_version.compiled</code> 的拓扑序与入边，批量把 <code>PENDING → READY</code>（所有上游 ∈ {SUCCESS, SKIPPED}）；任一上游失败 → <code>UPSTREAM_FAILED</code>。
+- 判定用一条 SQL 完成（<code>NOT EXISTS</code> 子查询），禁止逐实例循环查库。
+- 支持「跨管道依赖」：<code>sensor</code> 节点等待另一管道成功（按 <code>pipeline + bizdate</code> 查询）。
+- 每轮扫描限制批量（500 条）避免长事务。
+<strong>产出</strong>：<code>internal/scheduler/dag/resolver.go</code>。
+<strong>验收</strong>：1000 实例 / 10 层 DAG，一轮判定 ≤ 200ms；上游失败后 1 个调度周期内下游变 <code>UPSTREAM_FAILED</code>。</p>
+<h4 id="t0503-p0-25d">T0503 · 调度器主循环  <code>P0</code> <code>2.5d</code></h4>
+<p><strong>目标</strong>：按 cron 稳定产生实例，且不重复。
+<strong>要点</strong>
+- 每秒 tick：计算 <code>next_fire_at &lt;= now</code> 的管道 → 按 <code>bizdate</code> 生成实例；<code>INSERT ... ON CONFLICT DO NOTHING</code> 依赖唯一键去重。
+- 多副本用 PG advisory lock 保证单活（<code>pg_try_advisory_lock(hash)</code>），持锁实例定期续期；失锁立即停止调度。
+- cron 支持标准 5 段 + <code>@daily/@hourly</code> + 时区；用 <code>robfig/cron/v3</code> 解析，禁止自研。
+- 记录 <code>last_fire_at</code> 与 <code>next_fire_at</code>，重启后从库恢复，不补跑历史（补跑走 backfill）。
+- 提供「暂停/恢复调度」「立即触发」开关，暂停期间不生成实例。
+<strong>产出</strong>：<code>internal/scheduler/loop.go</code>、<code>cron.go</code>。
+<strong>验收</strong>：重启 10 次不产生重复实例；双副本只有一个在调度（日志验证）；暂停后不再新建实例。</p>
+<h4 id="t0504-p0-2d">T0504 · 队列与分发  <code>P0</code> <code>2d</code></h4>
+<p><strong>目标</strong>：任务按优先级与资源组公平出队。
+<strong>要点</strong>
+- 出队：<code>SELECT ... WHERE state='QUEUED' AND resource_group = ANY($1) ORDER BY priority, scheduled_at FOR UPDATE SKIP LOCKED LIMIT n</code>。
+- 资源组：每组配置 <code>max_concurrency</code>，分发前用计数（Redis 或 PG <code>count</code>）判断是否有空位；满则留在 READY。
+- 优先级 1–9（1 最高），同优先级按 <code>scheduled_at</code> FIFO；支持「紧急插队」接口但记录审计。
+- 分发与领取解耦：分发只改 <code>READY→QUEUED</code>，worker 才 <code>QUEUED→RUNNING</code>。
+<strong>产出</strong>：<code>internal/scheduler/queue/*</code>、<code>dispatch.go</code>。
+<strong>验收</strong>：1000 任务 5 并发槽位下无超发；高优先级任务先出队；<code>SKIP LOCKED</code> 下无重复领取。</p>
+<h4 id="t0505-worker-p0-25d">T0505 · worker 租约与崩溃恢复  <code>P0</code> <code>2.5d</code></h4>
+<p><strong>目标</strong>：worker 挂了任务不会永久卡住。
+<strong>要点</strong>
+- 领取时写 <code>worker_id</code> 与 <code>lease_until = now + timeout</code>；执行中每 15s 心跳续租。
+- 回收器每 30s 扫描 <code>state='RUNNING' AND lease_until &lt; now()</code>：<code>attempt+1</code>，未超上限则回 <code>QUEUED</code>（保留原 <code>worker_id</code> 供排查），超限则 <code>FAILED</code>（<code>error_code=LEASE_EXPIRED</code>）。
+- 优雅退出：收到 SIGTERM 停止领新任务，等待在跑任务完成（上限 60s），超时后强制上报 <code>FAILED(worker_shutdown)</code> 以便重派。
+- worker 注册表记录主机、版本、资源组、最后心跳，运维页可见。
+<strong>产出</strong>：<code>internal/executor/lease/*</code>、<code>recover.go</code>、<code>worker/registry.go</code>。
+<strong>验收</strong>：<code>kill -9</code> worker 后 ≤ 60s 任务被重派并最终成功；SIGTERM 后不再领新任务。</p>
+<h4 id="t0506-p0-3d">T0506 · 任务执行器  <code>P0</code> <code>3d</code></h4>
+<p><strong>目标</strong>：插件式执行各类节点。
+<strong>要点</strong>
+- <code>Runner</code> 接口见 <code>docs/03</code> 第 7 节；注册表按 <code>type</code> 分发。
+- <code>sqlrunner</code>：渲染快照 → 逐条执行写入语句 → 采集 <code>rows_read/rows_written/bytes/duration</code> → 失败带 <code>sql_snippet</code>（前 500 字符）与引擎错误码。
+- <code>shellrunner</code>：白名单命令 + 参数数组（禁止 <code>sh -c</code> 拼接）、超时强杀进程组、捕获 stdout/stderr 分流。
+- <code>httprunner</code>：超时、重试、2xx 判定、响应体截断存储。
+- <code>subpipeline</code>：同步等待子管道完成，传递参数，防止循环嵌套（深度上限 3）。
+- 所有 runner 必须支持 ctx 取消，并在退出前调用 <code>sink.Flush()</code>。
+<strong>产出</strong>：<code>internal/executor/runner/*</code>、注册表。
+<strong>验收</strong>：每个 runner 有集成测试；SQL 超时后连接被真正取消；shell 超时后子进程无残留（<code>ps</code> 校验）。</p>
+<h4 id="t0507-p0-2d">T0507 · 重试与失败策略  <code>P0</code> <code>2d</code></h4>
+<p><strong>目标</strong>：偶发失败自愈，真失败快速暴露。
+<strong>要点</strong>
+- 重试策略：<code>max</code>、<code>interval</code>、<code>backoff: fixed|exponential</code>、<code>retry_on</code>（错误码白名单：连接超时/死锁可重试，语法错误/权限拒绝不重试）。
+- 失败进入 <code>RETRY_WAIT</code>，记录 <code>next_retry_at</code>，调度器扫描到期后回 <code>QUEUED</code>；<code>attempt</code> 达上限 → <code>FAILED</code>。
+- 下游传播：节点 <code>FAILED</code> → 所有下游 <code>UPSTREAM_FAILED</code>；节点 <code>SKIPPED</code>（人工）→ 下游按 <code>skipPolicy</code>（<code>allow|forbid</code>）决定是否继续。
+- 连续失败 N 次的管道自动暂停调度并告警（防止雪崩）。
+<strong>产出</strong>：<code>internal/scheduler/retry.go</code>、<code>policy.go</code>。
+<strong>验收</strong>：语法错误不重试、超时重试 3 次；下游在 1 个周期内标记 <code>UPSTREAM_FAILED</code>；连续失败触发暂停。</p>
+<h4 id="t0508-p0-25d">T0508 · 补数与重跑  <code>P0</code> <code>2.5d</code></h4>
+<p><strong>目标</strong>：补历史数据是日常操作，必须安全。
+<strong>要点</strong>
+- <code>backfill(pipeline, from, to, params)</code>：按日期展开实例，受唯一键去重（已存在的跳过或按 <code>--force</code> 重置）。
+- 并发控制：同日期间按 DAG 层级并行，跨日期按 <code>max_concurrency</code> 限流；提供进度查询（总数/成功/失败/待跑）。
+- 重跑粒度：单节点、单节点+下游、整条管道；重跑保留历史 run，<code>attempt++</code>。
+- 补数任务可暂停/终止；终止后已排队实例置 <code>KILLED</code>。
+- 禁止对 <code>prod</code> 环境无确认的大范围补数（&gt; 31 天需二次确认）。
+<strong>产出</strong>：<code>internal/scheduler/backfill/*</code>、API。
+<strong>验收</strong>：补 30 天数据无重复实例；终止后无新实例产生；进度接口数据与实际一致。</p>
+<h4 id="t0509-p1-2d">T0509 · 事件触发与传感器  <code>P1</code> <code>2d</code></h4>
+<p><strong>目标</strong>：不只是定时，还能等数据到。
+<strong>要点</strong>
+- <code>sensor</code> 三种：文件（S3/本地路径存在且大小稳定）、表（源表分区出现或行数 &gt; 0）、HTTP（轮询接口返回满足条件）。
+- 轮询间隔、超时、退避可配；超时置 <code>FAILED(sensor_timeout)</code>。
+- 事件触发：接收外部 webhook（带签名校验）→ 生成实例；支持「文件到达即触发」。
+- 去重：同一事件 ID 幂等，重复投递不产生新实例。
+<strong>产出</strong>：<code>internal/pipeline/node/sensor/*</code>、<code>internal/api/http/webhook.go</code>。
+<strong>验收</strong>：文件 10s 后到达，sensor 在 2 个轮询周期内成功；重复 webhook 只触发一次。</p>
+<h4 id="t0510-p1-15d">T0510 · 资源组与配额  <code>P1</code> <code>1.5d</code></h4>
+<p><strong>目标</strong>：大查询不饿死小任务。
+<strong>要点</strong>
+- 资源组维度：并发上限、单任务超时、连接池上限、可用引擎。
+- 任务提交前校验配额；超限排队而非拒绝，排队超时（默认 30 分钟）置 <code>FAILED(queue_timeout)</code>。
+- 采集每任务资源用量（CPU 时间、扫描字节），按管道聚合，为成本核算（T0808）提供数据。
+<strong>产出</strong>：<code>internal/scheduler/quota/*</code>、用量采集。
+<strong>验收</strong>：heavy 组打满时 default 组任务不受影响；用量数据可按管道汇总。</p>
+<h4 id="t0511-p0-2d">T0511 · 日志采集与实时流  <code>P0</code> <code>2d</code></h4>
+<p><strong>目标</strong>：任务日志能实时看、能回溯。
+<strong>要点</strong>
+- 执行器按行采集，带 <code>seq/ts/level</code>，本地缓冲 200 行或 1s 批量写 <code>run_log</code>。
+- SSE 推送：<code>/instances/{id}/logs/stream</code>，支持 <code>Last-Event-ID</code> 断点续传；任务结束后推送 <code>state</code> 事件并关闭。
+- 日志脱敏：命中密码/token 正则的行替换为 <code>***</code>。
+- 归档：&gt; 7 天日志压缩上传对象存储，DB 只留索引；查询归档走预签名 URL。
+<strong>产出</strong>：<code>internal/api/sse/logs.go</code>、<code>internal/obs/logstore/*</code>。
+<strong>验收</strong>：日志首行延迟 ≤ 1s；断线重连不丢不重；归档后仍可按 run 查询下载。</p>
+<h4 id="t0512-sla-p1-2d">T0512 · SLA 与告警  <code>P1</code> <code>2d</code></h4>
+<p><strong>目标</strong>：出问题主动通知，而不是等业务发现。
+<strong>要点</strong>
+- SLA 规则：必须在 <code>HH:mm</code> 前完成、最大执行时长、失败即告警、数据量为 0、同比波动 &gt; X%。
+- 告警渠道插件化：webhook、邮件、飞书、钉钉、企业微信；模板可配。
+- 抑制与聚合：同一管道 5 分钟内同类告警合并；维护窗口内静默。
+- 告警记录可查、可标记处理状态，避免重复打扰。
+<strong>产出</strong>：<code>internal/obs/alert/*</code>、渠道实现、规则配置。
+<strong>验收</strong>：超时 1 分钟内收到 webhook；重复告警被合并；静默窗口内不发。</p>
+<hr />
+<h2 id="e06-14">E06 数据质量与血缘（14 人日）</h2>
+<h4 id="t0601-dsl-p0-2d">T0601 · 质量规则 DSL  <code>P0</code> <code>2d</code></h4>
+<p><strong>目标</strong>：质量规则可配置、可复用、可解释。
+<strong>要点</strong>
+- 内置类型：<code>not_null</code>、<code>unique</code>、<code>unique_combination</code>、<code>accepted_values</code>、<code>range</code>、<code>regex</code>、<code>referential</code>（引用另一模型主键）、<code>row_count_delta</code>（环比/同比阈值）、<code>custom_sql</code>（返回违规行）。
+- 规则编译为 SQL：违规计数 <code>SELECT COUNT(*) FROM t WHERE NOT (expr)</code>；抽样 <code>SELECT * FROM t WHERE NOT (expr) LIMIT 20</code>。
+- 所有规则必须有 <code>severity</code>（block/warn/info）与 <code>enabled</code>；block 规则失败阻断下游。
+- 支持字段级与表级（多列组合）规则；<code>custom_sql</code> 必须只读（禁止 DML 关键字，解析器校验）。
+<strong>产出</strong>：<code>internal/quality/compile.go</code>、规则 schema。
+<strong>验收</strong>：9 类规则各 2 个用例；<code>custom_sql</code> 含 <code>DELETE</code> 被拒；生成的 SQL 在四引擎可执行。</p>
+<h4 id="t0602-p0-2d">T0602 · 规则执行与结果  <code>P0</code> <code>2d</code></h4>
+<p><strong>目标</strong>：每次跑数都留质量证据。
+<strong>要点</strong>
+- 质量节点作为 DAG 中独立节点执行，结果写 <code>quality_result</code>（通过率、违规数、样本、耗时）。
+- 样本脱敏后存储（high 级 PII 打码），最多 20 行。
+- 同一规则同一 <code>bizdate</code> 多次执行保留历史，取最新为当前状态。
+- 提供趋势 API：近 30 天通过率、违规数曲线。
+<strong>产出</strong>：<code>internal/quality/runner.go</code>、查询 API。
+<strong>验收</strong>：违规时样本正确；趋势接口返回 30 个点；重复执行不覆盖历史。</p>
+<h4 id="t0603-p0-15d">T0603 · 质量门禁  <code>P0</code> <code>1.5d</code></h4>
+<p><strong>目标</strong>：脏数据不流到下游。
+<strong>要点</strong>
+- block 规则失败 → 当前节点 <code>FAILED(quality_block)</code>，下游 <code>UPSTREAM_FAILED</code>；warn 只告警不阻断。
+- 提供「强制放行」操作（需理由 + 审批记录），放行后下游继续并在数据上打标。
+- 隔离表：可选把违规行写入 <code>quarantine_&lt;model&gt;</code>，便于修复重放。
+<strong>产出</strong>：门禁逻辑、放行 API、隔离表写入。
+<strong>验收</strong>：block 失败后下游确实未执行；放行后下游执行且审计有记录。</p>
+<h4 id="t0604-profiling-p2-2d">T0604 · 自动 Profiling 与规则推荐  <code>P2</code> <code>2d</code></h4>
+<p><strong>目标</strong>：新表接入自动给一套基础规则。
+<strong>要点</strong>
+- 对表采样（≤10 万行）统计：空值率、唯一度、min/max、枚举 Top20、正则命中率。
+- 推荐规则：唯一度=1 → <code>unique</code>；空值率=0 → <code>not_null</code>；枚举少 → <code>accepted_values</code>；数值 → <code>range</code>。
+- 推荐结果以「建议」形式展示，人工确认后才启用，避免误报泛滥。
+<strong>产出</strong>：<code>internal/quality/profile.go</code>、推荐 API。
+<strong>验收</strong>：样例表推荐命中 ≥ 3 条有效规则；未确认的建议不参与执行。</p>
+<h4 id="t0605-sql-p0-2d">T0605 · SQL 解析器接入  <code>P0</code> <code>2d</code></h4>
+<p><strong>目标</strong>：为列级血缘提供 AST 能力。
+<strong>要点</strong>
+- 引入 <code>pingcap/tidb/parser</code>（MySQL 兼容），封装 <code>Parse(sql) (StmtNode, error)</code>；对不支持语法返回明确错误而非 panic。
+- 统一封装 <code>sqlparse</code> 包，隔离第三方依赖，未来可替换为其他 parser。
+- 处理 <code>?</code>/<code>$1</code> 占位符；模板渲染后的 SQL 才解析（保留原始 SQL 供回溯）。
+- 性能：单条 SQL 解析 ≤ 5ms；大 SQL（&gt;100KB）限制并降级为表级血缘。
+<strong>产出</strong>：<code>internal/lineage/parser/parser.go</code>、错误封装、基准测试。
+<strong>验收</strong>：50 条真实业务 SQL 解析成功率 ≥ 95%；非法 SQL 返回结构化错误不 panic。</p>
+<h4 id="t0606-p0-15d">T0606 · 表级血缘  <code>P0</code> <code>1.5d</code></h4>
+<p><strong>目标</strong>：知道每张表从哪来、到哪去。
+<strong>要点</strong>
+- 来源：管道节点 <code>ref()/src()</code> + <code>write.model</code>，发布时写入 <code>lineage_edge</code>（<code>src_table → dst_table</code>）。
+- 同一管道重复发布需先删除旧边再写新边（按 <code>pipeline_id</code> 维度），避免残留。
+- 查询 API：<code>?table=&amp;direction=up|down&amp;depth=n</code>，返回节点 + 边，前端直接渲染。
+- 图规模大时限制 <code>depth ≤ 5</code>，超出提示。
+<strong>产出</strong>：<code>internal/lineage/graph/table.go</code>、API。
+<strong>验收</strong>：发布管道后血缘边正确；重新发布不产生重复边；上下游方向正确。</p>
+<h4 id="t0607-p0-3d">T0607 · 列级血缘  <code>P0</code> <code>3d</code></h4>
+<p><strong>目标</strong>：改一列能知道影响哪些指标。
+<strong>要点</strong>
+- 遍历 AST：收集 <code>TableRef</code>（含 CTE、子查询、别名作用域）→ 解析 <code>SelectField</code> 的列引用 → 用作用域链解析到源表列。
+- 处理：别名（<code>a.id AS order_id</code>）、表达式（<code>SUM(amount)</code> → 依赖 <code>amount</code>）、<code>JOIN ... ON</code>、<code>UNION</code>（逐分支合并）、<code>SELECT *</code>（回查模型 schema 展开）。
+- 无法确定的映射（函数嵌套过深、动态 SQL）标记 <code>confidence=low</code>，保留表级边。
+- 输出 <code>column_map: {dst_col: [src_col...]}</code> 存 <code>lineage_edge.column_map</code>。
+<strong>产出</strong>：<code>internal/lineage/parser/column.go</code>、测试集。
+<strong>验收</strong>：20 条含 CTE/JOIN/UNION 的 SQL 列映射准确率 ≥ 90%；<code>SELECT *</code> 能展开；低置信度被标记。</p>
+<h4 id="t0608-p0-15d">T0608 · 血缘图存储与查询  <code>P0</code> <code>1.5d</code></h4>
+<p><strong>目标</strong>：查询要快，图要大。
+<strong>要点</strong>
+- 邻接表存 PG，热点路径内存缓存（LRU，5 分钟 TTL）；递归查询用 <code>WITH RECURSIVE</code> 限制深度。
+- 提供批量查询：一次返回多张表的血缘，供前端一次渲染。
+- 节点去重、边去重；支持按 <code>workspace</code> 过滤。
+- 提供 graph JSON 格式（nodes/edges）与 DOT 导出。
+<strong>产出</strong>：<code>internal/lineage/graph/store.go</code>、cache。
+<strong>验收</strong>：1 万条边下 depth=3 查询 ≤ 300ms；缓存命中率 &gt; 80%。</p>
+<h4 id="t0609-p0-15d">T0609 · 影响分析  <code>P0</code> <code>1.5d</code></h4>
+<p><strong>目标</strong>：变更前知道会炸哪些下游。
+<strong>要点</strong>
+- 输入表名/列名 → BFS 下游 → 输出受影响表、指标、看板、调度管道清单。
+- 结合 <code>metric</code> 与 <code>dashboard</code> 反向索引（指标依赖 dataset 的 base_model，看板依赖 dataset）。
+- 评估风险等级：影响生产 ADS 表或对外看板 → high；仅中间层 → medium。
+- 提供「变更预检」API，供 T0306 发布前调用，high 风险需显式确认。
+<strong>产出</strong>：<code>internal/lineage/impact.go</code>、API。
+<strong>验收</strong>：删除 DWD 列能列出 3 层下游与 2 个看板；风险等级判定符合规则。</p>
+<h4 id="t0610-p1-1d">T0610 · 血缘前端接口联调  <code>P1</code> <code>1d</code></h4>
+<p><strong>目标</strong>：接口先稳定，前端才好做。
+<strong>要点</strong>
+- 约定 graph 数据结构：<code>{nodes:[{id,type,layer,name,meta}], edges:[{source,target,columns,confidence}]}</code>。
+- 支持按层着色、按表聚焦（只显示 N 跳）、列级展开/收起。
+- 提供「路径查询」：两表之间的所有路径，最多 10 条。
+<strong>产出</strong>：graph API、路径查询、接口文档。
+<strong>验收</strong>：前端用 mock 数据即可完成渲染；路径查询返回结果不含环。</p></main>
+</div></body></html>

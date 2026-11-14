@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>GoDW · 数据仓库控制台</title>
+<link rel="stylesheet" href="/assets/app.css" />
+</head>
+<body>
+<div class="app">
+  <aside class="side">
+    <div class="brand">
+      <div class="brand-mark">G</div>
+      <div>
+        <div class="brand-name">GoDW</div>
+        <div class="brand-sub">Data Warehouse</div>
+      </div>
+    </div>
+
+    <div class="nav-group">
+      <div class="nav-title">总览</div>
+      <div class="nav-item" data-route="overview"><i class="nav-dot"></i>工作台</div>
+      <div class="nav-item" data-route="instances"><i class="nav-dot"></i>运行实例</div>
+      <div class="nav-item" data-route="ops"><i class="nav-dot"></i>平台运维</div>
+    </div>
+
+    <div class="nav-group">
+      <div class="nav-title">开发</div>
+      <div class="nav-item" data-route="sources"><i class="nav-dot"></i>数据源</div>
+      <div class="nav-item" data-route="datasets"><i class="nav-dot"></i>表结构</div>
+      <div class="nav-item" data-route="models"><i class="nav-dot"></i>模型设计</div>
+      <div class="nav-item" data-route="pipelines"><i class="nav-dot"></i>管道</div>
+      <div class="nav-item" data-route="metrics"><i class="nav-dot"></i>指标</div>
+      <div class="nav-item" data-route="bi"><i class="nav-dot"></i>BI 图表</div>
+      <div class="nav-item" data-route="dashboards"><i class="nav-dot"></i>看板</div>
+    </div>
+
+    <div class="nav-group">
+      <div class="nav-title">治理</div>
+      <div class="nav-item" data-route="lineage"><i class="nav-dot"></i>血缘</div>
+      <div class="nav-item" data-route="quality"><i class="nav-dot"></i>质量</div>
+      <div class="nav-item" data-route="governance"><i class="nav-dot"></i>治理</div>
+      <div class="nav-item" data-route="audit"><i class="nav-dot"></i>审计</div>
+    </div>
+
+    <div class="side-foot">
+      <div id="env-badge">dev</div>
+      <div style="margin-top:4px" id="version-badge">—</div>
+    </div>
+  </aside>
+
+  <div class="main">
+    <!-- 环境条：只有非 dev 才显示，dev 不打扰 -->
+    <div class="env-banner" id="env-banner"></div>
+    <header class="topbar">
+      <div class="crumb" id="crumb">工作台</div>
+      <div class="topbar-actions">
+        <div id="global-search" style="width:340px"></div>
+        <div id="ws-host"></div>
+        <button class="sm ghost theme-btn" id="theme-btn" title="切换主题">☀ 亮色</button>
+        <button class="sm ghost" data-act="reload">刷新</button>
+        <button class="sm primary" data-act="run-once">执行一轮</button>
+      </div>
+    </header>
+    <main class="content" id="view"></main>
+  </div>
+</div>
+<div id="toast-root"></div>
+<div id="modal-root"></div>
+<div id="drawer-root"></div>
+<script src="/assets/components.js"></script>
+<script src="/assets/app.js"></script>
+<script src="/assets/governance.js"></script>
+<script src="/assets/canvas.js"></script>
+<script src="/assets/designer.js"></script>
+<script src="/assets/runbook.js"></script>
+<script src="/assets/bi.js"></script>
+</body>
+</html>

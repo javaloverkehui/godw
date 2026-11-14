@@ -1,0 +1,30 @@
+kind: Model
+name: dws_refund_daily
+layer: dws
+description: 退款日汇总，按原因拆分
+datasource: pg_dw
+schema: dws
+columns:
+  - name: dt
+    type: date
+    nullable: false
+    comment: 统计日期
+  - name: reason
+    type: string
+    nullable: false
+    comment: 退款原因
+  - name: refund_cnt
+    type: bigint
+    nullable: false
+    comment: 退款笔数
+  - name: refund_amount
+    type: decimal
+    nullable: false
+    comment: 退款金额
+  - name: user_cnt
+    type: bigint
+    nullable: false
+    comment: 退款用户数
+primary_key: [dt, reason]
+unique_key: [dt, reason]
+partition_by: [dt]
