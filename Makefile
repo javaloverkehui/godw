@@ -3,7 +3,7 @@ BIN := bin
 CONFIG ?= config.dev.yaml
 GO ?= go
 
-.PHONY: help build test test-integration lint run migrate doctor seed demo up down reset smoke image clean fmt
+.PHONY: help build test test-integration lint run migrate doctor seed demo up down reset smoke image clean fmt bench-canvas dag-fixture
 
 help:
 	@echo "GoDW 常用命令"
@@ -19,6 +19,8 @@ help:
 	@echo "  make up        docker compose 起依赖（postgres/redis/mysql/clickhouse/minio）"
 	@echo "  make down      停止并保留数据卷"
 	@echo "  make reset     停止并删除数据卷（危险）"
+	@echo "  make dag-fixture  生成并发布 500 节点夹具管道"
+	@echo "  make bench-canvas 编排画布规模回归（需先 make dag-fixture）"
 
 build:
 	@mkdir -p $(BIN)
@@ -85,3 +87,12 @@ image:
 
 clean:
 	rm -rf $(BIN) data
+
+# 规模夹具与画布回归：先造 500 节点的固定 DAG，再用无头 Chrome 量首屏/拖动/缩放。
+# 两个命令分开，是因为夹具只需发一次，回归要反复跑。
+dag-fixture: build
+	python scripts/gen_dag.py 500 --out data/dag_500.yaml
+	$(BIN)/godw-cli apply -f data/dag_500.yaml --publish --config $(CONFIG)
+
+bench-canvas:
+	node scripts/bench_canvas.mjs --url http://127.0.0.1:8080 --pipeline dag_scale_fixture

@@ -37,10 +37,10 @@ const usage = `godw-cli — GoDW 运维命令行
   migrate        执行数据库迁移
   doctor         检查配置、数据库、连接器与 schema 状态
   apply -f FILE  提交模型/管道/指标/看板定义（按 kind 自动识别）
-  run            触发一条管道
+  run            触发管道（--pipeline 单条，或 --select 按模型选择）
   init           从源表生成模型脚手架（init model）
   diff           对比模型当前发布版本与本地文件
-  export-doc     导出数据字典（markdown）
+  export-doc     导出数据字典（--html 导出静态文档站）
   lineage        查看表级/列级血缘与影响分析
   profile        对表做画像并给出推荐质量规则
   export         导出指标或看板为 CSV
@@ -52,9 +52,12 @@ const usage = `godw-cli — GoDW 运维命令行
   godw-cli migrate --config config.yaml
   godw-cli apply -f examples/model_dwd_order.yaml --publish --apply
   godw-cli run --pipeline dwd_order_daily --date 2025-01-01
+  godw-cli run --select "dwd_order+" --date 2025-01-01
+  godw-cli run --select "tag:core" --dry-run
   godw-cli init model --layer dwd --from order --name order_detail --datasource pg_dw
   godw-cli diff -f examples/02_model_dwd_order.yaml
   godw-cli export-doc -o docs/dictionary.md
+  godw-cli export-doc --html -o docs/catalog.html
 `
 
 // 发布构建用 -ldflags "-X main.version=v1.0.0" 覆盖，源码里保留当前发布号。
@@ -348,13 +351,18 @@ func cmdRun(args []string) error {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	cfgPath := fs.String("config", "", "配置文件路径")
 	pipeline := fs.String("pipeline", "", "管道名")
+	sel := fs.String("select", "", "选择器：dwd_order+ / +dwd_order / tag:core / layer:dwd / pipeline:name")
 	bizDate := fs.String("date", "", "业务日期 YYYY-MM-DD，默认今天")
 	wait := fs.Bool("wait", false, "等待执行完成")
+	dryRun := fs.Bool("dry-run", false, "只解析选择器并打印命中范围，不触发")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if *pipeline == "" {
-		return fmt.Errorf("缺少 --pipeline 参数")
+	if *pipeline == "" && *sel == "" {
+		return fmt.Errorf("需要 --pipeline 或 --select")
+	}
+	if *pipeline != "" && *sel != "" {
+		return fmt.Errorf("--pipeline 与 --select 只能选一个")
 	}
 	svc, cfg, closeFn, err := setup([]string{"--config", *cfgPath})
 	if err != nil {
@@ -365,6 +373,12 @@ func cmdRun(args []string) error {
 	if err != nil {
 		return err
 	}
+	_ = cfg
+
+	if *sel != "" {
+		return runBySelect(svc, ws.ID, *sel, *bizDate, *wait, *dryRun)
+	}
+
 	inst, created, err := svc.Trigger(context.Background(), ws.ID, *pipeline, *bizDate, "manual", nil)
 	if err != nil {
 		return err
@@ -377,23 +391,90 @@ func cmdRun(args []string) error {
 	if !*wait {
 		return nil
 	}
-	ran, err := svc.RunOnce(context.Background(), "cli")
+	return runAndReport(svc, []string{inst.ID})
+}
+
+// runBySelect 按选择器触发：先打印命中范围，再逐条触发。
+// 「命中 3 个模型却排了 5 条管道」这种放大必须让人看见，否则会以为只跑了选中的模型。
+func runBySelect(svc *service.Service, wsID, expr, bizDate string, wait, dryRun bool) error {
+	ctx := context.Background()
+	res, err := svc.ResolveSelect(ctx, wsID, expr)
 	if err != nil {
 		return err
 	}
-	if !ran {
-		fmt.Println("没有可领取的实例")
+	fmt.Printf("选择器 %s → %d 个模型、%d 条管道\n", expr, len(res.Models), len(res.Pipelines))
+	for _, m := range res.Models {
+		fmt.Printf("  模型  %s\n", m)
+	}
+	for _, p := range res.Pipelines {
+		fmt.Printf("  管道  %s\n", p)
+	}
+	if len(res.Uncovered) > 0 {
+		fmt.Printf("  未覆盖（没有管道写这些模型）: %s\n", strings.Join(res.Uncovered, ", "))
+	}
+	if dryRun {
 		return nil
 	}
-	final, err := svc.Repo.GetInstance(context.Background(), inst.ID)
+	if len(res.Pipelines) == 0 {
+		return fmt.Errorf("选择器没有命中任何已发布管道")
+	}
+
+	runs, _, err := svc.TriggerSelect(ctx, wsID, expr, bizDate, nil)
 	if err != nil {
 		return err
 	}
-	fmt.Printf("执行结束: %s\n", final.Status)
-	for _, t := range final.Tasks {
-		fmt.Printf("  %-24s %-10s %s\n", t.NodeID, t.Status, t.Error)
+	var ids []string
+	failed := 0
+	for _, x := range runs {
+		switch {
+		case x.Error != "":
+			failed++
+			fmt.Printf("  ✗ %-24s %s\n", x.Pipeline, x.Error)
+		case x.Created:
+			fmt.Printf("  ✓ %-24s 已排队 %s\n", x.Pipeline, x.InstanceID)
+			ids = append(ids, x.InstanceID)
+		default:
+			fmt.Printf("  = %-24s 复用 %s\n", x.Pipeline, x.InstanceID)
+		}
 	}
-	_ = cfg
+	if !wait || len(ids) == 0 {
+		if failed > 0 {
+			return fmt.Errorf("%d 条管道触发失败", failed)
+		}
+		return nil
+	}
+	return runAndReport(svc, ids)
+}
+
+// runAndReport 依次执行队列，并打印指定实例的最终状态。
+func runAndReport(svc *service.Service, ids []string) error {
+	ctx := context.Background()
+	for {
+		ran, err := svc.RunOnce(ctx, "cli")
+		if err != nil {
+			return err
+		}
+		if !ran {
+			break
+		}
+	}
+	bad := 0
+	for _, id := range ids {
+		final, err := svc.Repo.GetInstance(ctx, id)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("%s 执行结束: %s\n", id, final.Status)
+		if final.Status != "success" {
+			bad++
+		}
+		for _, t := range final.Tasks {
+			fmt.Printf("  %-24s %-10s %s\n", t.NodeID, t.Status, t.Error)
+		}
+	}
+	if bad > 0 {
+		return fmt.Errorf("%d 个实例未成功", bad)
+	}
 	return nil
 }
 
@@ -962,6 +1043,7 @@ func cmdExportDoc(args []string) error {
 	fs := flag.NewFlagSet("export-doc", flag.ContinueOnError)
 	cfgPath := fs.String("config", "", "配置文件路径")
 	out := fs.String("o", "", "输出文件，留空打印到 stdout")
+	asHTML := fs.Bool("html", false, "导出单文件文档站（HTML），默认导出 Markdown 字典")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -974,17 +1056,23 @@ func cmdExportDoc(args []string) error {
 	if err != nil {
 		return err
 	}
-	md, err := svc.DictionaryMarkdown(context.Background(), ws.ID)
+	var body string
+	if *asHTML {
+		body, err = svc.CatalogHTML(context.Background(), ws.ID)
+	} else {
+		body, err = svc.DictionaryMarkdown(context.Background(), ws.ID)
+	}
 	if err != nil {
 		return err
 	}
+	// 写文件时连带报字节数：空文档和成功长得一样，不给大小很容易被当成没问题。
 	if *out != "" {
-		if err := os.WriteFile(*out, []byte(md), 0o644); err != nil {
+		if err := os.WriteFile(*out, []byte(body), 0o644); err != nil {
 			return err
 		}
-		fmt.Println("已写入", *out)
+		fmt.Println("已写入", *out, fmt.Sprintf("(%d 字节)", len(body)))
 		return nil
 	}
-	fmt.Print(md)
+	fmt.Print(body)
 	return nil
 }

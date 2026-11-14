@@ -12,6 +12,21 @@
   --ok: #3fb950;
   --warn: #d29922;
   --err: #f85149;
+  /* 语义色三件套：文字/底/边。pill、diff、gantt、env 共用，
+     否则亮色主题每次都要为某个组件单独打补丁。 */
+  --ok-text: #56d364; --ok-bg: #12261a; --ok-line: #1f4429;
+  --err-text: #ff7b72; --err-bg: #2a1517; --err-line: #4a2426;
+  --warn-text: #e3b341; --warn-bg: #2a2213; --warn-line: #46381a;
+  --info-text: #79b8ff; --info-bg: #14202e; --info-line: #1f3549;
+  --diff-add-bg: #10281a; --diff-add-text: #9ae6a8;
+  --diff-del-bg: #2a1517; --diff-del-text: #ffb3ae;
+  --gantt-bar: #2f5db3; --gantt-success: #2c5a38; --gantt-failed: #7a2226; --gantt-running: #1f6feb;
+  --env-prod-bg: #4a1214; --env-prod-text: #ffb3ae; --env-prod-line: #7a2226;
+  --env-staging-bg: #3d2c0a; --env-staging-text: #f0d18a; --env-staging-line: #6b4d12;
+  --env-dev-bg: #322a08; --env-dev-text: #e8d48b; --env-dev-line: #5a4a12;
+  /* 图表调色板：BI 页与看板共用，亮色只覆盖这一组 */
+  --chart-1: #4f8cff; --chart-2: #3fb950; --chart-3: #d29922; --chart-4: #f85149;
+  --chart-5: #a371f7; --chart-6: #39c5cf; --chart-7: #db6d28; --chart-8: #8b949e;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
   --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
   --radius: 10px;
@@ -192,18 +207,22 @@ td { padding: 9px 10px; border-bottom: 1px solid var(--line-soft); vertical-alig
 tr:last-child td { border-bottom: none; }
 tbody tr:hover { background: var(--row-hover); }
 .table-wrap { overflow-x: auto; }
+/* 自助查询结果：短列按内容定宽，剩余空间全部给最后一列。
+   否则 table 的 width:100% 会把 id 这类短列拉成一大块空白。 */
+.sql-result th, .sql-result td { white-space: nowrap; }
+.sql-result th:last-child, .sql-result td:last-child { width: 100%; }
 
 .pill {
   display: inline-flex; align-items: center; gap: 5px;
   font-size: 11.5px; padding: 2px 9px; border-radius: 999px;
   border: 1px solid transparent; white-space: nowrap;
 }
-.pill.ok { color: #56d364; background: #12261a; border-color: #1f4429; }
-.pill.err { color: #ff7b72; background: #2a1517; border-color: #4a2426; }
-.pill.warn { color: #e3b341; background: #2a2213; border-color: #46381a; }
-.pill.info { color: #79b8ff; background: #14202e; border-color: #1f3549; }
+.pill.ok { color: var(--ok-text); background: var(--ok-bg); border-color: var(--ok-line); }
+.pill.err { color: var(--err-text); background: var(--err-bg); border-color: var(--err-line); }
+.pill.warn { color: var(--warn-text); background: var(--warn-bg); border-color: var(--warn-line); }
+.pill.info { color: var(--info-text); background: var(--info-bg); border-color: var(--info-line); }
 .pill.mute { color: var(--text-dim); background: var(--bg-elev2); border-color: var(--line); }
-.pill.running { color: #79b8ff; background: #14202e; border-color: #1f3549; }
+.pill.running { color: var(--info-text); background: var(--info-bg); border-color: var(--info-line); }
 
 .mono { font-family: var(--mono); font-size: 12px; }
 .dim { color: var(--text-dim); }
@@ -479,6 +498,18 @@ body.share-mode .topbar-actions button:not([data-act="reload"]) { display: none;
   --ok: #1a7f37;
   --warn: #9a6700;
   --err: #cf222e;
+  --ok-text: #116329; --ok-bg: #e6ffec; --ok-line: #b7e4c2;
+  --err-text: #a40e17; --err-bg: #ffebe9; --err-line: #f3c2c0;
+  --warn-text: #7a5300; --warn-bg: #fff6e0; --warn-line: #ecd9a8;
+  --info-text: #1d4ed8; --info-bg: #eaf1ff; --info-line: #c7d8f7;
+  --diff-add-bg: #e6ffec; --diff-add-text: #116329;
+  --diff-del-bg: #ffebe9; --diff-del-text: #a40e17;
+  --gantt-bar: #93b4f7; --gantt-success: #9fd8ad; --gantt-failed: #f3b6b8; --gantt-running: #7fb0ff;
+  --env-prod-bg: #ffe9e9; --env-prod-text: #a40e17; --env-prod-line: #f3c2c0;
+  --env-staging-bg: #fff6e0; --env-staging-text: #8a5a00; --env-staging-line: #ecd9a8;
+  --env-dev-bg: #fffbe6; --env-dev-text: #7a6100; --env-dev-line: #eadf9a;
+  --chart-1: #2563eb; --chart-2: #1a7f37; --chart-3: #b45309; --chart-4: #cf222e;
+  --chart-5: #7c3aed; --chart-6: #0e7490; --chart-7: #c2410c; --chart-8: #6b7280;
   /* 交互态：暗色下是「往上提亮」，亮色下必须反过来「压暗」，否则按钮 hover 变成一块黑板 */
   --hover: #e9edf3;
   --hover-line: #c8d2e0;
@@ -526,12 +557,9 @@ body.share-mode .topbar-actions button:not([data-act="reload"]) { display: none;
   border-bottom: 1px solid transparent;
 }
 body[data-env] .env-banner { display: flex; }
-body[data-env="prod"] .env-banner { background: #4a1214; color: #ffb3ae; border-bottom-color: #7a2226; }
-body[data-env="staging"] .env-banner { background: #3d2c0a; color: #f0d18a; border-bottom-color: #6b4d12; }
-body[data-env="dev"] .env-banner { background: #322a08; color: #e8d48b; border-bottom-color: #5a4a12; }
-:root[data-theme="light"] body[data-env="prod"] .env-banner { background: #ffe9e9; color: #a40e17; }
-:root[data-theme="light"] body[data-env="staging"] .env-banner { background: #fff6e0; color: #8a5a00; }
-:root[data-theme="light"] body[data-env="dev"] .env-banner { background: #fffbe6; color: #7a6100; }
+body[data-env="prod"] .env-banner { background: var(--env-prod-bg); color: var(--env-prod-text); border-bottom-color: var(--env-prod-line); }
+body[data-env="staging"] .env-banner { background: var(--env-staging-bg); color: var(--env-staging-text); border-bottom-color: var(--env-staging-line); }
+body[data-env="dev"] .env-banner { background: var(--env-dev-bg); color: var(--env-dev-text); border-bottom-color: var(--env-dev-line); }
 
 /* 三态组件：空态 / 骨架屏 / 错误重试 */
 .skel {
@@ -616,10 +644,8 @@ body[data-env="dev"] .env-banner { background: #322a08; color: #e8d48b; border-b
 .sqled-diff .dl { border-right: 1px solid var(--line); }
 .sqled-diff .line { display: grid; grid-template-columns: 34px 1fr; padding: 1px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .sqled-diff .ln { text-align: right; padding-right: 8px; color: var(--text-mute); user-select: none; }
-.sqled-diff .add { background: #10281a; }
-.sqled-diff .del { background: #2a1517; }
-:root[data-theme="light"] .sqled-diff .add { background: #e6ffec; }
-:root[data-theme="light"] .sqled-diff .del { background: #ffebe9; }
+.sqled-diff .add { background: var(--diff-add-bg); }
+.sqled-diff .del { background: var(--diff-del-bg); }
 
 /* 危险确认：必须手输资源名，避免「回车一路点到底」 */
 .danger-modal .dl-warn { border: 1px solid #4a2426; background: #24161a; color: #ffb3ae; padding: 11px 13px; border-radius: 8px; font-size: 12.5px; margin-bottom: 14px; line-height: 1.7; }
@@ -649,11 +675,9 @@ body[data-env="dev"] .env-banner { background: #322a08; color: #e8d48b; border-b
 .pslot { border: 1px dashed var(--line); border-radius: 8px; padding: 12px; min-height: 54px; font-size: 12px; color: var(--text-mute); }
 .pslot.filled { border-style: solid; color: var(--text); background: var(--bg-elev2); }
 .diff-line { font-family: var(--mono); font-size: 12px; padding: 2px 8px; white-space: pre-wrap; }
-.diff-line.add { background: #10281a; color: #9ae6a8; }
-.diff-line.del { background: #2a1517; color: #ffb3ae; }
+.diff-line.add { background: var(--diff-add-bg); color: var(--diff-add-text); }
+.diff-line.del { background: var(--diff-del-bg); color: var(--diff-del-text); }
 .diff-line.meta { color: var(--text-mute); }
-:root[data-theme="light"] .diff-line.add { background: #e6ffec; color: #116329; }
-:root[data-theme="light"] .diff-line.del { background: #ffebe9; color: #a40e17; }
 
 /* =============================================================================
    运维中心（T0906）
@@ -670,12 +694,43 @@ body[data-env="dev"] .env-banner { background: #322a08; color: #e8d48b; border-b
 .gantt-row { position: relative; height: 26px; border-bottom: 1px solid var(--line-soft); }
 .gantt-row:last-child { border-bottom: none; }
 .gantt-lbl { position: absolute; left: 0; top: 0; bottom: 0; width: 150px; padding: 5px 8px; font-size: 11.5px; color: var(--text-dim); background: var(--bg-elev); border-right: 1px solid var(--line); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; z-index: 2; }
-.gantt-bar { position: absolute; top: 5px; height: 16px; border-radius: 4px; background: #2f5db3; cursor: pointer; }
-.gantt-bar.success { background: #2c5a38; }
-.gantt-bar.failed { background: #7a2226; }
-.gantt-bar.running { background: #1f6feb; }
+.gantt-bar { position: absolute; top: 5px; height: 16px; border-radius: 4px; background: var(--gantt-bar); cursor: pointer; }
+.gantt-bar.success { background: var(--gantt-success); }
+.gantt-bar.failed { background: var(--gantt-failed); }
+.gantt-bar.running { background: var(--gantt-running); }
 .gantt-axis { position: relative; height: 22px; border-bottom: 1px solid var(--line); font-size: 10.5px; color: var(--text-mute); }
 .gantt-axis span { position: absolute; top: 5px; transform: translateX(-50%); }
+
+/* ---- 运行矩阵：节点 × 最近 N 次运行 ----
+   格子只承载状态，不放文字：20px 方块里塞字只会变成一列色块噪音，
+   具体信息交给 title。 */
+.mx-grid { border-collapse: separate; border-spacing: 3px; width: auto; }
+.mx-grid th, .mx-grid td { border: none; padding: 0; }
+.mx-grid th { text-transform: none; letter-spacing: 0; font-weight: 400; }
+.mx-grid .mx-corner {
+  font-size: 11px; color: var(--text-mute); text-align: left;
+  padding-right: 12px; white-space: nowrap;
+}
+.mx-grid .mx-node {
+  font-size: 11.5px; color: var(--text-dim); text-align: left; padding-right: 12px;
+  max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.mx-run { font-size: 10.5px; color: var(--text-mute); text-align: center; cursor: pointer; line-height: 1.5; }
+.mx-run:hover { color: var(--text); }
+.mx-date { display: flex; flex-direction: column; align-items: center; line-height: 1.15; font-size: 10px; font-variant-numeric: tabular-nums; }
+.mx-dot { display: inline-block; width: 8px; height: 8px; border-radius: 2px; }
+.mx-cell { display: block; width: 20px; height: 20px; border-radius: 3px; cursor: pointer; }
+.mx-cell:hover { outline: 2px solid var(--accent); outline-offset: 1px; }
+.mx-cell.ok, .mx-dot.ok { background: var(--ok); }
+.mx-cell.err, .mx-dot.err { background: var(--err); }
+.mx-cell.running, .mx-dot.running { background: var(--info-text); animation: mx-pulse 1.2s ease-in-out infinite; }
+.mx-cell.queued, .mx-dot.queued { background: var(--warn); opacity: .5; }
+.mx-cell.canceled, .mx-dot.canceled { background: var(--text-mute); opacity: .35; }
+.mx-cell.pending, .mx-cell.none { background: transparent; box-shadow: inset 0 0 0 1px var(--line); }
+@keyframes mx-pulse { 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) {
+  .mx-cell.running, .mx-dot.running { animation: none; }
+}
 .loglevel { display: inline-block; width: 46px; font-family: var(--mono); font-size: 11px; }
 .loglevel.err { color: #ff7b72; }
 .loglevel.warn { color: #e3b341; }
@@ -810,3 +865,74 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
   .grid.c4 { grid-template-columns: 1fr; }
   .page-head { flex-direction: column; }
 }
+
+/* ---------- 数据文档站（#/catalog）----------
+ * 三栏的原因：字段表很宽、上下游很短、运行证据是「点进去看」的入口。
+ * 把三者塞进一列会让字段表被挤到横向滚动，而右侧那两块本来只占几个字。
+ */
+.doc-layout { display: grid; grid-template-columns: 216px minmax(0, 1fr) 268px; gap: var(--sp-3); align-items: start; }
+.doc-nav { position: sticky; top: var(--sp-3); max-height: calc(100vh - 120px); overflow: auto; padding: var(--sp-3); }
+.doc-search { width: 100%; padding: 6px 9px; font-size: 12.5px; margin-bottom: var(--sp-3); }
+.doc-filter { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: var(--sp-2); }
+.doc-filter a { padding: 2px 7px; border-radius: 999px; font-size: 11px; color: var(--text-dim); border: 1px solid var(--line); }
+.doc-filter a.active { color: var(--accent); border-color: var(--accent-dim); background: var(--bg-elev2); }
+.doc-group { margin-bottom: var(--sp-3); }
+.doc-group-title { display: flex; justify-content: space-between; align-items: center; font-size: 11px;
+  letter-spacing: .04em; color: var(--text-mute); text-transform: uppercase; margin-bottom: 4px; font-weight: 600; }
+.doc-item { display: flex; align-items: center; gap: 7px; padding: 4px 6px; border-radius: var(--r-sm);
+  color: var(--text); font-size: 12.5px; overflow: hidden; }
+.doc-item:hover { background: var(--hover); }
+.doc-item.active { background: var(--nav-active); color: var(--nav-active-text); }
+.doc-item .mono { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.doc-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--text-mute); flex: 0 0 auto; }
+.doc-dot.fresh { background: var(--ok); }
+.doc-dot.stale { background: var(--err); }
+.doc-dot.unknown { background: var(--warn); }
+.doc-main .card + .card, .doc-side .card + .card { margin-top: var(--sp-3); }
+.doc-title { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.doc-title h3 { margin: 0; font-family: var(--mono); font-size: 16px; }
+.doc-desc { color: var(--text-dim); font-size: 12.5px; margin: var(--sp-2) 0 0; line-height: 1.65; }
+.doc-meta { display: grid; grid-template-columns: 1fr 1fr; gap: 6px var(--sp-4); margin-top: var(--sp-3); font-size: 12.5px; }
+.doc-meta div { display: flex; gap: 8px; min-width: 0; }
+.doc-meta b { color: var(--text-mute); font-weight: 500; flex: 0 0 60px; }
+.doc-meta span { min-width: 0; overflow-wrap: anywhere; }
+.doc-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.doc-table th { text-align: left; padding: 6px 8px; font-size: 11px; color: var(--text-mute);
+  border-bottom: 1px solid var(--line); font-weight: 500; position: sticky; top: 0; background: var(--bg-elev); }
+.doc-table td { padding: 5px 8px; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
+.doc-table tbody tr:hover { background: var(--row-hover); }
+.doc-sub { font-size: 11.5px; color: var(--text-mute); margin-bottom: 4px; }
+.doc-kv { display: flex; gap: 8px; align-items: baseline; font-size: 12.5px; padding: 2px 0; }
+.doc-kv b { color: var(--text-mute); font-weight: 500; flex: 0 0 62px; }
+.doc-kv span { min-width: 0; overflow-wrap: anywhere; }
+.doc-link { font-family: var(--mono); font-size: 11.5px; padding: 1px 7px; border-radius: 999px;
+  border: 1px solid var(--line); color: var(--accent); }
+.doc-link.mute { color: var(--text-mute); pointer-events: none; }
+.chips { display: flex; flex-wrap: wrap; gap: 5px; }
+.doc-details summary { cursor: pointer; font-size: 12.5px; color: var(--text-dim); }
+.doc-pre { background: var(--bg); border: 1px solid var(--line); border-radius: var(--r-sm);
+  padding: var(--sp-3); overflow: auto; max-height: 360px; font-family: var(--mono); font-size: 11.5px;
+  line-height: 1.6; margin: var(--sp-2) 0 0; white-space: pre; }
+.warn-box { border: 1px solid var(--warn-line); background: var(--warn-bg); color: var(--warn-text);
+  padding: 9px 12px; border-radius: var(--r-sm); font-size: 12.5px; }
+@media (max-width: 1280px) {
+  .doc-layout { grid-template-columns: 200px minmax(0, 1fr); }
+  .doc-side { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--sp-3); }
+  .doc-side .card + .card { margin-top: 0; }
+  .doc-nav { max-height: none; }
+}
+@media (max-width: 900px) {
+  .doc-layout { grid-template-columns: 1fr; }
+  .doc-side { grid-template-columns: 1fr; }
+  .doc-meta { grid-template-columns: 1fr; }
+}
+
+/* 策略命中测试：三列表单，窄屏堆叠。 */
+.sim-form { display: grid; grid-template-columns: 2fr 1.4fr 0.8fr; gap: var(--sp-3); align-items: end; }
+.sim-form label { display: block; font-size: var(--fs-2); color: var(--text-dim); margin-bottom: 4px; }
+.sim-form input, .sim-form select { width: 100%; }
+@media (max-width: 900px) { .sim-form { grid-template-columns: 1fr; } }
+
+/* 质量实测值可能很长（例如「2026-11-09 00:00（8004 分钟前）」）：单行截断 + title 看全，
+   否则一个单元格撑成三行，整张表的行高参差不齐。 */
+.doc-obs { display: inline-block; max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }

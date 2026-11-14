@@ -2,6 +2,8 @@ kind: Model
 name: dwd_order
 layer: dwd
 description: 订单明细，标准化状态并标记退款
+owner: data-platform
+tags: [core, trade]
 datasource: pg_dw
 schema: dwd
 columns:

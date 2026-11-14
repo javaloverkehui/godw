@@ -101,35 +101,32 @@ func (r *Repo) ListErasureJobs(ctx context.Context, workspaceID string, limit in
 	return out, rows.Err()
 }
 
-// DatasetClassification 返回数据集涉及的最高敏感级别。
-func (r *Repo) DatasetClassification(ctx context.Context, workspaceID, dataset string) (string, error) {
-	var level int
-	err := r.DB.Pool.QueryRow(ctx,
-		`SELECT COALESCE(MAX(CASE classification
-		           WHEN 'high' THEN 3 WHEN 'medium' THEN 2 WHEN 'low' THEN 1 ELSE 0 END), 0)
-		 FROM column_policy p
-		 WHERE p.workspace_id=$1 AND EXISTS (
-		   SELECT 1 FROM semantic_dataset d WHERE d.workspace_id=$1 AND d.name=$2
-		 )`, workspaceID, dataset).Scan(&level)
+// TableClassification 返回一组表里最高的敏感级别。
+// 只按表名匹配，不再用「工作区存在某数据集」这种近似判断：
+// 一张表的 secret 列不应该让同工作区的其他表也变成 high。
+func (r *Repo) TableClassification(ctx context.Context, workspaceID string, tables []string) (string, error) {
+	if len(tables) == 0 {
+		return "none", nil
+	}
+	rows, err := r.DB.Pool.Query(ctx,
+		`SELECT DISTINCT classification FROM column_policy
+		 WHERE workspace_id=$1 AND table_name = ANY($2)`, workspaceID, tables)
 	if err != nil {
 		return "", err
 	}
-	switch level {
-	case 3:
-		return "high", nil
-	case 2:
-		return "medium", nil
-	case 1:
-		return "low", nil
+	defer rows.Close()
+	rank := 0
+	for rows.Next() {
+		var c string
+		if err := rows.Scan(&c); err != nil {
+			return "", err
+		}
+		if r := model.ClassificationRank(c); r > rank {
+			rank = r
+		}
 	}
-	return "none", nil
-}
-
-// HasApprovedExport 判断该数据集是否有已批准的导出申请。
-func (r *Repo) HasApprovedExport(ctx context.Context, workspaceID, dataset string) (bool, error) {
-	var n int
-	err := r.DB.Pool.QueryRow(ctx,
-		`SELECT count(*) FROM export_job
-		 WHERE workspace_id=$1 AND target=$2 AND status='approved'`, workspaceID, dataset).Scan(&n)
-	return n > 0, err
+	if err := rows.Err(); err != nil {
+		return "", err
+	}
+	return model.ClassificationName(rank), nil
 }

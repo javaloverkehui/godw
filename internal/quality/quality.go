@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/godw/godw/internal/connector"
 	"github.com/godw/godw/internal/dialect"
@@ -21,6 +22,13 @@ type Rule struct {
 	Compare string
 	// Threshold 供展示用（例如变化率阈值）。
 	Threshold float64
+	// Kind 仅在判定方式与「单 SQL 返回两列」不同时使用。
+	// freshness 要在 Go 里算时间差：把时差写进 SQL 需要 INTERVAL/EPOCH 之类的方言差异，
+	// 每种引擎写法都不一样，写错一次就是静默通过，比没有这条规则更危险。
+	Kind string
+	// FreshColumn / FreshMaxMin 仅 freshness 使用：时间列与阈值（分钟）。
+	FreshColumn string
+	FreshMaxMin float64
 }
 
 // Build 把质量规则编译为一条返回单值的 SQL。
@@ -109,6 +117,9 @@ func Run(ctx context.Context, c connector.Connector, rules []Rule) ([]Result, er
 }
 
 func runOne(ctx context.Context, c connector.Connector, r Rule) (Result, error) {
+	if r.Kind == KindFreshness {
+		return runFreshness(ctx, c, r)
+	}
 	rows, err := c.Query(ctx, r.SQL)
 	if err != nil {
 		return Result{RuleName: r.Name, Severity: r.Severity, SQL: r.SQL},
@@ -137,6 +148,68 @@ func runOne(ctx context.Context, c connector.Connector, r Rule) (Result, error) 
 		res.Passed = fmt.Sprint(observed) == fmt.Sprint(expected)
 	}
 	return res, nil
+}
+
+// runFreshness 判定「表里最新的一条数据有多旧」。
+//
+// 与其它规则的区别只有一处：不靠 SQL 做判定，而是取出 MAX(时间列) 后在 Go 里比。
+// 原因是「当前时间 - 最大值」在各引擎的写法完全不同（PG 要 EXTRACT(EPOCH ...)，
+// MySQL 要 TIMESTAMPDIFF，ClickHouse 要 dateDiff），写错不会报错，只会永远通过。
+func runFreshness(ctx context.Context, c connector.Connector, r Rule) (Result, error) {
+	res := Result{RuleName: r.Name, Severity: r.Severity, Expected: r.Expect, SQL: r.SQL}
+	rows, err := c.Query(ctx, r.SQL)
+	if err != nil {
+		return res, errs.Wrap(errs.CodeExecutionFailed, err, "新鲜度规则执行失败: "+r.Name)
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return res, err
+		}
+		return res, errs.New(errs.CodeExecutionFailed, "新鲜度规则未返回结果: "+r.Name)
+	}
+	var raw any
+	if err := rows.Scan(&raw); err != nil {
+		return res, err
+	}
+	latest, ok := toTime(raw)
+	if !ok {
+		// 空表：没有数据比「数据很旧」更严重，必须判失败而不是跳过。
+		res.Observed = "无数据"
+		res.Passed = false
+		return res, nil
+	}
+	age := time.Since(latest).Minutes()
+	res.Observed = fmt.Sprintf("%s（%.0f 分钟前）", latest.Format("2006-01-02 15:04"), age)
+	res.Passed = age <= r.FreshMaxMin
+	return res, nil
+}
+
+// toTime 把驱动返回的任意时间表示转成 time.Time。
+func toTime(v any) (time.Time, bool) {
+	switch t := v.(type) {
+	case time.Time:
+		return t, !t.IsZero()
+	case string:
+		return parseTimeString(t)
+	case []byte:
+		return parseTimeString(string(t))
+	}
+	return time.Time{}, false
+}
+
+func parseTimeString(s string) (time.Time, bool) {
+	s = strings.TrimSpace(s)
+	for _, layout := range []string{
+		time.RFC3339Nano, time.RFC3339, "2006-01-02 15:04:05.999999999",
+		"2006-01-02 15:04:05.999999", "2006-01-02 15:04:05", "2006-01-02T15:04:05",
+		"2006-01-02 15:04", "2006-01-02",
+	} {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t, true
+		}
+	}
+	return time.Time{}, false
 }
 
 // toFloat 把驱动返回的任意数值类型转成 float64，用于阈值比较。

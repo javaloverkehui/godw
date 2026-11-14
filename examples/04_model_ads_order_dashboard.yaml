@@ -2,6 +2,8 @@ kind: Model
 name: ads_order_dashboard
 layer: ads
 description: 经营看板：订单量、GMV、退款率
+owner: bi-team
+tags: [dashboard]
 datasource: pg_dw
 schema: ads
 columns:

@@ -508,6 +508,13 @@ func (s *Service) ApplyDashboard(ctx context.Context, workspaceID string, d sema
 		return nil, err
 	}
 	for _, c := range d.Cards {
+		// 二选一已在 ValidateDashboard 里校验过，这里只确认被引用的对象真的存在。
+		if c.Chart != "" {
+			if _, err := s.Repo.GetChart(ctx, workspaceID, c.Chart); err != nil {
+				return nil, errs.New(errs.CodeInvalidArgument, "卡片引用了不存在的图表: "+c.Chart)
+			}
+			continue
+		}
 		if _, err := s.Repo.MetricByName(ctx, workspaceID, c.Metric); err != nil {
 			return nil, errs.New(errs.CodeInvalidArgument, "卡片引用了不存在的指标: "+c.Metric)
 		}
@@ -517,12 +524,18 @@ func (s *Service) ApplyDashboard(ctx context.Context, workspaceID string, d sema
 
 // QueryDashboard 一次性返回看板所有卡片的数据，减少前端请求数。
 func (s *Service) QueryDashboard(ctx context.Context, workspaceID, name string) (*semantic.DashboardData, error) {
-	return s.QueryDashboardWith(ctx, workspaceID, name, semantic.RunOptions{})
+	return s.QueryDashboardFor(ctx, workspaceID, name, "", "", semantic.RunOptions{})
 }
 
 // QueryDashboardWith 支持看板级全局筛选（时间窗口 / 维度切片）。
 // 分享、导出、订阅走上面的三参版本：它们要的是看板定义时的原貌，不该被页面筛选影响。
 func (s *Service) QueryDashboardWith(ctx context.Context, workspaceID, name string, opt semantic.RunOptions) (*semantic.DashboardData, error) {
+	return s.QueryDashboardFor(ctx, workspaceID, name, "", "", opt)
+}
+
+// QueryDashboardFor 额外带上访问者身份：图表卡要走数据集查询，而行级/列级策略按用户生效，
+// 不传身份等于给图表卡开了一个绕过 RLS 的口子。
+func (s *Service) QueryDashboardFor(ctx context.Context, workspaceID, name, user, role string, opt semantic.RunOptions) (*semantic.DashboardData, error) {
 	d, err := s.Repo.DashboardByName(ctx, workspaceID, name)
 	if err != nil {
 		return nil, err
@@ -546,6 +559,41 @@ func (s *Service) QueryDashboardWith(ctx context.Context, workspaceID, name stri
 		}
 		return *m, *spec, c, nil
 	}
-	data := semantic.RunCards(ctx, resolve, *d, opt)
+	resolveChart := func(chartName string, o semantic.RunOptions) (*semantic.CardChart, error) {
+		extra := s.chartCardFilters(ctx, workspaceID, chartName, o)
+		res, err := s.ChartQueryWith(ctx, workspaceID, chartName, user, role, extra)
+		if err != nil {
+			return nil, err
+		}
+		return &semantic.CardChart{Type: res.Chart.Type, Series: res.Series, Points: res.Points}, nil
+	}
+	data := semantic.RunCards(ctx, resolve, resolveChart, *d, opt)
 	return &data, nil
+}
+
+// chartCardFilters 把看板的全局时间窗口翻译成图表查询条件。
+// 只在数据集存在 filterable 的 time 维度时生效——宁可不筛，也不要因为
+// 一条时间条件把整张图变成报错（未开启筛选的维度会被 BuildQuery 拒绝）。
+func (s *Service) chartCardFilters(ctx context.Context, workspaceID, chartName string, opt semantic.RunOptions) []semantic.Filter {
+	if opt.Days <= 0 {
+		return nil
+	}
+	c, err := s.Repo.GetChart(ctx, workspaceID, chartName)
+	if err != nil {
+		return nil
+	}
+	d, err := s.Repo.GetDataset(ctx, workspaceID, c.Dataset)
+	if err != nil {
+		return nil
+	}
+	for _, dim := range d.Dimensions {
+		if dim.Type == "time" && dim.Filterable {
+			return []semantic.Filter{{
+				Field: dim.Name,
+				Op:    ">=",
+				Value: time.Now().AddDate(0, 0, -opt.Days).Format("2006-01-02"),
+			}}
+		}
+	}
+	return nil
 }

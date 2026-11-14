@@ -10,7 +10,9 @@
  */
 'use strict';
 
-const CHART_COLORS = ['#4f8cff', '#3fb950', '#d29922', '#f85149', '#a371f7', '#39c5cf'];
+// 系列色兜底：正常走 CSS 变量 --chart-1..8，这组只在变量取不到时使用。
+// 亮色主题会整套覆盖 --chart-*，所以图表不必自己判断主题。
+const CHART_COLORS = ['#4f8cff', '#3fb950', '#d29922', '#f85149', '#a371f7', '#39c5cf', '#db6d28', '#8b949e'];
 const CHART_REGISTRY = new Set();
 
 /** 图表统一入口。points: [{ts, value, dim}]，unit 只用于展示。 */
@@ -90,9 +92,14 @@ function chartPalette() {
     axis: pick('--text-mute', '#6b7887'),
     label: pick('--text-dim', '#9aa7b4'),
     surface: pick('--bg-elev2', '#1b222b'),
+    // 卡片底色：环形图挖洞、面积图底色都要求与所在卡片一致，不能用页面底色。
+    card: pick('--bg-elev', '#151a21'),
     line: pick('--line', '#232b36'),
     accent: pick('--accent', '#4f8cff'),
     text: pick('--text', '#e6edf3'),
+    // 系列色跟着 --chart-1..8 走；BI 页与看板共用同一组，避免同一种「第二个系列」
+    // 在两页是两个颜色。
+    series: CHART_COLORS.map((fb, i) => pick('--chart-' + (i + 1), fb)),
   };
 }
 
@@ -240,7 +247,7 @@ function renderChart(svg) {
   const seriesMeta = [];
   visibleKeys.forEach(k => {
     const idx = allKeys.indexOf(k);
-    const color = CHART_COLORS[idx % CHART_COLORS.length];
+    const color = C.series[idx % C.series.length];
     const arr = dims[k].filter(p => xs[p.ts] !== undefined)
       .sort((a, b) => a.ts < b.ts ? -1 : 1);
     if (!arr.length) return;
@@ -280,7 +287,7 @@ function renderChart(svg) {
   let gx = padL;
   const legendY = H - 12;
   allKeys.forEach((k, idx) => {
-    const color = CHART_COLORS[idx % CHART_COLORS.length];
+    const color = C.series[idx % C.series.length];
     const off = st.hidden.has(k);
     const label = k || '(空值)';
     const g = document.createElementNS(ns, 'g');

@@ -12,11 +12,9 @@ import (
 
 // T0601 质量规则 DSL。
 //
-// 统一契约：每条规则编译成「返回 (observed, expected) 两列」的 SQL。
-// 这样判定逻辑只有一处（observed == expected），新增规则类型不需要改执行器。
-//
-// 九类规则：not_null / unique / unique_combination / accepted_values / range /
-//          regex / referential / row_count_delta / custom_sql
+// 规则类型清单：
+// not_null / unique / unique_combination / accepted_values / range / regex /
+// referential / row_count_delta / row_count / freshness / custom_sql
 
 // Kind 是规则类型。
 const (
@@ -30,13 +28,16 @@ const (
 	KindRowCountDelta     = "row_count_delta"
 	KindCustomSQL         = "custom_sql"
 	KindRowCount          = "row_count"
+	// KindFreshness 检查时间列的最新值距今是否超过阈值（数据新鲜度）。
+	KindFreshness = "freshness"
 )
 
 // ValidKind 校验规则类型。
 func ValidKind(k string) bool {
 	switch k {
 	case KindNotNull, KindUnique, KindUniqueCombination, KindAcceptedValues,
-		KindRange, KindRegex, KindReferential, KindRowCountDelta, KindCustomSQL, KindRowCount:
+		KindRange, KindRegex, KindReferential, KindRowCountDelta, KindCustomSQL,
+		KindRowCount, KindFreshness:
 		return true
 	}
 	return false
@@ -45,7 +46,8 @@ func ValidKind(k string) bool {
 // Kinds 返回全部规则类型，供前端下拉。
 func Kinds() []string {
 	return []string{KindNotNull, KindUnique, KindUniqueCombination, KindAcceptedValues,
-		KindRange, KindRegex, KindReferential, KindRowCountDelta, KindRowCount, KindCustomSQL}
+		KindRange, KindRegex, KindReferential, KindRowCountDelta, KindRowCount,
+		KindFreshness, KindCustomSQL}
 }
 
 // dmlRe 用于拦截 custom_sql 里的写操作。只做「明显写语句」的拦截，
@@ -68,6 +70,21 @@ func BuildWith(rule model.QualityRule, schema, table string, d dialect.Dialect) 
 	}
 
 	switch rule.Kind {
+	case KindFreshness:
+		if err := assertColumn(rule, rule.Column, d); err != nil {
+			return out, errs.Wrap(errs.CodeInvalidArgument, err, "freshness 需要 config.column（时间列）")
+		}
+		maxMin, label := freshnessWindow(rule.Config)
+		col := d.QuoteIdent(rule.Column)
+		out.Kind = KindFreshness
+		out.FreshColumn = rule.Column
+		out.FreshMaxMin = maxMin
+		// 只取最大值，判定在 Go 里做：跨引擎写「当前时间 - 最大值」必然踩方言坑。
+		out.SQL = fmt.Sprintf("SELECT MAX(%s) AS latest FROM %s", col, t)
+		out.Expect = fmt.Sprintf("%s 距今 ≤ %s", rule.Column, label)
+		out.Compare = "le"
+		out.Threshold = maxMin
+
 	case KindUniqueCombination:
 		cols := stringSlice(rule.Config["columns"])
 		if len(cols) < 2 {
@@ -183,6 +200,39 @@ func ValidateCustomSQL(sqlText string) error {
 	return nil
 }
 
+// FreshnessWindow 对外暴露阈值解析：文档站要显示「多久算过期」，
+// 不能在前端再写一套 max_age_hours → 分钟的换算，否则两处口径迟早不一致。
+func FreshnessWindow(cfg map[string]any) (float64, string) { return freshnessWindow(cfg) }
+
+// freshnessWindow 解析新鲜度阈值，返回分钟数与展示文案。
+// 支持 max_age_min / max_age_hours / max_age_days，缺省 24 小时——
+// 日更链路的默认语义是「昨天的数据在今天任何时刻都不算过期」。
+func freshnessWindow(cfg map[string]any) (float64, string) {
+	if n, ok := number(cfg["max_age_min"]); ok && n > 0 {
+		return n, humanMinutes(n)
+	}
+	if n, ok := number(cfg["max_age_hours"]); ok && n > 0 {
+		return n * 60, humanMinutes(n * 60)
+	}
+	if n, ok := number(cfg["max_age_days"]); ok && n > 0 {
+		return n * 1440, humanMinutes(n * 1440)
+	}
+	return 1440, humanMinutes(1440)
+}
+
+// humanMinutes 把分钟数写成「2 天」「90 分钟」这类人话，避免出现 1440 这种数字。
+func humanMinutes(min float64) string {
+	n := int64(min)
+	switch {
+	case n%1440 == 0 && n >= 1440:
+		return fmt.Sprintf("%d 天", n/1440)
+	case n%60 == 0 && n >= 60:
+		return fmt.Sprintf("%d 小时", n/60)
+	default:
+		return fmt.Sprintf("%.0f 分钟", min)
+	}
+}
+
 func assertColumn(rule model.QualityRule, col string, d dialect.Dialect) error {
 	if strings.TrimSpace(col) == "" {
 		return errs.New(errs.CodeInvalidArgument, "规则 "+rule.Name+" 的列名不能为空")
@@ -236,6 +286,12 @@ func Scope(rules []Rule, schema, table string, d dialect.Dialect, where string) 
 	scoped := "FROM (SELECT * FROM " + base + " WHERE " + where + ") godw_scope"
 	out := make([]Rule, len(rules))
 	for i, r := range rules {
+		// freshness 不参与分区收窄：它问的是「这张表最新一条有多旧」，
+		// 收窄到当天分区会把「今天没写入」误判成「数据很旧」，也可能反过来永远通过。
+		if r.Kind == KindFreshness {
+			out[i] = r
+			continue
+		}
 		r.SQL = strings.ReplaceAll(r.SQL, from, scoped)
 		out[i] = r
 	}

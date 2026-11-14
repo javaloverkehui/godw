@@ -49,6 +49,31 @@ type Style struct {
 	NumberFormat string `json:"numberFormat,omitempty" yaml:"numberFormat,omitempty"`
 }
 
+// ChartSeries 是一条系列。Data 与查询结果的行序一一对应。
+type ChartSeries struct {
+	Name string    `json:"name"`
+	Data []float64 `json:"data"`
+}
+
+// ChartPoint 是图表上的一个点。X 已格式化为展示值（时间与枚举都按字符串走），
+// 这样前端不必再猜该按什么格式解析。
+type ChartPoint struct {
+	X      string  `json:"x"`
+	Y      float64 `json:"y"`
+	Series string  `json:"series,omitempty"`
+}
+
+// ChartResult 是一次图表查询的完整产物。
+// BI 页整份消费；看板的图表卡只取 Type / Series / Points。
+type ChartResult struct {
+	Chart     Chart         `json:"chart"`
+	Columns   []string      `json:"columns"`
+	Series    []ChartSeries `json:"series"`
+	Points    []ChartPoint  `json:"points"`
+	SQL       string        `json:"sql"`
+	ElapsedMs int64         `json:"elapsedMs"`
+}
+
 // ChartType 是图表类型。
 const (
 	ChartLine     = "line"

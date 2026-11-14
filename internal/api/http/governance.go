@@ -189,8 +189,44 @@ func (h *Handler) createExport(w http.ResponseWriter, r *http.Request, _ map[str
 		fail(w, r, err)
 		return
 	}
-	h.audit(r, "export.create", req.Target, map[string]any{"kind": req.Kind})
+	detail := map[string]any{"kind": req.Kind, "status": job.Status}
+	if v, okc := job.Params["_classification"]; okc {
+		detail["classification"] = v
+	}
+	h.audit(r, "export.create", req.Target, detail)
 	created(w, r, job)
+}
+
+// approveExport 批准 high 级数据导出。只有 admin 能批，批准即开始执行。
+func (h *Handler) approveExport(w http.ResponseWriter, r *http.Request, p map[string]string) {
+	if !requireRole(w, r, "admin") {
+		return
+	}
+	job, err := h.Svc.ApproveExport(r.Context(), workspaceOf(r.Context()), p["id"], actorOf(r.Context()))
+	if err != nil {
+		fail(w, r, err)
+		return
+	}
+	ok(w, r, job)
+}
+
+func (h *Handler) rejectExport(w http.ResponseWriter, r *http.Request, p map[string]string) {
+	if !requireRole(w, r, "admin") {
+		return
+	}
+	var body struct {
+		Reason string `json:"reason"`
+	}
+	if err := decodeBody(r, &body); err != nil {
+		fail(w, r, err)
+		return
+	}
+	job, err := h.Svc.RejectExport(r.Context(), workspaceOf(r.Context()), p["id"], body.Reason, actorOf(r.Context()))
+	if err != nil {
+		fail(w, r, err)
+		return
+	}
+	ok(w, r, job)
 }
 
 func (h *Handler) getExport(w http.ResponseWriter, r *http.Request, p map[string]string) {
@@ -522,4 +558,24 @@ func semanticQueryFrom(r *http.Request) semantic.Query {
 		Dimension:   r.URL.Query().Get("dimension"),
 		Limit:       queryInt(r, "limit", 500),
 	}
+}
+
+// simulatePolicies 是「策略命中测试」接口：给定表与身份，返回实际生效的脱敏列与行过滤。
+// 只读，viewer 也能调——它回答的正是「我能不能看到这些数据」，不该只有管理员能问。
+func (h *Handler) simulatePolicies(w http.ResponseWriter, r *http.Request, _ map[string]string) {
+	q := r.URL.Query()
+	user := q.Get("user")
+	if user == "" {
+		user = actorOf(r.Context())
+	}
+	role := q.Get("role")
+	if role == "" {
+		role = roleOf(r.Context())
+	}
+	res, err := h.Svc.SimulatePolicies(r.Context(), workspaceOf(r.Context()), q.Get("table"), user, role)
+	if err != nil {
+		fail(w, r, err)
+		return
+	}
+	ok(w, r, res)
 }

@@ -88,11 +88,16 @@ func (h *Handler) routes() *Router {
 	r.POST("/api/v1/pipelines/sample-run", h.sampleRunPipeline)
 	r.POST("/api/v1/pipelines/{name}/trigger", h.triggerPipeline)
 	r.PUT("/api/v1/pipelines/{name}/enabled", h.togglePipeline)
+	// 选择器：按模型 / tag / 分层触发，一个表达式命中多条管道。
+	r.GET("/api/v1/select/preview", h.selectPreview)
+	r.POST("/api/v1/runs/select", h.selectRun)
 
 	r.GET("/api/v1/instances", h.listInstances)
 	// 批量动作必须注册在 /instances/{id} 之前：两者都是 2 段路径，
 	// 路由是前缀顺序匹配，靠后的 {id} 会把 "batch" 当成实例 ID 吞掉。
 	r.POST("/api/v1/instances/batch", h.batchInstances)
+	// 同理：matrix 也必须在 {id} 之前，否则会被当成实例 ID。
+	r.GET("/api/v1/instances/matrix", h.instanceMatrix)
 	r.GET("/api/v1/instances/{id}", h.getInstance)
 	r.GET("/api/v1/instances/{id}/events", h.instanceEvents)
 	r.GET("/api/v1/instances/{id}/sql", h.instanceNodeSQL)
@@ -119,6 +124,9 @@ func (h *Handler) routes() *Router {
 	r.POST("/api/v1/dashboards", h.applyDashboard)
 	r.GET("/api/v1/dashboards/{name}", h.queryDashboard)
 
+	// 自助查询：只读 + 单语句 + 超时 + 行数上限，仅 admin/editor。
+	r.POST("/api/v1/sql/query", h.rawSQLQuery)
+
 	r.GET("/api/v1/quality", h.listQuality)
 	r.GET("/api/v1/quality/overview", h.qualityOverview)
 	r.GET("/api/v1/quality/trend", h.qualityTrend)
@@ -142,9 +150,12 @@ func (h *Handler) routes() *Router {
 	r.GET("/api/v1/policies/rows", h.listRowPolicies)
 	r.POST("/api/v1/policies/rows", h.saveRowPolicy)
 	r.DELETE("/api/v1/policies/rows/{id}", h.deleteRowPolicy)
+	r.GET("/api/v1/policies/simulate", h.simulatePolicies)
 
 	r.GET("/api/v1/exports", h.listExports)
 	r.POST("/api/v1/exports", h.createExport)
+	r.POST("/api/v1/exports/{id}/approve", h.approveExport)
+	r.POST("/api/v1/exports/{id}/reject", h.rejectExport)
 	r.GET("/api/v1/exports/{id}", h.getExport)
 	r.GET("/api/v1/exports/{id}/download", h.downloadExport)
 
@@ -172,6 +183,9 @@ func (h *Handler) routes() *Router {
 	r.GET("/api/v1/public/share/{token}", h.publicShare)
 	r.GET("/api/v1/dictionary", h.dictionary)
 	r.GET("/api/v1/dictionary/export", h.dictionaryExport)
+	// 数据文档站：按模型聚合字段/质量/血缘/运行，另可导出单文件 HTML。
+	r.GET("/api/v1/catalog", h.catalogDocs)
+	r.GET("/api/v1/catalog/export", h.catalogExport)
 	r.GET("/api/v1/layer-rules", h.layerRules)
 
 	r.GET("/api/v1/retention", h.listRetention)
@@ -591,6 +605,17 @@ func (h *Handler) listInstances(w http.ResponseWriter, r *http.Request, _ map[st
 	ok(w, r, map[string]any{"items": items, "total": total, "limit": limit, "offset": offset})
 }
 
+// instanceMatrix 返回「节点 × 最近 N 次运行」的状态矩阵，供运行实例页的矩阵视图使用。
+func (h *Handler) instanceMatrix(w http.ResponseWriter, r *http.Request, _ map[string]string) {
+	m, err := h.Svc.Repo.InstanceMatrix(r.Context(), workspaceOf(r.Context()),
+		r.URL.Query().Get("pipeline"), queryInt(r, "limit", 20))
+	if err != nil {
+		fail(w, r, err)
+		return
+	}
+	ok(w, r, m)
+}
+
 func (h *Handler) getInstance(w http.ResponseWriter, r *http.Request, _ map[string]string) {
 	id := paramsFrom(r.Context())["id"]
 	inst, err := h.Svc.Repo.GetInstance(r.Context(), id)
@@ -813,16 +838,27 @@ func (h *Handler) applyDashboard(w http.ResponseWriter, r *http.Request, _ map[s
 	if !requireRole(w, r, "admin", "editor") {
 		return
 	}
+	// 两种提交形态：可视化编辑器给结构化对象，高级模式给 YAML。
+	// YAML 是结构化对象的另一种写法，不该成为唯一入口。
 	var body struct {
-		YAML string `json:"yaml"`
+		YAML      string              `json:"yaml"`
+		Dashboard *semantic.Dashboard `json:"dashboard"`
 	}
 	if err := decodeBody(r, &body); err != nil {
 		fail(w, r, err)
 		return
 	}
 	var d semantic.Dashboard
-	if err := yamlUnmarshal([]byte(body.YAML), &d); err != nil {
-		fail(w, r, errs.Wrap(errs.CodeInvalidArgument, err, "看板 YAML 解析失败"))
+	switch {
+	case body.Dashboard != nil:
+		d = *body.Dashboard
+	case body.YAML != "":
+		if err := yamlUnmarshal([]byte(body.YAML), &d); err != nil {
+			fail(w, r, errs.Wrap(errs.CodeInvalidArgument, err, "看板 YAML 解析失败"))
+			return
+		}
+	default:
+		fail(w, r, errs.New(errs.CodeInvalidArgument, "需要 dashboard 或 yaml 之一"))
 		return
 	}
 	saved, err := h.Svc.ApplyDashboard(r.Context(), workspaceOf(r.Context()), d)
@@ -836,10 +872,12 @@ func (h *Handler) applyDashboard(w http.ResponseWriter, r *http.Request, _ map[s
 
 func (h *Handler) queryDashboard(w http.ResponseWriter, r *http.Request, p map[string]string) {
 	// days / dim 是页面级全局筛选；不传就按看板定义原样渲染。
-	data, err := h.Svc.QueryDashboardWith(r.Context(), workspaceOf(r.Context()), p["name"], semantic.RunOptions{
-		Days: queryInt(r, "days", 0),
-		Dim:  r.URL.Query().Get("dim"),
-	})
+	// 带上访问者身份，图表卡的数据集查询才能按行列策略生效。
+	data, err := h.Svc.QueryDashboardFor(r.Context(), workspaceOf(r.Context()), p["name"],
+		actorOf(r.Context()), roleOf(r.Context()), semantic.RunOptions{
+			Days: queryInt(r, "days", 0),
+			Dim:  r.URL.Query().Get("dim"),
+		})
 	if err != nil {
 		fail(w, r, err)
 		return

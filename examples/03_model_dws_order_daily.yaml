@@ -2,6 +2,8 @@ kind: Model
 name: dws_order_daily
 layer: dws
 description: 订单日汇总，按状态拆分
+owner: data-platform
+tags: [core]
 datasource: pg_dw
 schema: dws
 columns:

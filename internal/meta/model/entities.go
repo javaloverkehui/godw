@@ -319,3 +319,29 @@ type PIIOverride struct {
 	Level  string `json:"level"`
 	Reason string `json:"reason"`
 }
+
+// MatrixRun 是运行矩阵的一列：一次运行。
+type MatrixRun struct {
+	ID        string     `json:"id"`
+	BizDate   string     `json:"bizDate"`
+	Status    string     `json:"status"`
+	StartedAt *time.Time `json:"startedAt,omitempty"`
+}
+
+// MatrixCell 是矩阵里的一个格子。Cells 里为 nil 表示该次运行没有这个节点。
+type MatrixCell struct {
+	Status     string `json:"status"`
+	DurationMS int64  `json:"durationMs"`
+	Attempt    int    `json:"attempt"`
+	Error      string `json:"error,omitempty"`
+}
+
+// InstanceMatrix 是「节点 × 最近 N 次运行」的状态矩阵。
+// Cells 的 key 是 node_id，数组与 Runs 等长且同序——前端不必再按 id 查表，
+// 也不会因为某次运行缺节点而错位。
+type InstanceMatrix struct {
+	Pipeline string                   `json:"pipeline"`
+	Runs     []MatrixRun              `json:"runs"`
+	Nodes    []string                 `json:"nodes"`
+	Cells    map[string][]*MatrixCell `json:"cells"`
+}

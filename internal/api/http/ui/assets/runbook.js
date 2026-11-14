@@ -535,6 +535,13 @@ function triggerModal() {
       <div class="field"><label>管道</label>
         <select id="tg-pipe">${pipes.map(p => `<option value="${esc(p)}">${esc(p)}</option>`).join('') || '<option value="">暂无管道</option>'}</select>
       </div>
+      <div class="field"><label>或按模型选择器触发（留空则用上面的管道）</label>
+        <div class="row" style="gap:8px">
+          <input id="tg-select" placeholder="dwd_order+ / +dwd_order / tag:core / layer:dwd" style="flex:1" />
+          <button class="sm ghost" id="tg-preview">预览命中</button>
+        </div>
+        <div id="tg-preview-box" class="hint" style="margin-top:6px"></div>
+      </div>
       <div class="field"><label>业务日期</label><input id="tg-date" type="date" value="${new Date().toISOString().slice(0, 10)}"></div>
       <div class="field"><label>参数（JSON，可空）</label>
         <textarea id="tg-params" rows="4" placeholder='{"region":"east"}'></textarea>
@@ -548,9 +555,27 @@ function triggerModal() {
       <button class="primary" id="tg-go">触发</button>
     </div>`);
 
+  // 选择器预览：必须先看到「命中了多少条管道」再触发。
+  // 一个 +dwd_order 可能带出十几条管道，直接执行是灾难。
+  document.getElementById('tg-preview').addEventListener('click', async () => {
+    const sel = val('tg-select');
+    const box = document.getElementById('tg-preview-box');
+    if (!sel) { box.innerHTML = ''; return; }
+    try {
+      const r = await api('/select/preview?select=' + encodeURIComponent(sel));
+      const pipes = r.pipelines || [], uncovered = r.uncovered || [];
+      box.innerHTML = `命中 <b>${(r.models || []).length}</b> 个模型、<b>${pipes.length}</b> 条管道：` +
+        (pipes.map(p => `<span class="pill info" style="font-size:10.5px">${esc(p)}</span>`).join(' ') || '无') +
+        (uncovered.length ? `<div style="margin-top:4px">未覆盖（没有管道写这些模型）：<span class="mono">${uncovered.map(esc).join(', ')}</span></div>` : '');
+    } catch (err) {
+      box.innerHTML = `<span style="color:var(--err-text)">${esc(err.message)}</span>`;
+    }
+  });
+
   document.getElementById('tg-go').addEventListener('click', async (e) => {
     const pipe = val('tg-pipe');
-    if (!pipe) return toast('没有可触发的管道', 'err');
+    const sel = val('tg-select');
+    if (!pipe && !sel) return toast('没有可触发的管道', 'err');
     let params = {};
     const raw = val('tg-params');
     if (raw) {
@@ -558,6 +583,23 @@ function triggerModal() {
     }
     e.target.disabled = true;
     try {
+      if (sel) {
+        const dry = document.getElementById('tg-dry').checked;
+        const r = await api('/runs/select', {
+          method: 'POST',
+          body: { select: sel, bizDate: val('tg-date'), params, dryRun: dry },
+        });
+        const runs = r.runs || [];
+        const failed = runs.filter(x => x.error);
+        closeModal();
+        if (dry) {
+          toast(`解析完成：${(r.resolved.models || []).length} 个模型 / ${(r.resolved.pipelines || []).length} 条管道`);
+        } else {
+          toast(`已触发 ${runs.length - failed.length} 条管道` + (failed.length ? `，${failed.length} 条失败` : ''), failed.length ? 'warn' : 'ok');
+        }
+        loadRunbook(document.getElementById('view'));
+        return;
+      }
       if (document.getElementById('tg-dry').checked) {
         // dry-run 接收的是 YAML 而不是管道名：先取已发布版本的定义再渲染，
         // 保证试跑看到的 SQL 与真正跑的一致。

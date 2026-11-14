@@ -60,15 +60,48 @@ func (s *Service) lineageLayers(ctx context.Context, workspaceID string) map[str
 
 // LineageGraph 返回整图（节点数受限）。
 func (s *Service) LineageGraph(ctx context.Context, workspaceID string) (graph.Graph, error) {
-	if g, ok := lineageCache.Get("all:" + workspaceID); ok {
+	return s.LineageGraphFor(ctx, workspaceID, "")
+}
+
+// LineageGraphFor 支持按管道过滤：只保留该管道节点产出的下游边，
+// 以及这些表的上游依赖。管道的血缘是按模型记的，所以用「发布版本里的 node.model」做匹配，
+// 不依赖 lineage_edge.node_id（历史数据里它可能是空的）。
+func (s *Service) LineageGraphFor(ctx context.Context, workspaceID, pipeline string) (graph.Graph, error) {
+	key := "all:" + workspaceID
+	if pipeline != "" {
+		key += ":pipe:" + pipeline
+	}
+	if g, ok := lineageCache.Get(key); ok {
 		return g, nil
 	}
 	edges, err := s.lineageEdges(ctx, workspaceID)
 	if err != nil {
 		return graph.Graph{}, err
 	}
-	g := graph.Builder{Layers: s.lineageLayers(ctx, workspaceID), MaxNodes: 800}.Build(edges)
-	lineageCache.Put("all:"+workspaceID, g)
+	if pipeline != "" {
+		_, spec, _, perr := s.Repo.PipelineByName(ctx, workspaceID, pipeline)
+		if perr != nil {
+			return graph.Graph{}, perr
+		}
+		models := map[string]bool{}
+		if spec != nil {
+			for _, n := range spec.Nodes {
+				if n.Model != "" {
+					models[n.Model] = true
+				}
+			}
+		}
+		filtered := make([]graph.Edge, 0, len(edges))
+		for _, e := range edges {
+			if models[e.Target] {
+				filtered = append(filtered, e)
+			}
+		}
+		edges = filtered
+	}
+	// 上限放到 2000：T0907 的验收是 1000 节点 ≤2s，原来的 800 会直接截断。
+	g := graph.Builder{Layers: s.lineageLayers(ctx, workspaceID), MaxNodes: 2000}.Build(edges)
+	lineageCache.Put(key, g)
 	return g, nil
 }
 

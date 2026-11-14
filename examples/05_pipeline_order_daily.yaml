@@ -66,6 +66,14 @@ nodes:
           column: amount
           max: 100000
           severity: warn
+        # 新鲜度：日更链路允许「昨天的数据」，但不能超过两天没写入。
+        # 用天数而不是小时，是因为 dt 是 date 类型，按小时算会把「今天 00:00」
+        # 当成已经过去了大半天，阈值稍微配紧一点就天天误报。
+        - name: dt_fresh_2d
+          kind: freshness
+          column: dt
+          max_age_days: 2
+          severity: warn
 
   - id: dws_order_daily
     type: sql

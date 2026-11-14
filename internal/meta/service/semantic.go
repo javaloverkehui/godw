@@ -143,13 +143,20 @@ func (s *Service) ApplyChart(ctx context.Context, workspaceID string, c semantic
 	return saved, impact, nil
 }
 
-// ChartQuery 按图表配置执行查询，输出可直接喂给 ECharts 的结构。
-func (s *Service) ChartQuery(ctx context.Context, workspaceID, name, user, role string) (map[string]any, error) {
+// ChartQuery 按图表配置执行查询。BI 页与看板共用同一条链路。
+func (s *Service) ChartQuery(ctx context.Context, workspaceID, name, user, role string) (*semantic.ChartResult, error) {
+	return s.ChartQueryWith(ctx, workspaceID, name, user, role, nil)
+}
+
+// ChartQueryWith 在图表自带筛选之外追加 extra —— 看板的全局时间窗口落在这里，
+// 但没有默认放开：调用方必须先确认对应维度 filterable。
+func (s *Service) ChartQueryWith(ctx context.Context, workspaceID, name, user, role string, extra []semantic.Filter) (*semantic.ChartResult, error) {
 	c, err := s.Repo.GetChart(ctx, workspaceID, name)
 	if err != nil {
 		return nil, err
 	}
 	req := c.ToQuery()
+	req.Filters = append(req.Filters, extra...)
 	res, err := s.DatasetQuery(ctx, workspaceID, req, user, role)
 	if err != nil {
 		return nil, err
@@ -161,14 +168,14 @@ func (s *Service) ChartQuery(ctx context.Context, workspaceID, name, user, role 
 		idx[n] = i
 	}
 
-	series := map[string]*chartSeries{}
-	points := []map[string]any{}
+	// 系列顺序必须稳定：前端按索引分配颜色，用 map 遍历会让同一条线每次刷新换色。
+	byName := map[string]*semantic.ChartSeries{}
+	var order []string
+	points := []semantic.ChartPoint{}
 	for _, row := range rows {
 		var x string
-		if c.Encoding.X != "" {
-			if i, ok := idx[c.Encoding.X]; ok && i < len(row) {
-				x = formatAxisValue(row[i])
-			}
+		if i, ok := idx[c.Encoding.X]; ok && i < len(row) {
+			x = formatAxisValue(row[i])
 		}
 		y := 0.0
 		if i, ok := idx[c.Encoding.Y]; ok && i < len(row) {
@@ -183,33 +190,44 @@ func (s *Service) ChartQuery(ctx context.Context, workspaceID, name, user, role 
 		if key == "" {
 			key = c.Encoding.Y
 		}
-		if series[key] == nil {
-			series[key] = &chartSeries{Name: key}
+		if byName[key] == nil {
+			byName[key] = &semantic.ChartSeries{Name: key}
+			order = append(order, key)
 		}
-		series[key].Data = append(series[key].Data, y)
-		points = append(points, map[string]any{"x": x, "y": y, "series": key})
+		byName[key].Data = append(byName[key].Data, y)
+		points = append(points, semantic.ChartPoint{X: x, Y: y, Series: key})
 	}
-	out := []*chartSeries{}
-	for _, v := range series {
-		out = append(out, v)
+	series := make([]semantic.ChartSeries, 0, len(order))
+	for _, k := range order {
+		series = append(series, *byName[k])
 	}
 	// 单系列时用图表标题代替度量名，图例更干净。
-	if len(out) == 1 {
-		out[0].Name = firstNonEmptyStr(c.Title, out[0].Name)
+	// points.series 必须同步改名，否则看板按维度值切片时对不上系列名。
+	if len(series) == 1 {
+		series[0].Name = firstNonEmptyStr(c.Title, series[0].Name)
+		for i := range points {
+			points[i].Series = series[0].Name
+		}
 	}
-	return map[string]any{
-		"chart":     c,
-		"columns":   cols,
-		"series":    out,
-		"points":    points,
-		"sql":       res["sql"],
-		"elapsedMs": res["elapsedMs"],
-	}, nil
-}
 
-type chartSeries struct {
-	Name string    `json:"name"`
-	Data []float64 `json:"data"`
+	sqlText, _ := res["sql"].(string)
+	var elapsed int64
+	switch v := res["elapsedMs"].(type) {
+	case int64:
+		elapsed = v
+	case float64:
+		elapsed = int64(v)
+	case int:
+		elapsed = int64(v)
+	}
+	return &semantic.ChartResult{
+		Chart:     *c,
+		Columns:   cols,
+		Series:    series,
+		Points:    points,
+		SQL:       sqlText,
+		ElapsedMs: elapsed,
+	}, nil
 }
 
 // DatasetUsage 返回数据集的引用情况，删除前提示。

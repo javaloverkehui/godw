@@ -17,22 +17,94 @@ import (
 	"github.com/godw/godw/internal/semantic"
 )
 
-// CreateExport 生成导出任务并在后台执行。接口立即返回任务 ID，前端轮询状态。
+// CreateExport 生成导出任务。high 级数据不会直接执行，而是落成 pending_approval，
+// 由管理员在治理页批准后才开始跑；普通数据仍按 queued 立刻排队。
 //
 // 导出的内容与在线查询走同一套指标/看板定义，保证「看到的」和「导出的」口径一致。
 func (s *Service) CreateExport(ctx context.Context, workspaceID, kind, target string, params map[string]any, actor string) (*model.ExportJob, error) {
+	level, tables, lerr := s.ExportSensitivity(ctx, workspaceID, kind, target)
+	if lerr != nil {
+		// 分级解析失败不阻断导出，但必须留痕：否则又回到「看起来检查过」的老路。
+		s.Log.Warn("导出分级解析失败", "kind", kind, "target", target, "err", lerr)
+	}
+	status := "queued"
+	if level == model.ClassificationHigh {
+		status = "pending_approval"
+	}
+	// 把分级与涉及的表一起存进 params：审批页和审计都能直接看到依据。
+	meta := map[string]any{}
+	for k, v := range params {
+		meta[k] = v
+	}
+	meta["_classification"] = level
+	meta["_tables"] = tables
 	job, err := s.Repo.CreateExport(ctx, model.ExportJob{
-		WorkspaceID: workspaceID, Kind: kind, Target: target, Params: params, CreatedBy: actor,
+		WorkspaceID: workspaceID, Kind: kind, Target: target, Params: meta,
+		Status: status, CreatedBy: actor,
 	})
 	if err != nil {
 		return nil, err
 	}
+	if job.Status == "queued" {
+		s.runExportAsync(job)
+	}
+	return job, nil
+}
+
+func (s *Service) runExportAsync(job *model.ExportJob) {
 	go func() {
 		// 后台执行：不继承请求上下文（请求结束会 cancel），单独给 5 分钟上限。
 		bg, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer cancel()
 		s.runExport(bg, job)
 	}()
+}
+
+// ApproveExport 批准一条待审批导出并立即执行。
+func (s *Service) ApproveExport(ctx context.Context, workspaceID, id, actor string) (*model.ExportJob, error) {
+	job, err := s.Repo.GetExport(ctx, workspaceID, id)
+	if err != nil {
+		return nil, err
+	}
+	if job.Status != "pending_approval" {
+		return nil, errs.New(errs.CodeConflict,
+			"只有待审批的导出可以批准，当前状态: "+job.Status)
+	}
+	if err := s.Repo.SetExportStatus(ctx, id, "approved", ""); err != nil {
+		return nil, err
+	}
+	job.Status = "approved"
+	s.Repo.Audit(ctx, model.AuditLog{
+		WorkspaceID: workspaceID, Actor: actor, Action: "export.approve",
+		Resource: job.Target,
+		Detail:   map[string]any{"kind": job.Kind, "exportId": job.ID, "classification": job.Params["_classification"]},
+	})
+	s.runExportAsync(job)
+	return job, nil
+}
+
+// RejectExport 驳回一条待审批导出，理由写进 error 并列在导出记录里。
+func (s *Service) RejectExport(ctx context.Context, workspaceID, id, reason, actor string) (*model.ExportJob, error) {
+	if strings.TrimSpace(reason) == "" {
+		return nil, errs.New(errs.CodeInvalidArgument, "驳回必须说明理由")
+	}
+	job, err := s.Repo.GetExport(ctx, workspaceID, id)
+	if err != nil {
+		return nil, err
+	}
+	if job.Status != "pending_approval" {
+		return nil, errs.New(errs.CodeConflict,
+			"只有待审批的导出可以驳回，当前状态: "+job.Status)
+	}
+	if err := s.Repo.SetExportStatus(ctx, id, "rejected", reason); err != nil {
+		return nil, err
+	}
+	job.Status, job.Error = "rejected", reason
+	s.Repo.Audit(ctx, model.AuditLog{
+		WorkspaceID: workspaceID, Actor: actor, Action: "export.reject",
+		Resource: job.Target,
+		Detail:   map[string]any{"kind": job.Kind, "exportId": job.ID, "reason": reason},
+	})
 	return job, nil
 }
 

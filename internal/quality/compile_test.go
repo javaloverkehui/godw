@@ -12,7 +12,7 @@ func qrule(kind string, cfg map[string]any) model.QualityRule {
 	return model.QualityRule{Name: "r_" + kind, Kind: kind, Column: "amount", Severity: "error", Config: cfg}
 }
 
-// T0601 验收：9 类规则各 1 个用例；custom_sql 含 DELETE 被拒；SQL 在四引擎可编译。
+// T0601 验收：各类规则各 1 个用例；custom_sql 含 DELETE 被拒；SQL 在四引擎可编译。
 func TestAllKindsCompile(t *testing.T) {
 	cases := []model.QualityRule{
 		qrule(KindNotNull, nil),
@@ -23,10 +23,11 @@ func TestAllKindsCompile(t *testing.T) {
 		qrule(KindRegex, map[string]any{"pattern": "^[0-9]+$"}),
 		qrule(KindReferential, map[string]any{"references": "dwd_user", "references_column": "user_id"}),
 		qrule(KindRowCountDelta, map[string]any{"max_delta_pct": 30}),
+		qrule(KindFreshness, map[string]any{"max_age_hours": 6}),
 		qrule(KindCustomSQL, map[string]any{"sql": "SELECT COUNT(*) AS observed, 0 AS expected FROM t WHERE amount < 0"}),
 	}
-	if len(cases) != 9 {
-		t.Fatalf("应覆盖 9 类规则，实际 %d", len(cases))
+	if len(cases) != 10 {
+		t.Fatalf("应覆盖 10 类规则，实际 %d", len(cases))
 	}
 	for _, engine := range []dialect.Dialect{dialect.Postgres{}, dialect.MySQL{}, dialect.ClickHouse{}, dialect.DuckDB{}} {
 		for _, r := range cases {

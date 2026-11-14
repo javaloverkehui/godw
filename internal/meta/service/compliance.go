@@ -193,26 +193,66 @@ func hasColumnIn(spec *model.ModelSpec, name string) bool {
 	return false
 }
 
-// CheckExportApproval 判断某导出是否需要审批、是否已批准。
-// 目前审批流是两态（申请 → 批准），够用且不引入额外系统。
-func (s *Service) CheckExportApproval(ctx context.Context, workspaceID, dataset string) error {
-	level, err := s.Repo.DatasetClassification(ctx, workspaceID, dataset)
+// ExportTables 解析一次导出实际会读到的物理表。
+// metric/dashboard 走指标绑定的模型；dataset 走数据集的基础模型。
+// 导出的审批必须基于这些表，而不是「用户传进来的 target 字符串」。
+func (s *Service) ExportTables(ctx context.Context, workspaceID, kind, target string) ([]string, error) {
+	models := []string{}
+	switch kind {
+	case "metric":
+		m, err := s.Repo.MetricByName(ctx, workspaceID, target)
+		if err != nil {
+			return nil, err
+		}
+		models = append(models, m.ModelName)
+	case "dashboard":
+		d, err := s.Repo.DashboardByName(ctx, workspaceID, target)
+		if err != nil {
+			return nil, err
+		}
+		for _, c := range d.Cards {
+			if c.Metric != "" {
+				m, merr := s.Repo.MetricByName(ctx, workspaceID, c.Metric)
+				if merr != nil {
+					return nil, merr
+				}
+				models = append(models, m.ModelName)
+			}
+		}
+	case "dataset":
+		d, err := s.Repo.GetDataset(ctx, workspaceID, target)
+		if err != nil {
+			return nil, err
+		}
+		models = append(models, d.BaseModel)
+	}
+	seen := map[string]bool{}
+	tables := []string{}
+	for _, name := range models {
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		spec, err := s.Repo.PublishedModelSpec(ctx, workspaceID, name)
+		if err != nil {
+			return nil, err
+		}
+		tables = append(tables, spec.TableName())
+	}
+	return tables, nil
+}
+
+// ExportSensitivity 返回一次导出的最高敏感级别及涉及的表。
+// 分级解析失败时不阻断导出，但调用方应把错误写进审计：
+// 合规系统宁可让人看到「分级未知」，也不要假装已经检查过。
+func (s *Service) ExportSensitivity(ctx context.Context, workspaceID, kind, target string) (string, []string, error) {
+	tables, err := s.ExportTables(ctx, workspaceID, kind, target)
 	if err != nil {
-		// 查不到分级时按 low 处理：导出不因元数据缺失而全面阻断，
-		// 但会在导出记录里留痕，便于事后审计。
-		return nil
+		return "none", nil, err
 	}
-	if level != "high" {
-		return nil
-	}
-	ok, err := s.Repo.HasApprovedExport(ctx, workspaceID, dataset)
+	level, err := s.Repo.TableClassification(ctx, workspaceID, tables)
 	if err != nil {
-		return err
+		return "none", tables, err
 	}
-	if !ok {
-		return errs.New(errs.CodeForbidden,
-			"数据集包含 high 级数据，导出需先提交审批并获批准").
-			WithMeta("dataset", dataset).WithMeta("classification", level)
-	}
-	return nil
+	return level, tables, nil
 }

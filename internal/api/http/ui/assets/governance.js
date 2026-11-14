@@ -9,6 +9,8 @@ Object.assign(ROUTES, {
 const GOV_TABS = [
   { key: 'columns', label: '列策略' },
   { key: 'rows', label: '行级权限' },
+  { key: 'simulate', label: '策略命中' },
+  { key: 'approvals', label: '导出审批' },
   { key: 'members', label: '成员' },
   { key: 'shares', label: '分享' },
 ];
@@ -18,6 +20,8 @@ async function pageGovernance(view) {
   let body = '';
   if (tab === 'columns') body = await govColumns();
   else if (tab === 'rows') body = await govRows();
+  else if (tab === 'simulate') body = await govSimulate();
+  else if (tab === 'approvals') body = await govApprovals();
   else if (tab === 'members') body = await govMembers();
   else body = await govShares();
 
@@ -32,6 +36,73 @@ async function pageGovernance(view) {
       ${GOV_TABS.map(t => `<div class="tab ${t.key === tab ? 'active' : ''}" data-act="gov-tab" data-tab="${t.key}">${t.label}</div>`).join('')}
     </div>
     ${body}`;
+}
+
+// 命中测试：把「配了策略」和「策略真的生效」这两件事对上。
+// 表单默认填当前登录身份，因为最常见的问题是「我自己怎么看得到」。
+async function govSimulate() {
+  const models = await api('/models').catch(() => []);
+  const me = S.me || {};
+  const role = me.role || 'viewer';
+  const first = models[0] ? models[0].name : '';
+  return `
+    <div class="card">
+      <div class="card-head">
+        <div class="card-title">策略命中测试</div>
+        <button class="sm primary" data-act="run-simulate">运行测试</button>
+      </div>
+      <div class="sim-form">
+        <div class="field"><label>表 / 模型</label>
+          <input id="sim-table" list="sim-models" value="${esc(first)}" placeholder="dwd_order 或 dwd.dwd_order" />
+          <datalist id="sim-models">${models.map(m => `<option value="${esc(m.name)}"></option>`).join('')}</datalist>
+        </div>
+        <div class="field"><label>用户</label><input id="sim-user" value="${esc(me.userId || me.email || '')}" placeholder="用来替换 \${user}" /></div>
+        <div class="field"><label>角色</label>
+          <select id="sim-role">
+            ${['viewer', 'editor', 'admin'].map(r => `<option value="${r}" ${r === role ? 'selected' : ''}>${r}</option>`).join('')}
+          </select>
+        </div>
+      </div>
+      <div class="hint" style="margin-top:8px">返回的是「服务端实际会套上什么」：列级脱敏按输出列名生效，行级过滤按角色（含通配 *）注入。</div>
+      <div id="sim-result" style="margin-top:14px"></div>
+    </div>`;
+}
+
+function renderSimulation(res) {
+  const lvl = l => l === 'high' ? 'err' : l === 'medium' ? 'warn' : 'mute';
+  return `
+    <div class="doc-meta" style="margin-top:0">
+      <div><b>表</b><span class="mono">${esc(res.table)}</span></div>
+      <div><b>身份</b><span>${esc(res.user || '—')} · ${esc(res.role)}</span></div>
+      <div><b>最高分级</b><span class="pill ${lvl(res.maxLevel)}">${esc(res.maxLevel)}</span></div>
+      <div><b>行过滤</b><span class="mono">${res.where ? esc(res.where) : '无'}</span></div>
+    </div>
+    <div class="grid c2" style="margin-top:12px">
+      <div>
+        <div class="card-title" style="margin-bottom:6px">列级（${res.columns.length}）</div>
+        ${res.columns.length ? `<div class="table-wrap"><table>
+          <thead><tr><th>列</th><th>原始分级</th><th>判定</th><th>脱敏</th></tr></thead>
+          <tbody>${res.columns.map(c => `<tr>
+            <td class="mono">${esc(c.column)}</td>
+            <td class="mono dim small">${esc(c.classification)}</td>
+            <td><span class="pill ${lvl(c.level)}">${esc(c.level)}</span></td>
+            <td>${c.enforced ? `<span class="pill info">${esc(c.mask)}</span>` : '<span class="dim small">不脱敏</span>'}</td>
+          </tr>`).join('')}</tbody></table></div>`
+          : '<div class="empty" style="padding:16px">没有列策略命中</div>'}
+      </div>
+      <div>
+        <div class="card-title" style="margin-bottom:6px">行级（${res.rows.length}）</div>
+        ${res.rows.length ? `<div class="table-wrap"><table>
+          <thead><tr><th>角色</th><th>原始条件</th><th>渲染后</th></tr></thead>
+          <tbody>${res.rows.map(r => `<tr>
+            <td><span class="pill info">${esc(r.role)}</span></td>
+            <td class="mono small">${esc(r.filter)}</td>
+            <td class="mono small">${esc(r.rendered)}</td>
+          </tr>`).join('')}</tbody></table></div>`
+          : '<div class="empty" style="padding:16px">没有行策略命中</div>'}
+      </div>
+    </div>
+    ${(res.notes || []).length ? `<div class="hint" style="margin-top:10px">${res.notes.map(n => '· ' + esc(n)).join('<br/>')}</div>` : ''}`;
 }
 
 async function govColumns() {
@@ -77,9 +148,56 @@ async function govRows() {
     </div>`;
 }
 
-async function govMembers() {
-  const items = await api('/members');
+async function govApprovals() {
+  const items = await api('/exports?limit=50');
+  const pending = items.filter(e => e.status === 'pending_approval');
+  const recent = items.filter(e => e.status !== 'pending_approval').slice(0, 12);
+  const canApprove = S.me && S.me.role === 'admin';
+  const cls = e => (e.params && e.params._classification) || '—';
+  const tables = e => {
+    const t = e.params && e.params._tables;
+    return Array.isArray(t) && t.length ? t.join(', ') : '—';
+  };
   return `
+    <div class="card">
+      <div class="card-head">
+        <div class="card-title">待审批导出（${pending.length}）</div>
+        <span class="hint">high 级数据导出不会直接执行，批准后才开始导出</span>
+      </div>
+      ${pending.length ? `<div class="table-wrap"><table>
+        <thead><tr><th>类型</th><th>目标</th><th>分级</th><th>涉及表</th><th>申请人</th><th>申请时间</th><th></th></tr></thead>
+        <tbody>${pending.map(e => `<tr>
+          <td><span class="pill info">${esc(e.kind)}</span></td>
+          <td class="mono">${esc(e.target)}</td>
+          <td><span class="pill err">${esc(cls(e))}</span></td>
+          <td class="mono small">${esc(tables(e))}</td>
+          <td class="dim small">${esc(e.createdBy || '—')}</td>
+          <td class="dim small">${fmtTime(e.createdAt)}</td>
+          <td class="row">${canApprove ? `
+            <button class="sm primary" data-act="approve-export" data-id="${esc(e.id)}">批准并导出</button>
+            <button class="sm ghost" data-act="reject-export" data-id="${esc(e.id)}">驳回</button>` : '<span class="dim small">等待管理员</span>'}
+          </td>
+        </tr>`).join('')}</tbody></table></div>`
+      : `<div class="empty"><b>没有待审批的导出</b>只有命中 high 级列策略的导出才会进入这里</div>`}
+      <div class="hint" style="margin-top:10px">分级按导出实际读取的表计算；metric / dashboard / dataset 都会解析到物理表。</div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><div class="card-title">最近审批结果</div></div>
+      ${recent.length ? `<div class="table-wrap"><table>
+        <thead><tr><th>类型</th><th>目标</th><th>状态</th><th>说明</th><th>时间</th></tr></thead>
+        <tbody>${recent.map(e => `<tr>
+          <td><span class="pill info">${esc(e.kind)}</span></td>
+          <td class="mono">${esc(e.target)}</td>
+          <td>${statusPill(e.status)}</td>
+          <td class="dim small">${esc(e.error || '—')}</td>
+          <td class="dim small">${fmtTime(e.finishedAt || e.createdAt)}</td>
+        </tr>`).join('')}</tbody></table></div>` : `<div class="empty">还没有审批记录</div>`}
+    </div>`;
+}
+
+async function govMembers() {
+  const items = await api('/members');  return `
     <div class="card">
       <div class="card-head">
         <div class="card-title">工作区成员（${items.length}）</div>
@@ -124,6 +242,7 @@ async function pageOps(view) {
     api('/exports?limit=20'), api('/subscriptions'), api('/cache/stats'), api('/instances?limit=50').then(r => r.items || []),
   ]);
   const failed = insts.filter(i => i.status === 'failed').length;
+  const pendingExports = exports.filter(e => e.status === 'pending_approval').length;
   view.innerHTML = `
     <div class="page-head">
       <div>
@@ -141,7 +260,7 @@ async function pageOps(view) {
 
     <div class="card">
       <div class="card-head">
-        <div class="card-title">导出任务</div>
+        <div class="card-title">导出任务${pendingExports ? ` <span class="pill warn">待审批 ${pendingExports}</span>` : ''}</div>
         <div class="row">
           <button class="sm ghost" data-act="purge-cache">清理过期缓存</button>
           <button class="sm primary" data-act="new-export">新建导出</button>
@@ -155,7 +274,8 @@ async function pageOps(view) {
           <td>${statusPill(e.status)}${e.error ? `<div class="dim small">${esc(e.error)}</div>` : ''}</td>
           <td class="mono">${e.rowCount}</td>
           <td class="dim small">${fmtTime(e.createdAt)}</td>
-          <td>${e.status === 'success' ? `<a class="btn sm ghost" href="/api/v1/exports/${esc(e.id)}/download">下载</a>` : '—'}</td>
+          <td>${e.status === 'success' ? `<a class="btn sm ghost" href="/api/v1/exports/${esc(e.id)}/download">下载</a>`
+            : e.status === 'pending_approval' ? '<span class="dim small">待管理员审批</span>' : '—'}</td>
         </tr>`).join('')}</tbody></table></div>` : `<div class="empty"><b>还没有导出</b>按指标或看板导 CSV</div>`}
     </div>
 
@@ -308,7 +428,7 @@ document.addEventListener('click', async (ev) => {
   const acts = ['gov-tab', 'new-col-policy', 'save-col-policy', 'new-row-policy', 'save-row-policy',
     'del-row-policy', 'new-member', 'save-member', 'del-member', 'new-share', 'save-share',
     'del-share', 'copy-share', 'new-export', 'save-export', 'new-sub', 'save-sub', 'run-sub',
-    'del-sub', 'purge-cache', 'prev-table'];
+    'del-sub', 'purge-cache', 'prev-table', 'approve-export', 'reject-export', 'run-simulate'];
   if (!acts.includes(act)) return;
 
   try {
@@ -317,6 +437,20 @@ document.addEventListener('click', async (ev) => {
         S.selected.govTab = el.dataset.tab;
         await render();
         break;
+      case 'run-simulate': {
+        el.disabled = true;
+        const box = document.getElementById('sim-result');
+        if (box) box.innerHTML = '<div class="empty" style="padding:16px">计算中…</div>';
+        try {
+          const res = await api('/policies/simulate?table=' + encodeURIComponent(val('sim-table')) +
+            '&user=' + encodeURIComponent(val('sim-user')) +
+            '&role=' + encodeURIComponent(val('sim-role')));
+          if (box) box.innerHTML = renderSimulation(res);
+        } finally {
+          el.disabled = false;
+        }
+        break;
+      }
       case 'new-col-policy': newColumnPolicyModal(); break;
       case 'save-col-policy': {
         el.disabled = true;
@@ -382,6 +516,23 @@ document.addEventListener('click', async (ev) => {
         break;
       }
       case 'new-export': newExportModal(); break;
+      case 'approve-export': {
+        if (!confirm('批准这次导出？批准后立即开始导出 high 级数据，并写入审计。')) return;
+        el.disabled = true;
+        await api('/exports/' + encodeURIComponent(el.dataset.id) + '/approve', { method: 'POST' });
+        toast('已批准，导出开始执行', 'ok');
+        await render();
+        break;
+      }
+      case 'reject-export': {
+        const reason = prompt('驳回理由（必填）：');
+        if (!reason) return;
+        el.disabled = true;
+        await api('/exports/' + encodeURIComponent(el.dataset.id) + '/reject', { method: 'POST', body: { reason } });
+        toast('已驳回', 'ok');
+        await render();
+        break;
+      }
       case 'save-export': {
         el.disabled = true;
         const target = val('ex-target');
@@ -393,6 +544,12 @@ document.addEventListener('click', async (ev) => {
           },
         });
         closeModal();
+        if (job.status === 'pending_approval') {
+          toast('该导出命中 high 级数据，已提交管理员审批', 'warn');
+          S.selected.govTab = 'approvals';
+          await render();
+          return;
+        }
         toast('导出已排队：' + job.id, 'ok');
         await render();
         // 轮询直到完成，最多 30 秒

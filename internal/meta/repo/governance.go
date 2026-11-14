@@ -261,19 +261,32 @@ func (r *Repo) CacheStats(ctx context.Context, workspaceID string) (map[string]a
 
 func (r *Repo) CreateExport(ctx context.Context, e model.ExportJob) (*model.ExportJob, error) {
 	e.ID = ids.New("exp")
+	if e.Status == "" {
+		e.Status = "queued"
+	}
 	params, err := json.Marshal(e.Params)
 	if err != nil {
 		return nil, err
 	}
 	_, err = r.DB.Pool.Exec(ctx,
 		`INSERT INTO export_job(id,workspace_id,kind,target,params,status,created_by)
-		 VALUES($1,$2,$3,$4,$5,'queued',$6)`,
-		e.ID, e.WorkspaceID, e.Kind, e.Target, params, e.CreatedBy)
+		 VALUES($1,$2,$3,$4,$5,$6,$7)`,
+		e.ID, e.WorkspaceID, e.Kind, e.Target, params, e.Status, e.CreatedBy)
 	if err != nil {
 		return nil, err
 	}
-	e.Status = "queued"
+	e.CreatedAt = time.Now()
 	return &e, nil
+}
+
+// SetExportStatus 推进导出状态。审批通过/驳回、开始执行都走这里，
+// 避免每处各写一条 UPDATE 后状态机慢慢分叉。
+func (r *Repo) SetExportStatus(ctx context.Context, id, status, errMsg string) error {
+	_, err := r.DB.Pool.Exec(ctx,
+		`UPDATE export_job SET status=$2,error=$3,
+		        finished_at=CASE WHEN $2 IN ('rejected') THEN now() ELSE finished_at END
+		 WHERE id=$1`, id, status, errMsg)
+	return err
 }
 
 func (r *Repo) FinishExport(ctx context.Context, id, status, path, errMsg string, rows int64) error {
@@ -303,7 +316,7 @@ func (r *Repo) GetExport(ctx context.Context, workspaceID, id string) (*model.Ex
 
 func (r *Repo) ListExports(ctx context.Context, workspaceID string, limit int) ([]model.ExportJob, error) {
 	rows, err := r.DB.Pool.Query(ctx,
-		`SELECT id,workspace_id,kind,target,status,file_path,row_count,error,created_by,created_at,finished_at
+		`SELECT id,workspace_id,kind,target,params,status,file_path,row_count,error,created_by,created_at,finished_at
 		 FROM export_job WHERE workspace_id=$1 ORDER BY created_at DESC LIMIT $2`, workspaceID, limit)
 	if err != nil {
 		return nil, err
@@ -312,10 +325,12 @@ func (r *Repo) ListExports(ctx context.Context, workspaceID string, limit int) (
 	out := []model.ExportJob{}
 	for rows.Next() {
 		var e model.ExportJob
-		if err := rows.Scan(&e.ID, &e.WorkspaceID, &e.Kind, &e.Target, &e.Status, &e.FilePath,
+		var params []byte
+		if err := rows.Scan(&e.ID, &e.WorkspaceID, &e.Kind, &e.Target, &params, &e.Status, &e.FilePath,
 			&e.RowCount, &e.Error, &e.CreatedBy, &e.CreatedAt, &e.FinishedAt); err != nil {
 			return nil, err
 		}
+		_ = json.Unmarshal(params, &e.Params)
 		out = append(out, e)
 	}
 	return out, rows.Err()

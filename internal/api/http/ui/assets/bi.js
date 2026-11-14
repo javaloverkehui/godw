@@ -28,6 +28,23 @@ Object.assign(ROUTES, {
   bi: { title: 'BI 图表', sub: '数据集编码槽、实时预览与全局筛选', render: pageBI },
 });
 
+/* 自绘图表的注册表：主题切换或尺寸变化后按原入参重放一遍。
+ * chart.js 的折线图有自己的重绘机制，这里管的是 bi.js 自绘的 7 种类型。 */
+const BI_CHARTS = new Set();
+function biReplay() {
+  BI_CHARTS.forEach(svg => {
+    if (!svg.isConnected) { BI_CHARTS.delete(svg); return; }
+    const a = svg.__biArgs;
+    if (a) drawChart(svg, a.type, a.series, a.points);
+  });
+}
+document.addEventListener('godw:theme', biReplay);
+let biResizeTimer = null;
+window.addEventListener('resize', () => {
+  clearTimeout(biResizeTimer);
+  biResizeTimer = setTimeout(biReplay, 200);
+});
+
 async function pageBI(view) {
   view.innerHTML = `
     <div class="page-head">
@@ -187,8 +204,19 @@ function renderCanvas(host, res) {
 
 /** 自绘图表：折线/柱/饼/指标卡/表格。坐标轴与网格跟着主题变量走。 */
 function drawChart(svg, type, series, points) {
-  const W = svg.clientWidth || 760;
-  const H = 320;
+  if (!svg) return;
+  // 主题色取自 CSS 变量：亮色主题只覆盖变量，这里不需要任何分支。
+  // 同时记下入参，切换主题时按原数据重放一遍，否则图会停在旧主题的配色上。
+  svg.__biArgs = { type, series, points };
+  BI_CHARTS.add(svg);
+  const C = chartPalette();
+  const PAL = C.series;
+  // SVG 元素不写宽度时默认只有 300px，viewBox 会按 300 算：
+  // 放进整行卡片就是"图缩在左边、字号被压小"。这里先撑满再量真实像素。
+  svg.setAttribute('width', '100%');
+  const rect = svg.getBoundingClientRect();
+  const W = Math.max(320, Math.round(rect.width || svg.clientWidth || 760));
+  const H = Number(svg.getAttribute('height')) || 320;
   svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
   const PAD = { l: 56, r: 18, t: 18, b: 42 };
 
@@ -201,14 +229,14 @@ function drawChart(svg, type, series, points) {
 
   if (type === 'kpi') {
     const v = all.length ? all.reduce((a, b) => a + b, 0) : 0;
-    svg.innerHTML = `<text x="${W / 2}" y="${H / 2}" text-anchor="middle" font-size="42" fill="currentColor">${esc(fmtNum(v))}</text>
-      <text x="${W / 2}" y="${H / 2 + 30}" text-anchor="middle" font-size="13" fill="#8a94a2">${esc(series[0] ? series[0].name : '')}</text>`;
+    svg.innerHTML = `<text x="${W / 2}" y="${H / 2}" text-anchor="middle" font-size="42" fill="${C.text}">${esc(fmtNum(v))}</text>
+      <text x="${W / 2}" y="${H / 2 + 30}" text-anchor="middle" font-size="13" fill="${C.axis}">${esc(series[0] ? series[0].name : '')}</text>`;
     return;
   }
   if (type === 'table') {
     const rows = points.slice(0, 14);
-    svg.innerHTML = rows.map((p, i) => `<text x="16" y="${28 + i * 20}" font-size="12" fill="currentColor">${esc(p.x)}</text>
-      <text x="${W - 16}" y="${28 + i * 20}" text-anchor="end" font-size="12" fill="#79b8ff">${esc(fmtNum(p.y))}</text>`).join('');
+    svg.innerHTML = rows.map((p, i) => `<text x="16" y="${28 + i * 20}" font-size="12" fill="${C.text}">${esc(p.x)}</text>
+      <text x="${W - 16}" y="${28 + i * 20}" text-anchor="end" font-size="12" fill="${C.accent}">${esc(fmtNum(p.y))}</text>`).join('');
     return;
   }
   if (type === 'pie' || type === 'donut') {
@@ -218,12 +246,16 @@ function drawChart(svg, type, series, points) {
     points.forEach(p => byX.set(String(p.x), (byX.get(String(p.x)) || 0) + Number(p.y || 0)));
     const items = [...byX.entries()].filter(([, v]) => v > 0);
     if (!items.length) {
-      svg.innerHTML = `<text x="${W / 2}" y="${H / 2}" text-anchor="middle" font-size="12" fill="#8a94a2">没有可展示的正值</text>`;
+      svg.innerHTML = `<text x="${W / 2}" y="${H / 2}" text-anchor="middle" font-size="12" fill="${C.axis}">没有可展示的正值</text>`;
       return;
     }
     const total = items.reduce((a, [, v]) => a + v, 0) || 1;
-    const cx = Math.min(W * 0.42, 240), cy = H / 2, R = Math.min(H, W * 0.6) / 2 - 26;
-    const palette = ['#4f8cff', '#3fb950', '#d29922', '#f85149', '#a371f7', '#39c5cf', '#db6d28', '#8b949e'];
+    const R = Math.min(H, W * 0.6) / 2 - 26;
+    // 饼图 + 右侧图例作为一个整体居中。整行卡片里若固定靠左（原来的 min(W*0.42,240)），
+    // 右半边会空出一大片，看起来像没画完。
+    const legendW = 186;
+    const cx = Math.max(R + 8, Math.round((W - (R * 2 + 26 + legendW)) / 2 + R));
+    const cy = H / 2;
     let acc = 0;
     const arcs = items.map(([name, v], i) => {
       const a0 = acc / total * Math.PI * 2 - Math.PI / 2;
@@ -233,15 +265,15 @@ function drawChart(svg, type, series, points) {
       const x0 = cx + R * Math.cos(a0), y0 = cy + R * Math.sin(a0);
       const x1 = cx + R * Math.cos(a1), y1 = cy + R * Math.sin(a1);
       return `<path d="M ${cx} ${cy} L ${x0} ${y0} A ${R} ${R} 0 ${large} 1 ${x1} ${y1} Z"
-        fill="${palette[i % palette.length]}" opacity=".88">
-        <title>${esc(name)}: ${fmtNum(v)}（${(v / total * 100).toFixed(1)}%）</title></path>`;
+        fill="${PAL[i % PAL.length]}" opacity=".88">
+        <title>${esc(name || '(空值)')}: ${fmtNum(v)}（${(v / total * 100).toFixed(1)}%）</title></path>`;
     }).join('');
-    const hole = type === 'donut' ? `<circle cx="${cx}" cy="${cy}" r="${R * 0.56}" fill="var(--bg-elev)"/>` : '';
+    const hole = type === 'donut' ? `<circle cx="${cx}" cy="${cy}" r="${R * 0.56}" fill="${C.card}"/>` : '';
     // 图例放在右侧，带百分比——饼图不标数值等于没画。
     const legend = items.map(([name, v], i) => `
-      <rect x="${cx + R + 26}" y="${28 + i * 20 - 9}" width="9" height="9" rx="2" fill="${palette[i % palette.length]}"/>
-      <text x="${cx + R + 41}" y="${28 + i * 20}" font-size="11.5" fill="currentColor">${esc(String(name).slice(0, 12))}</text>
-      <text x="${W - 18}" y="${28 + i * 20}" text-anchor="end" font-size="11.5" fill="#8a94a2">${(v / total * 100).toFixed(1)}%</text>`).join('');
+      <rect x="${cx + R + 26}" y="${28 + i * 20 - 9}" width="9" height="9" rx="2" fill="${PAL[i % PAL.length]}"/>
+      <text x="${cx + R + 41}" y="${28 + i * 20}" font-size="11.5" fill="${C.text}">${esc((String(name) || '(空值)').slice(0, 12))}</text>
+      <text x="${cx + R + 26 + legendW}" y="${28 + i * 20}" text-anchor="end" font-size="11.5" fill="${C.axis}">${(v / total * 100).toFixed(1)}%</text>`).join('');
     svg.innerHTML = arcs + hole + legend;
     return;
   }
@@ -258,17 +290,16 @@ function drawChart(svg, type, series, points) {
   for (let i = 0; i <= 4; i++) {
     const y = PAD.t + (plotH / 4) * i;
     const val = maxY - (spanY / 4) * i;
-    g += `<line x1="${PAD.l}" y1="${y}" x2="${W - PAD.r}" y2="${y}" stroke="var(--line-soft)" stroke-width="1"/>`;
-    g += `<text x="${PAD.l - 8}" y="${y + 4}" text-anchor="end" font-size="10.5" fill="#8a94a2">${esc(fmtNum(val))}</text>`;
+    g += `<line x1="${PAD.l}" y1="${y}" x2="${W - PAD.r}" y2="${y}" stroke="${C.grid}" stroke-width="1"/>`;
+    g += `<text x="${PAD.l - 8}" y="${y + 4}" text-anchor="end" font-size="10.5" fill="${C.axis}">${esc(fmtNum(val))}</text>`;
   }
   // X 轴标签（最多 8 个，避免重叠）
   const step = Math.max(1, Math.ceil(labels.length / 8));
   labels.forEach((lb, i) => {
     if (i % step) return;
-    g += `<text x="${xOf(i)}" y="${H - PAD.b + 16}" text-anchor="middle" font-size="10.5" fill="#8a94a2">${esc(lb.length > 10 ? lb.slice(0, 10) + '…' : lb)}</text>`;
+    g += `<text x="${xOf(i)}" y="${H - PAD.b + 16}" text-anchor="middle" font-size="10.5" fill="${C.axis}">${esc(lb.length > 10 ? lb.slice(0, 10) + '…' : lb)}</text>`;
   });
 
-  const palette = ['#4f8cff', '#3fb950', '#d29922', '#f85149', '#a371f7'];
   if (type === 'bar' || type === 'stack_bar') {
     const bw = Math.max(3, (plotW / Math.max(1, labels.length)) * 0.6);
     series.forEach((s, si) => {
@@ -277,22 +308,22 @@ function drawChart(svg, type, series, points) {
         const y = yOf(Math.max(v, 0));
         const h = Math.abs(yOf(v) - yOf(Math.max(minY, 0)));
         g += `<rect x="${x}" y="${y}" width="${bw * 0.9}" height="${Math.max(1, h)}" rx="2"
-          fill="${palette[si % palette.length]}" opacity=".88"><title>${esc(s.name)} ${esc(labels[i])}: ${fmtNum(v)}</title></rect>`;
+          fill="${PAL[si % PAL.length]}" opacity=".88"><title>${esc(s.name)} ${esc(labels[i])}: ${fmtNum(v)}</title></rect>`;
       });
     });
   } else {
     series.forEach((s, si) => {
       const d = (s.data || []).map((v, i) => `${i === 0 ? 'M' : 'L'} ${xOf(i)} ${yOf(v)}`).join(' ');
-      g += `<path d="${d}" fill="none" stroke="${palette[si % palette.length]}" stroke-width="2" stroke-linejoin="round"/>`;
+      g += `<path d="${d}" fill="none" stroke="${PAL[si % PAL.length]}" stroke-width="2" stroke-linejoin="round"/>`;
       (s.data || []).forEach((v, i) => {
-        g += `<circle cx="${xOf(i)}" cy="${yOf(v)}" r="2.6" fill="${palette[si % palette.length]}"><title>${esc(s.name)} ${esc(labels[i])}: ${fmtNum(v)}</title></circle>`;
+        g += `<circle cx="${xOf(i)}" cy="${yOf(v)}" r="2.6" fill="${PAL[si % PAL.length]}"><title>${esc(s.name)} ${esc(labels[i])}: ${fmtNum(v)}</title></circle>`;
       });
     });
   }
   // 图例
   if (series.length > 1) {
-    g += series.map((s, i) => `<rect x="${PAD.l + i * 96}" y="4" width="9" height="9" rx="2" fill="${palette[i % palette.length]}"/>
-      <text x="${PAD.l + i * 96 + 13}" y="12" font-size="10.5" fill="#9aa7b4">${esc(s.name.slice(0, 10))}</text>`).join('');
+    g += series.map((s, i) => `<rect x="${PAD.l + i * 96}" y="4" width="9" height="9" rx="2" fill="${PAL[i % PAL.length]}"/>
+      <text x="${PAD.l + i * 96 + 13}" y="12" font-size="10.5" fill="${C.label}">${esc(s.name.slice(0, 10))}</text>`).join('');
   }
   svg.innerHTML = g;
 }
@@ -370,14 +401,15 @@ function renderChartConfig(view) {
 
   host.querySelector('#bi-pool').innerHTML =
     dims.map(d => `<span class="slot-chip" draggable="true" data-fld="${esc(d)}">${esc(d)}</span>`).join('') +
-    measures.map(m => `<span class="slot-chip" draggable="true" data-fld="${esc(m)}" style="border-color:#2f4a6b">${esc(m)}</span>`).join('') ||
+    measures.map(m => `<span class="slot-chip" draggable="true" data-fld="${esc(m)}" data-kind="measure" style="border-color:var(--info-line)">${esc(m)}</span>`).join('') ||
     '<span class="hint">先选择数据集</span>';
 
   host.querySelectorAll('#bi-pool [data-fld]').forEach(chip => {
     chip.addEventListener('dragstart', (e) => e.dataTransfer.setData('text/plain', chip.dataset.fld));
     // 点选也能入槽：不是所有人都习惯拖。
     chip.addEventListener('click', () => {
-      const k = chip.style.borderColor ? 'y' : 'x';
+      // 用 data-kind 判定维度/度量，别靠「有没有内联边框色」——那是个会随主题改动的副作用。
+      const k = chip.dataset.kind === 'measure' ? 'y' : 'x';
       setSlot(c, k, chip.dataset.fld, view);
     });
   });
@@ -510,4 +542,129 @@ async function saveChart() {
     await loadChartList(document.getElementById('view'));
     runChart();
   } catch (e) { toast(e.message, 'err'); }
+}
+
+/* ============================== 自助查询 ==============================
+ *
+ * 与「BI 图表」的区别：图表是先配编码槽再查，这里是直接写 SQL。
+ * 后端的边界（只读、单语句、15s、行数上限、行级策略不注入）必须在界面上写明，
+ * 否则用户会以为它和数据集查询一样受行级权限保护。
+ */
+
+Object.assign(ROUTES, {
+  sql: { title: '自助查询', sub: '只读 SQL 控制台', render: pageSQL },
+});
+
+const SQL_LIMITS = [100, 500, 2000, 5000];
+
+async function pageSQL(view) {
+  let sources = [];
+  try { sources = await api('/datasources'); } catch (e) { sources = []; }
+
+  const savedDs = sessionStorage.getItem('godw.sqlDs') || '';
+  const cur = sources.some(s => s.name === savedDs) ? savedDs : (sources[0] ? sources[0].name : '');
+
+  view.innerHTML = `
+    <div class="page-head">
+      <div>
+        <h2 class="page-title">自助查询</h2>
+        <p class="page-desc">直接对数据源写 SQL。只读、单语句、超时 15 秒；行级策略不注入，列级脱敏按输出列名匹配。</p>
+      </div>
+      <div class="row">
+        <select id="sql-ds" style="width:180px">
+          ${sources.map(s => `<option value="${esc(s.name)}" ${s.name === cur ? 'selected' : ''}>${esc(s.name)} · ${esc(s.type)}</option>`).join('')
+            || '<option value="">（还没有数据源）</option>'}
+        </select>
+        <select id="sql-limit" style="width:110px">
+          ${SQL_LIMITS.map(n => `<option value="${n}" ${n === 500 ? 'selected' : ''}>${n} 行</option>`).join('')}
+        </select>
+        <button class="primary" data-act="sql-run">执行</button>
+      </div>
+    </div>
+
+    <div class="card" style="padding:10px">
+      <div id="sql-editor"></div>
+      <div class="hint" style="margin-top:8px">
+        Ctrl / ⌘ + Enter 执行。只允许 SELECT 与 WITH；分号后不能再有语句。
+      </div>
+    </div>
+
+    <div class="card" id="sql-result"></div>`;
+
+  const editor = SqlEditor(view.querySelector('#sql-editor'), {
+    value: sessionStorage.getItem('godw.sqlText') || 'select 1 as ok',
+    height: 190,
+  });
+
+  const run = () => runSQL(view, editor);
+  view.querySelector('[data-act="sql-run"]').addEventListener('click', run);
+  // 编辑器没有暴露 textarea，这里直接取一次；快捷键是这个页面最高频的操作。
+  const area = view.querySelector('#sql-editor textarea');
+  if (area) {
+    area.addEventListener('keydown', e => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); run(); }
+    });
+    area.focus();
+  }
+
+  renderSqlResult(view.querySelector('#sql-result'), null);
+}
+
+async function runSQL(view, editor) {
+  const ds = view.querySelector('#sql-ds').value;
+  const limit = Number(view.querySelector('#sql-limit').value) || 500;
+  const sql = editor.value().trim();
+  if (!ds) return toast('先选一个数据源', 'err');
+  if (!sql) return toast('SQL 不能为空', 'err');
+
+  // 记住上次的数据源与语句：刷新页面后不该回到 select 1。
+  sessionStorage.setItem('godw.sqlDs', ds);
+  sessionStorage.setItem('godw.sqlText', sql);
+
+  const host = view.querySelector('#sql-result');
+  host.innerHTML = `<div class="card-head"><div class="card-title">结果</div><span class="hint">执行中…</span></div>`;
+  try {
+    const res = await api('/sql/query', { method: 'POST', body: { datasource: ds, sql, limit } });
+    renderSqlResult(host, res);
+  } catch (e) {
+    host.innerHTML = `<div class="card-head"><div class="card-title">结果</div></div>
+      <div class="err-box">${esc(e.message)}</div>`;
+  }
+}
+
+function renderSqlResult(host, res) {
+  if (!res) {
+    host.innerHTML = '<div class="empty"><b>还没有结果</b>写一条 SELECT，按 Ctrl + Enter 执行</div>';
+    return;
+  }
+  const truncated = res.truncated ? ` · 已截断到 ${res.limit} 行` : '';
+  const head = `<div class="card-head">
+    <div class="card-title">结果</div>
+    <span class="hint mono">${res.rowCount} 行 · ${res.elapsedMs}ms${truncated}</span>
+  </div>`;
+  const notes = `<div class="hint sql-notes" style="margin-bottom:10px">${(res.notes || []).map(esc).join('<br>')}</div>`;
+
+  if (!res.rowCount) {
+    host.innerHTML = head + notes + '<div class="empty">查询成功，没有返回行</div>';
+    return;
+  }
+  const th = (res.columns || []).map(c => {
+    const m = res.masks && res.masks[c];
+    return `<th class="mono">${esc(c)}${m ? ` <span class="pill warn" title="脱敏方式：${esc(m)}">${esc(m)}</span>` : ''}</th>`;
+  }).join('');
+  const tr = res.rows.map(r => `<tr>${r.map(v => `<td class="mono">${sqlCell(v)}</td>`).join('')}</tr>`).join('');
+
+  host.innerHTML = head + notes +
+    `<div class="table-wrap sql-result" style="max-height:560px;overflow:auto">
+      <table><thead><tr>${th}</tr></thead><tbody>${tr}</tbody></table>
+    </div>`;
+}
+
+function sqlCell(v) {
+  if (v === null || v === undefined) return '<span class="dim">NULL</span>';
+  let s = typeof v === 'object' ? JSON.stringify(v) : String(v);
+  if (s === '') return '<span class="dim">（空串）</span>';
+  // 长文本（JSON、报错堆栈）截断但保留 title，表格才不会被一行撑爆。
+  if (s.length > 300) return `<span title="${esc(s.slice(0, 300))}">${esc(s.slice(0, 300))}…</span>`;
+  return `<span title="${esc(s)}">${esc(s)}</span>`;
 }

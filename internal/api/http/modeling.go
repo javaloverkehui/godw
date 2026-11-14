@@ -201,7 +201,7 @@ func (h *Handler) sampleRunPipeline(w http.ResponseWriter, r *http.Request, _ ma
 // ---------- 血缘图（T0610） ----------
 
 func (h *Handler) lineageGraph(w http.ResponseWriter, r *http.Request, _ map[string]string) {
-	g, err := h.Svc.LineageGraph(r.Context(), workspaceOf(r.Context()))
+	g, err := h.Svc.LineageGraphFor(r.Context(), workspaceOf(r.Context()), r.URL.Query().Get("pipeline"))
 	if err != nil {
 		fail(w, r, err)
 		return

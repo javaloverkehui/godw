@@ -3,6 +3,89 @@
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.3.0] - 2026-11-14
+
+### Added
+- **看板支持 BI 图表卡**：`semantic.Card` 新增 `chart`（与 `metric` 二选一）。看板按图表自身的
+  `type` 渲染折线 / 柱 / 堆叠柱 / 饼 / 环形 / 指标卡 / 表格，`RunCards` 增加图表解析回调，
+  单卡失败仍只挂在自己身上。页头全局「时间范围」在数据集存在 `filterable` 的 time 维度时落成
+  `>=` 条件，「维度」切片收敛到对应系列。
+- **看板可视化编辑**：原来的 YAML 文本框改为「卡片列表 + 高级 YAML 页签」——类型、引用对象、
+  标题、天数、宽度、上下移都在行内完成。`POST /api/v1/dashboards` 同时接受 `{dashboard}` 与
+  `{yaml}`，两种写法等价。
+- `GET /api/v1/dashboards/{name}` 的卡片新增 `kind`（metric/chart）、`chartType`、`series`、
+  `chartPoints`；指标卡的 `points` 与 `unit` 保持不变，老前端不受影响。
+- **自助 SQL 控制台**：新增 `#/sql` 页面与 `POST /api/v1/sql/query`。
+  - 只读守卫（`internal/sqlx/guard.go`）：先跳过字符串字面量与注释再判断，避免 `action='delete'`
+    这类内容被误伤；只允许 SELECT / WITH、单语句，拦住 INSERT/UPDATE/DELETE/DROP 等写关键字
+    （含 CTE 内的数据修改）与 `FOR UPDATE` 行锁。
+  - 执行边界：15 秒超时、行数上限（默认 500，硬上限 5000）、明确标记是否截断。
+  - 结果值归一化：`[]byte` 转字符串、`time.Time` 统一格式、pgx 的 `NUMERIC` 转数字
+    （否则前端拿到的是 base64 或 `{"Int":..}`）。
+  - 列级脱敏按输出列名匹配工作区内全部列策略；行级策略不注入，响应与界面都写明这一点。
+  - 权限：admin / editor 可用，viewer 拒绝。审计记录 SQL 指纹 + 前 200 字符预览 + 耗时 / 行数 / 命中列数。
+- **跨实例运行矩阵**：新增 `GET /api/v1/instances/matrix?pipeline=&limit=`，返回
+  「节点 × 最近 N 次运行」的状态矩阵；运行实例页新增「列表 / 矩阵」切换，两者共用管道筛选。
+  点格子或列头打开该次实例的抽屉。
+  - `Cells[nodeID]` 与 `Runs` 等长同序、缺节点处为 `null`，某次运行少节点时整列不会错位。
+  - 行按节点名排序（不按分层）：矩阵要回答「这个节点最近稳不稳」，行序稳定比分组更重要。
+- **数据文档站**：新增 `#/catalog` 与 `GET /api/v1/catalog`，按模型聚合字段（含分级/脱敏）、
+  质量规则与最近结果、上下游、版本历史、最近一次运行与新鲜度；`GET /api/v1/catalog/export?format=html`
+  与 `godw-cli export-doc --html` 导出**单文件 HTML**（样式内联、无外部资源，断网可读，带搜索过滤）。
+  - 服务端一次聚合：字典 + 版本数 + 质量规则 + 最近结果 + 最近运行各一条查询，避免一屏几十个模型
+    打出几十次往返。
+  - 新鲜度以 `freshness` 规则结果为准；没有规则时退化为「最近一次成功距今」，并明确标注「未配规则」。
+- **模型选择器 `--select`**：`internal/meta/service/selector.go` 支持 `dwd_order` / `dwd_order+` /
+  `+dwd_order` / `+dwd_order+` / `tag:core` / `layer:dwd` / `pipeline:name` 与 `*` 通配、逗号或空格并集。
+  - CLI：`godw-cli run --select "dwd_order+" [--dry-run] [--wait]`。
+  - 接口：`GET /api/v1/select/preview?select=`、`POST /api/v1/runs/select`（`dryRun` 只解析）。
+  - 界面：运维中心「手动触发」弹窗新增选择器输入与「预览命中」。
+  - 响应同时给出 `models` 与 `pipelines`：不支持节点级部分运行，`+model+` 会带出整条管道，必须让人看见放大效应。
+- **`freshness` 质量规则**：新规则类型 `kind: freshness`，配置 `column` + `max_age_min|hours|days`（默认 1 天）。
+  SQL 只取 `MAX(时间列)`，时间差在 Go 里算——跨引擎写 `EXTRACT(EPOCH)/TIMESTAMPDIFF/dateDiff` 写错不会报错，
+  只会永远通过。空表判失败；分区收窄对它不生效。
+- **策略命中测试**：`GET /api/v1/policies/simulate?table=&user=&role=` 返回该表在指定身份下**实际生效**的
+  脱敏列（原始分级 + 归一化等级）与行过滤（原始表达式 + 占位符渲染结果），治理页新增「策略命中」页签。
+  表名支持 `dwd.dwd_order` 与 `dwd_order` 互相命中。
+- **500 节点夹具与画布性能**：`scripts/gen_dag.py N` 生成确定性 DAG（默认 500 节点 / 627 条边，自检无环）；
+  `scripts/bench_canvas.mjs` 用无头 Chrome 做规模回归（首屏、拖动、缩放、平移、进出 8 次，8 条断言）。
+  `make dag-fixture` / `make bench-canvas` 两个目标串起来。
+
+### Changed
+- 侧边栏「看板」之后新增「自助查询」入口。
+- **图表配色收口到设计 token**：`chart.js` / `bi.js` 的系列色改读 `--chart-1..8`，坐标轴与图例
+  文字改读 `--text-mute` / `--text-dim`。亮色主题不再需要单独分支，切换主题会按原数据重放绘制。
+- **看板查询带上访问者身份**：新增 `QueryDashboardFor`，把 user/role 透传到图表卡的数据集查询，
+  行级与列级策略对图表卡同样生效（此前这条路径没有身份）。
+
+### Fixed
+- `bi.js` 用 `svg.clientWidth` 测量宽度，而 SVG 未设宽度时默认只有 300px → viewBox 按 300 计算，
+  整行卡片里的图被压到左侧、字号被缩小约 35%。改为先撑满容器再量 `getBoundingClientRect()`，
+  `viewBox` 与实际像素一致，窗口缩放时重绘。
+- `ChartQuery` 的系列顺序取自 map 遍历，不稳定：前端按索引配色，导致同一条线每次刷新可能换色。
+  改为按首次出现顺序输出。
+- 环形图挖洞 `fill="var(--bg-elev)"`、网格线 `stroke="var(--line-soft)"` 写在 SVG 表现属性上，
+  CSS 变量不解析（洞变黑、网格线消失）。改为运行时取值后写入。
+- 饼图扇区名称为空时图例渲染成空白，回落为「(空值)」。
+- **行级策略占位符被加了双层引号**：策略写 `region = '${user}'`（最自然的写法）时，`ApplyRowFilters`
+  无条件替换成 `'alice'`，渲染结果是 `region = ''alice''`，SQL 语法错误——而且只有该策略真的命中才暴露。
+  改为先匹配「被引号包住」的形式再匹配裸占位符，`O'Brien` 之类的取值仍正确转义。
+- **空切片序列化成 `null`**：选择器无「未覆盖模型」时返回 `"uncovered": null`，前端 `.length` 直接抛
+  `Cannot read properties of null`。服务端改为显式初始化空切片，前端补 `|| []`。
+
+### 测试
+- `internal/semantic/dashboard_test.go`：卡片二选一校验、图表卡分派、维度切片、单卡失败隔离、
+  缺解析器时的报错。
+- headless：三卡混排渲染、暗→亮换色、编辑器行控件、BI 页与全屏的 viewBox 与实际像素一致、
+  无页面错误。
+- `internal/quality/freshness_test.go`：阈值解析（分钟/小时/天/缺省）、通过/过期/空表/字符串时间、
+  分区收窄不作用于 freshness。
+- `internal/meta/service/selector_test.go`：精确、上下闭包、双向、tag、layer、pipeline、通配、并集、
+  未知前缀与空表达式。
+- `internal/meta/service/governance_test.go`：表名全名/末段互相命中；占位符单层引号（含 `O'Brien`）。
+- `scripts/bench_canvas.mjs`：500 节点首屏 40.6ms、DOM 88/500、边 1 条 path、拖动单帧 p95 1.1ms、
+  平移/缩放 p95 0.5ms、进出 8 次 52ms→28.8ms。
+
 ## [1.2.0] - 2026-11-14
 
 第二轮「补齐」：把审计文档 §4 剩下的 8 条 P1 全部关掉，并补上血缘图的四项验收

@@ -1,6 +1,49 @@
 package model
 
-import "time"
+import (
+	"strings"
+	"time"
+)
+
+// 数据分级。列策略写入的是 public/internal/confidential/secret；
+// 历史上还有 high/medium/low 的写法，读取时必须两套都认，否则分级会静默失效。
+const (
+	ClassificationPublic       = "public"
+	ClassificationInternal     = "internal"
+	ClassificationConfidential = "confidential"
+	ClassificationSecret       = "secret"
+
+	ClassificationLow    = "low"
+	ClassificationMedium = "medium"
+	ClassificationHigh   = "high"
+)
+
+// ClassificationRank 把分级折算成 0–3。未知值按 0 处理：
+// 宁可漏报，也不因为一个拼错的分级把全站导出锁死。
+func ClassificationRank(c string) int {
+	switch strings.ToLower(strings.TrimSpace(c)) {
+	case ClassificationSecret, ClassificationHigh:
+		return 3
+	case ClassificationConfidential, ClassificationMedium:
+		return 2
+	case ClassificationInternal, ClassificationPublic, ClassificationLow:
+		return 1
+	}
+	return 0
+}
+
+// ClassificationName 把等级折回展示名，统一输出 high/medium/low/none。
+func ClassificationName(rank int) string {
+	switch rank {
+	case 3:
+		return ClassificationHigh
+	case 2:
+		return ClassificationMedium
+	case 1:
+		return ClassificationLow
+	}
+	return "none"
+}
 
 // ColumnPolicy 是列级数据分级与脱敏策略。
 // Classification 用于合规展示，MaskType 决定查询结果如何脱敏。

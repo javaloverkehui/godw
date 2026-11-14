@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/godw/godw/internal/meta/model"
@@ -704,4 +705,94 @@ func (r *Repo) CancelQueuedInstance(ctx context.Context, id string) (string, err
 	default:
 		return status, errs.New(errs.CodeConflict, "实例已结束（"+status+"），无需取消")
 	}
+}
+
+// InstanceMatrix 返回最近 N 次运行的「节点 × 运行」状态矩阵。
+//
+// 两次查询而不是一次 JOIN：实例与任务是一对多，JOIN 之后还得按实例去重，
+// 反而更容易写错；先取实例 id，再用 ANY($1) 一次取完任务更直白。
+func (r *Repo) InstanceMatrix(ctx context.Context, workspaceID, pipeline string, limit int) (*model.InstanceMatrix, error) {
+	if limit <= 0 || limit > 50 {
+		limit = 20
+	}
+
+	args := []any{workspaceID}
+	where := "i.workspace_id=$1"
+	if pipeline != "" {
+		args = append(args, pipeline)
+		where += fmt.Sprintf(" AND p.name=$%d", len(args))
+	}
+	args = append(args, limit)
+
+	rows, err := r.DB.Pool.Query(ctx,
+		`SELECT i.id, i.biz_date::text, i.status, i.started_at
+		 FROM instance i LEFT JOIN pipeline p ON p.id=i.pipeline_id
+		 WHERE `+where+`
+		 ORDER BY i.created_at DESC LIMIT $`+fmt.Sprint(len(args)), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := &model.InstanceMatrix{
+		Pipeline: pipeline,
+		Runs:     []model.MatrixRun{},
+		Nodes:    []string{},
+		Cells:    map[string][]*model.MatrixCell{},
+	}
+	for rows.Next() {
+		var run model.MatrixRun
+		if err := rows.Scan(&run.ID, &run.BizDate, &run.Status, &run.StartedAt); err != nil {
+			return nil, err
+		}
+		out.Runs = append(out.Runs, run)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(out.Runs) == 0 {
+		return out, nil
+	}
+
+	ids := make([]string, len(out.Runs))
+	at := make(map[string]int, len(out.Runs))
+	for i, run := range out.Runs {
+		ids[i] = run.ID
+		at[run.ID] = i
+	}
+
+	trows, err := r.DB.Pool.Query(ctx,
+		`SELECT instance_id, node_id, status, duration_ms, attempt, COALESCE(error,'')
+		 FROM task_instance WHERE instance_id = ANY($1)`, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer trows.Close()
+
+	for trows.Next() {
+		var instID, nodeID string
+		var c model.MatrixCell
+		if err := trows.Scan(&instID, &nodeID, &c.Status, &c.DurationMS, &c.Attempt, &c.Error); err != nil {
+			return nil, err
+		}
+		i, ok := at[instID]
+		if !ok {
+			continue
+		}
+		if out.Cells[nodeID] == nil {
+			out.Cells[nodeID] = make([]*model.MatrixCell, len(out.Runs))
+		}
+		cell := c
+		out.Cells[nodeID][i] = &cell
+	}
+	if err := trows.Err(); err != nil {
+		return nil, err
+	}
+
+	// 行序必须稳定：两次刷新顺序不同，会让人以为看错了表。
+	for n := range out.Cells {
+		out.Nodes = append(out.Nodes, n)
+	}
+	sort.Strings(out.Nodes)
+	return out, nil
 }

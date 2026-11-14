@@ -5,6 +5,7 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/godw/godw/internal/connector"
@@ -218,11 +219,24 @@ func ApplyRowFilters(filters []string, user, role string) string {
 		if f == "" {
 			continue
 		}
-		f = strings.ReplaceAll(f, "${user}", quoteLiteral(user))
-		f = strings.ReplaceAll(f, "${role}", quoteLiteral(role))
+		f = renderPlaceholder(f, "${user}", user)
+		f = renderPlaceholder(f, "${role}", role)
 		parts = append(parts, "("+f+")")
 	}
 	return strings.Join(parts, " AND ")
+}
+
+// renderPlaceholder 替换占位符，并且只加一层引号。
+//
+// 曾经无条件替换成 'alice'，于是策略写成 region = '${user}'（这是最自然的写法）时
+// 会得到引号套引号的非法字面量 —— SQL 直接语法错误，而且只有这条策略真的命中才会暴露，
+// 平时看策略列表一切正常。所以先处理「已被引号包住」的形式，再处理裸占位符。
+func renderPlaceholder(expr, ph, val string) string {
+	quoted := "'" + ph + "'"
+	if strings.Contains(expr, quoted) {
+		return strings.ReplaceAll(expr, quoted, quoteLiteral(val))
+	}
+	return strings.ReplaceAll(expr, ph, quoteLiteral(val))
 }
 
 func quoteLiteral(s string) string {
@@ -361,4 +375,127 @@ func (s *Service) MaskRows(ctx context.Context, workspaceID, table string, colum
 		}
 	}
 	return rows, applied
+}
+
+// PolicySimulation 是「策略命中测试」的结果。
+//
+// 为什么要有它：列策略和行策略都写在库里，配完却没人知道到底会不会生效——
+// 导出被拒了才去翻策略表，行过滤写错了只能靠业务方发现少了几行。
+// 这里把「给定表 + 身份，实际会套上什么」一次性摊开，配错当场就能看见。
+type PolicySimulation struct {
+	Table    string            `json:"table"`
+	User     string            `json:"user"`
+	Role     string            `json:"role"`
+	Columns  []SimulatedColumn `json:"columns"`
+	Rows     []SimulatedRow    `json:"rows"`
+	Where    string            `json:"where"`
+	MaxLevel string            `json:"maxLevel"`
+	Notes    []string          `json:"notes"`
+}
+
+// SimulatedColumn 是一列的生效结果。
+type SimulatedColumn struct {
+	Column         string `json:"column"`
+	Classification string `json:"classification"`
+	// Level 是归一化后的分级：写入侧可能是 public/internal/confidential/secret，
+	// 判定侧只认 high/medium/low，两者必须在同一个响应里对上。
+	Level    string `json:"level"`
+	Mask     string `json:"mask"`
+	Enforced bool   `json:"enforced"`
+}
+
+// SimulatedRow 是一条命中的行级策略。
+type SimulatedRow struct {
+	ID          string `json:"id"`
+	Role        string `json:"role"`
+	Filter      string `json:"filter"`
+	Rendered    string `json:"rendered"`
+	Description string `json:"description,omitempty"`
+}
+
+// SimulatePolicies 计算指定表与身份下实际生效的治理策略。
+func (s *Service) SimulatePolicies(ctx context.Context, workspaceID, table, user, role string) (*PolicySimulation, error) {
+	table = strings.TrimSpace(table)
+	if table == "" {
+		return nil, errs.New(errs.CodeInvalidArgument, "需要 table 参数")
+	}
+	if role == "" {
+		role = "viewer"
+	}
+	// 切片显式初始化：nil 会序列化成 null，前端对 columns.length 直接取值就会抛。
+	out := &PolicySimulation{
+		Table: table, User: user, Role: role, MaxLevel: "none",
+		Columns: []SimulatedColumn{}, Rows: []SimulatedRow{}, Notes: []string{},
+	}
+
+	cols, err := s.Repo.AllColumnPolicies(ctx, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	rank := 0
+	for _, p := range cols {
+		if !tableMatches(p.TableName, table) {
+			continue
+		}
+		lv := model.ClassificationName(model.ClassificationRank(p.Classification))
+		if r := model.ClassificationRank(p.Classification); r > rank {
+			rank = r
+		}
+		out.Columns = append(out.Columns, SimulatedColumn{
+			Column: p.ColumnName, Classification: p.Classification, Level: lv,
+			Mask: p.MaskType, Enforced: p.MaskType != "" && p.MaskType != "none",
+		})
+	}
+	sort.Slice(out.Columns, func(i, j int) bool { return out.Columns[i].Column < out.Columns[j].Column })
+	out.MaxLevel = model.ClassificationName(rank)
+
+	rows, err := s.Repo.ListRowPolicies(ctx, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	var conds []string
+	for _, p := range rows {
+		if !tableMatches(p.TableName, table) {
+			continue
+		}
+		// 与执行期同一套判定：角色精确匹配或通配 '*'。
+		if p.Role != role && p.Role != "*" {
+			continue
+		}
+		rendered := ApplyRowFilters([]string{p.FilterExpr}, user, role)
+		out.Rows = append(out.Rows, SimulatedRow{
+			ID: p.ID, Role: p.Role, Filter: p.FilterExpr, Rendered: rendered,
+			Description: p.Description,
+		})
+		conds = append(conds, "("+rendered+")")
+	}
+	out.Where = strings.Join(conds, " AND ")
+
+	if len(out.Columns) == 0 {
+		out.Notes = append(out.Notes,
+			"没有列策略命中这张表：查询结果不会脱敏。表名按「全名或末段」匹配，"+
+				"dwd.dwd_order 与 dwd_order 都算命中。")
+	}
+	if role != "admin" && len(out.Rows) == 0 {
+		out.Notes = append(out.Notes, "没有行级策略命中：该角色能读到整张表。")
+	}
+	if len(out.Rows) > 0 {
+		out.Notes = append(out.Notes,
+			"自助 SQL（原始模式）不注入行级策略；上面的条件只对「数据集模式」与指标查询生效。")
+	}
+	return out, nil
+}
+
+// tableMatches 允许全名与末段互相匹配：策略表里既有 dwd_order 也有 dwd.dwd_order，
+// 严格相等会让人「明明配了却没命中」，而这正是命中测试要排除的困惑。
+func tableMatches(policyTable, target string) bool {
+	a := strings.ToLower(strings.TrimSpace(policyTable))
+	b := strings.ToLower(strings.TrimSpace(target))
+	if a == "" || b == "" {
+		return false
+	}
+	if a == b {
+		return true
+	}
+	return strings.HasSuffix(b, "."+a) || strings.HasSuffix(a, "."+b)
 }

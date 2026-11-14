@@ -82,17 +82,21 @@ bash scripts/smoke.sh
 | 增量 | 分区优先 → 时间列 → 明确报错，不猜 | `compile.InferIncremental` |
 | 试跑 | dry-run 只渲染不连库；sample-run 强制 LIMIT、绝不写表 | `service.DryRun/SampleRun` |
 | 调度 | 5 段 cron、T-1 派发、幂等键、两段式队列、资源组配额、租约心跳、僵尸回收 | `internal/scheduler`、`instance` 状态机 |
-| 运维 | 实例按管道/状态/日期筛选 + 服务端分页、批量重跑/取消、**节点级重跑**（重置该节点与下游）、失败行展开错误、实例抽屉（参数/耗时条/质量/实时日志）、**渲染 SQL 按版本快照还原并可对比上次** | `ListInstancesPage`、`Service.RetryNode`、`Service.InstanceNodeSQL`、`GET /instances/{id}/sql` |
+| 运维 | 实例按管道/状态/日期筛选 + 服务端分页、批量重跑/取消、**节点级重跑**（重置该节点与下游）、失败行展开错误、实例抽屉（参数/耗时条/质量/实时日志）、**渲染 SQL 按版本快照还原并可对比上次**、**运行矩阵**（节点 × 最近 N 次运行，点格子进实例）、**按模型选择器触发**（先预览命中范围） | `ListInstancesPage`、`Service.RetryNode`、`Service.InstanceNodeSQL`、`Repo.InstanceMatrix` |
 | 触发 | file/table/http 传感器 + 事件去重 | `node/sensor` |
 | 观测 | 环形日志缓冲 + 批量落库 + 脱敏 + SSE 断点续传；6 类告警 + 去重 + 静默窗口 | `obs/logstore`、`obs/alert` |
-| 质量 | 9 类规则 DSL、按分区收窄作用域、error 阻断 / warn 记录、强制放行、隔离表 | `internal/quality` |
+| 质量 | 10 类规则 DSL（含 `freshness` 数据新鲜度）、按分区收窄作用域（freshness 除外）、error 阻断 / warn 记录、强制放行、隔离表 | `internal/quality` |
 | 血缘 | SQL 解析（失败降级）、表级图、**列级下钻**（按表泳道 / 逐列聚焦 / 上下游切换）、Focus/Paths/DOT、LRU 缓存；图内**分层着色**（ODS/DWD/DWS/ADS）、搜索、双击聚焦 N 跳、导出 PNG | `internal/lineage`、`lineage_edge`、`lineage_column`、`assets/app.js` |
 | 语义层 | 数据集（禁 ODS/禁无 on join）、全参数化查询构建、9 种图表编码校验 | `internal/semantic` |
 | 图表 | 自研交互式折线（hover 多系列 tooltip、图例开关、刷选缩放）、看板全局时间/维度筛选、卡片全屏 | `assets/chart.js`、`RunCards` |
+| 图表卡与看板编辑 | BI 图表可作看板卡片（折线/柱/堆叠/饼/环/指标卡/表格 7 种），与指标卡混排；看板编辑器为「卡片列表 + 高级 YAML」，类型/引用/宽度/排序行内可改 | `semantic.Card.chart`、`assets/app.js` |
+| 自助查询 | 只读 SQL 控制台：SELECT/WITH 白名单、单语句、写关键字黑名单、15s 超时、行数上限、结果值归一化、列级脱敏按输出列名匹配；审计存指纹 | `internal/sqlx/guard.go`、`#/sql` |
 | 治理 | JWT、角色等级矩阵、凭证 AES-GCM、审计、保留策略、删除权、导出审批 | `internal/auth`、`service/compliance.go` |
-| 界面 | 内嵌控制台：工作台、数据源、表结构、模型、管道、**编排画布**、指标、BI、看板、运维、血缘、质量、治理、审计 | `internal/api/http/ui`（零构建，`go:embed`） |
+| 界面 | 内嵌控制台：工作台、数据源、表结构、模型、管道、**编排画布**、指标、BI、看板、**数据文档**、运维、血缘、质量、治理、审计 | `internal/api/http/ui`（零构建，`go:embed`） |
+| 数据文档 | `#/catalog` 三栏文档站：字段（分级/脱敏）、质量规则与最近结果、上下游、版本历史、最近运行与新鲜度；可导出单文件 HTML（断网可读） | `Service.CatalogDocs`、`Service.CatalogHTML`、`assets/catalog.js` |
+| 选择器 | `model+` / `+model` / `+model+` / `tag:` / `layer:` / `pipeline:` 与通配，CLI / 接口 / 运维弹窗共用；解析结果同时给出模型与管道（不隐藏「整条管道」的放大效应） | `service/selector.go`、`/api/v1/runs/select` |
 | 编排画布 | 视口缩放/平移、框选多选、节点面板拖入、属性面板实时编辑、撤销重做、正交连边、成环拦截、小地图、**实例运行态叠加**（状态点/耗时/失败角标） | `assets/canvas.js`、`/pipelines/dry-run` |
-| 交付 | 单二进制、CLI（migrate/doctor/apply/run/seed/collect/backfill/lineage/profile）、Compose、Helm、多阶段镜像 | `cmd/`、`deploy/` |
+| 交付 | 单二进制、CLI（migrate/doctor/apply/run/seed/collect/backfill/lineage/profile/export-doc）、Compose、Helm、多阶段镜像 | `cmd/`、`deploy/` |
 
 ### 界面
 

@@ -288,40 +288,106 @@ function cvEdgePath(a, b) {
   return `M ${x1} ${y1} H ${x1 + 24} V ${y} H ${x2 - 24} V ${y2} H ${x2}`;
 }
 
-function cvRender() {
-  const canvasEl = document.getElementById('cv-canvas');
-  const svg = document.getElementById('cv-edges');
-  if (!canvasEl || !svg) return;
+// 大图阈值：低于它全量渲染，高于它才启用裁剪与边合并。
+// 小图开裁剪只有代价没有收益（每次平移都要重算可见集），而 300 以下全量画一点也不卡。
+const CV_CULL_MIN = 300;
 
+// cvViewport 返回当前可视区域的世界坐标（含一个节点宽度的余量）。
+// 屏幕坐标 sx = x * s + tx，所以 x = (sx - tx) / s。
+function cvViewport() {
+  const stage = document.getElementById('cv-stage');
+  if (!stage) return null;
+  const { tx, ty, s } = CANVAS.view;
+  const r = stage.getBoundingClientRect();
+  const pad = CV_NODE_W;
+  const x1 = -tx / s - pad, y1 = -ty / s - pad;
+  return { x1, y1, x2: x1 + r.width / s + pad * 2, y2: y1 + r.height / s + pad * 2 };
+}
+
+// 视口键：把位置量化成格子，避免每移动 1px 就整图重绘。
+function cvCullKey(vp) {
+  const cell = 320;
+  return `${Math.floor(vp.x1 / cell)}:${Math.floor(vp.y1 / cell)}:${CANVAS.view.s.toFixed(2)}`;
+}
+
+// cvEdgeGeometry 把可见边拼成两条路径（普通 + 高亮）。
+// 一条 <path> 可以带多个子路径，marker-end 会画在每个子路径终点，
+// 所以箭头不会丢；627 条边从 627 个 DOM 节点变成 2 个。
+function cvEdgeGeometry() {
   const byId = {};
   CANVAS.nodes.forEach(n => byId[n.id] = n);
-
-  // 边：与选中节点相连的高亮，便于在 20+ 节点里追一条链路
-  const hot = new Set(CANVAS.sel);
-  const edges = CANVAS.edges.map(e => {
+  const vp = CANVAS.cullOn ? cvViewport() : null;
+  const visible = n => !vp ||
+    (n.x < vp.x2 && n.x + CV_NODE_W > vp.x1 && n.y < vp.y2 && n.y + CV_NODE_H > vp.y1);
+  const hot = CANVAS.sel;
+  const normal = [], hl = [];
+  CANVAS.edges.forEach(e => {
     const a = byId[e.from], b = byId[e.to];
-    if (!a || !b) return '';
-    const hl = hot.size && (hot.has(e.from) || hot.has(e.to));
-    return `<path class="cv-edge ${hl ? 'hl' : ''}" d="${cvEdgePath(a, b)}" marker-end="url(#cv-arrow)"/>`;
-  }).join('');
+    if (!a || !b) return;
+    // 两端都在视口外才丢：只要一端可见，这条线就可能是唯一线索。
+    if (vp && !visible(a) && !visible(b)) return;
+    const d = cvEdgePath(a, b);
+    if (hot.size && (hot.has(e.from) || hot.has(e.to))) hl.push(d);
+    else normal.push(d);
+  });
+  return { normal: normal.join(' '), hot: hl.join(' ') };
+}
+
+function cvPaintEdges(svg, g) {
+  const paths = [];
+  if (g.normal) paths.push(`<path class="cv-edge" d="${g.normal}" marker-end="url(#cv-arrow)"/>`);
+  if (g.hot) paths.push(`<path class="cv-edge hl" d="${g.hot}" marker-end="url(#cv-arrow)"/>`);
+  svg.innerHTML = `<defs><marker id="cv-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto">
+    <path d="M0,0 L8,4 L0,8 z" fill="var(--accent-dim)"/></marker></defs>${paths.join('')}`;
+}
+
+function cvRender() {
+  const canvasEl = document.getElementById('cv-canvas');
+  if (!canvasEl) return;
+
+  // 大图只渲染视口内的节点：500 个节点全塞进 DOM，拖动时浏览器每帧都要
+  // 重新计算所有元素的层与布局，帧率会掉到 10 以下。裁剪之后可视区通常只有几十个。
+  CANVAS.cullOn = CANVAS.nodes.length > CV_CULL_MIN;
+  let vp = null;
+  if (CANVAS.cullOn) {
+    vp = cvViewport();
+    CANVAS.cullKey = vp ? cvCullKey(vp) : '';
+  }
+  const visible = n => !vp ||
+    (n.x < vp.x2 && n.x + CV_NODE_W > vp.x1 && n.y < vp.y2 && n.y + CV_NODE_H > vp.y1);
+  const geometry = cvEdgeGeometry();
 
   let maxX = 600, maxY = 360;
   CANVAS.nodes.forEach(n => {
     maxX = Math.max(maxX, n.x + CV_NODE_W + 80);
     maxY = Math.max(maxY, n.y + CV_NODE_H + 80);
   });
-  const svgStr = `<svg class="cv-edges" id="cv-edges" width="${maxX}" height="${maxY}">
-    <defs><marker id="cv-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto">
-      <path d="M0,0 L8,4 L0,8 z" fill="var(--accent-dim)"/></marker></defs>${edges}</svg>`;
 
-  const html = CANVAS.nodes.map(n => {
-    const layer = cvLayerOf(n);
-    const t = cvTaskOf(n.id);
-    const state = t ? t.status : '';
-    const dot = state === 'success' ? 'ok' : state === 'failed' ? 'err'
-      : state === 'running' ? 'running' : 'queued';
-    const typeMeta = CV_TYPES.find(x => x.type === n.type);
-    return `
+  const nodeHTML = CANVAS.nodes.filter(visible).map(cvNodeHTML).join('');
+
+  // 一次 innerHTML 重建：SVG 必须和节点在同一次写入里生成，
+  // 分两步写会让浏览器先按空画布排版一遍，500 节点时能感觉到闪一下。
+  canvasEl.innerHTML =
+    `<svg class="cv-edges" id="cv-edges" width="${maxX}" height="${maxY}" viewBox="0 0 ${maxX} ${maxY}"></svg>` +
+    nodeHTML;
+  const fresh = document.getElementById('cv-edges');
+  if (fresh) cvPaintEdges(fresh, geometry);
+  // 记住「这一批元素属于哪个画布容器」，视口补画时才知道能不能增量复用。
+  CANVAS.nodeEls = new Map();
+  canvasEl.querySelectorAll('.cv-node').forEach(el => CANVAS.nodeEls.set(el.dataset.node, el));
+  CANVAS.renderedEl = canvasEl;
+  cvRenderMinimap();
+  applyView();
+}
+
+function cvNodeHTML(n) {
+  const layer = cvLayerOf(n);
+  const t = cvTaskOf(n.id);
+  const state = t ? t.status : '';
+  const dot = state === 'success' ? 'ok' : state === 'failed' ? 'err'
+    : state === 'running' ? 'running' : 'queued';
+  const typeMeta = CV_TYPES.find(x => x.type === n.type);
+  return `
       <div class="cv-node ${CANVAS.sel.has(n.id) ? 'sel' : ''} ${CANVAS.connectFrom === n.id ? 'connecting' : ''}"
            data-node="${esc(n.id)}" data-state="${esc(state)}"
            style="left:${n.x}px;top:${n.y}px;width:${CV_NODE_W}px;height:${CV_NODE_H}px">
@@ -343,11 +409,41 @@ function cvRender() {
         <div class="cv-port in" data-port="in" data-node="${esc(n.id)}" title="输入"></div>
         <div class="cv-port out ${CANVAS.connectFrom === n.id ? 'active' : ''}" data-port="out" data-node="${esc(n.id)}" title="从此连线"></div>
       </div>`;
-  }).join('');
+}
 
-  canvasEl.innerHTML = svgStr + html;
+// cvSyncViewport 只增删「进出视口」的节点，不重建已有元素。
+// 平移时视口每移动一格就要补画一次，若每次都 innerHTML 重建 400 个节点，
+// 每 90ms 就会出现一次 30–50ms 的卡顿；增量同步只创建新进场的几十个。
+function cvSyncViewport() {
+  const canvasEl = document.getElementById('cv-canvas');
+  if (!canvasEl || canvasEl !== CANVAS.renderedEl || !CANVAS.nodeEls) { cvRender(); return; }
+  const vp = cvViewport();
+  if (!vp) return;
+  CANVAS.cullKey = cvCullKey(vp);
+  const visible = n => n.x < vp.x2 && n.x + CV_NODE_W > vp.x1 && n.y < vp.y2 && n.y + CV_NODE_H > vp.y1;
+  const keep = new Set();
+  const entering = [];
+  CANVAS.nodes.forEach(n => {
+    if (!visible(n)) return;
+    keep.add(n.id);
+    if (!CANVAS.nodeEls.has(n.id)) entering.push(n);
+  });
+  CANVAS.nodeEls.forEach((el, id) => {
+    if (keep.has(id)) return;
+    el.remove();
+    CANVAS.nodeEls.delete(id);
+  });
+  if (entering.length) {
+    const tpl = document.createElement('template');
+    tpl.innerHTML = entering.map(cvNodeHTML).join('');
+    entering.forEach(n => {
+      const el = tpl.content.querySelector(`.cv-node[data-node="${CSS.escape(n.id)}"]`);
+      if (el) CANVAS.nodeEls.set(n.id, el);
+    });
+    canvasEl.appendChild(tpl.content);
+  }
+  cvRedrawEdges();
   cvRenderMinimap();
-  applyView();
 }
 
 function fmtInt(n) {
@@ -363,10 +459,50 @@ function applyView() {
   const label = document.getElementById('cv-zoom-label');
   if (label) label.textContent = Math.round(s * 100) + '%';
   cvUpdateMapViewport();
+  cvMaybeRecull();
+}
+
+// 裁剪模式下平移/缩放会露出新区域，需要补画。
+//
+// 两个约束一起满足才不卡：滚动时最多每 90ms 重建一次（重建 500 个节点的筛选
+// 与 innerHTML 大约 8–15ms，每个滚轮事件都做会把缩放拖到 20fps），
+// 停下来 120ms 后再补一次精确重建（否则快速缩放后边缘会留一块空白）。
+const CV_RECULL_GAP_MS = 90;
+const CV_RECULL_IDLE_MS = 120;
+
+function cvMaybeRecull() {
+  if (!CANVAS.cullOn) return;
+  const vp = cvViewport();
+  if (!vp) return;
+  if (cvCullKey(vp) === CANVAS.cullKey) return;
+
+  const now = performance.now();
+  if (!CANVAS._cullRaf && now - (CANVAS._lastRecull || 0) >= CV_RECULL_GAP_MS) {
+    CANVAS._cullRaf = requestAnimationFrame(() => {
+      CANVAS._cullRaf = 0;
+      CANVAS._lastRecull = performance.now();
+      cvSyncViewport();
+    });
+  }
+  clearTimeout(CANVAS._cullTimer);
+  CANVAS._cullTimer = setTimeout(() => {
+    const v = cvViewport();
+    if (!v || cvCullKey(v) === CANVAS.cullKey) return;
+    CANVAS._lastRecull = performance.now();
+    cvSyncViewport();
+  }, CV_RECULL_IDLE_MS);
 }
 
 /* ---------------- 小地图 ---------------- */
 // 只在小地图里画缩略方块 + 当前视口框：节点多时靠它判断「我在这张图的哪个位置」。
+function cvScheduleMinimap() {
+  if (CANVAS._mapRaf) return;
+  CANVAS._mapRaf = requestAnimationFrame(() => {
+    CANVAS._mapRaf = 0;
+    cvRenderMinimap();
+  });
+}
+
 function cvRenderMinimap() {
   const g = document.getElementById('cv-map-nodes');
   if (!g) return;
@@ -730,7 +866,9 @@ function cvOnWindowMove(ev) {
       if (el) { el.style.left = it.n.x + 'px'; el.style.top = it.n.y + 'px'; }
     });
     cvRedrawEdges();
-    cvRenderMinimap();
+    // 小地图是 500 个小方块，每帧重建等于白送一次全量布局；
+    // 按帧节流后它仍然跟着动，只是不再拖慢主画布。
+    cvScheduleMinimap();
     return;
   }
   if (CANVAS.marquee) {
@@ -867,29 +1005,23 @@ function bindStage() {
 
 }
 
+// 拖动时每帧只改这两条 path 的 d 属性。
+// 早先是「每条边一个 path」并逐个 setAttribute，500 节点 627 条边等于每帧 627 次属性写，
+// 再加上 500 个节点元素的重排，帧率直接掉到个位数。
 function cvRedrawEdges() {
   const svg = document.getElementById('cv-edges');
   if (!svg) return;
-  const byId = {};
-  CANVAS.nodes.forEach(n => byId[n.id] = n);
-  const hot = new Set(CANVAS.sel);
-  const edges = CANVAS.edges.map(e => {
-    const a = byId[e.from], b = byId[e.to];
-    if (!a || !b) return '';
-    const hl = hot.size && (hot.has(e.from) || hot.has(e.to));
-    return `<path class="cv-edge ${hl ? 'hl' : ''}" d="${cvEdgePath(a, b)}" marker-end="url(#cv-arrow)"/>`;
-  }).join('');
+  const g = cvEdgeGeometry();
   const paths = svg.querySelectorAll('path.cv-edge');
-  if (paths.length === CANVAS.edges.length) {
-    paths.forEach((p, i) => {
-      const e = CANVAS.edges[i];
-      const a = byId[e.from], b = byId[e.to];
-      if (a && b) p.setAttribute('d', cvEdgePath(a, b));
-    });
+  const expect = (g.normal ? 1 : 0) + (g.hot ? 1 : 0);
+  // 结构对不上（可视集变了 / 高亮变了）就整层重画；对得上只改几何。
+  if (paths.length !== expect || !svg.querySelector('defs')) {
+    cvPaintEdges(svg, g);
     return;
   }
-  svg.innerHTML = `<defs><marker id="cv-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto">
-    <path d="M0,0 L8,4 L0,8 z" fill="var(--accent-dim)"/></marker></defs>${edges}`;
+  let i = 0;
+  if (g.normal) paths[i++].setAttribute('d', g.normal);
+  if (g.hot) paths[i].setAttribute('d', g.hot);
 }
 
 function cvClickPort(port) {

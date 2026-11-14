@@ -45,6 +45,7 @@ function statusPill(s) {
   const map = {
     success: ['ok', '成功'], ok: ['ok', '正常'], failed: ['err', '失败'], error: ['err', '异常'],
     running: ['running', '运行中'], queued: ['mute', '排队中'], pending: ['mute', '待执行'],
+    pending_approval: ['warn', '待审批'], approved: ['info', '已批准'], rejected: ['err', '已驳回'],
     blocked: ['warn', '阻断'], skipped: ['mute', '跳过'], canceled: ['mute', '已取消'],
     unknown: ['mute', '未知'], draft: ['mute', '草稿'], published: ['ok', '已发布'],
     archived: ['mute', '已归档'], waiting: ['warn', '等待'],
@@ -217,6 +218,7 @@ async function renderShare(token) {
 }
 
 async function render() {
+  if (typeof instStopPoll === 'function') instStopPoll();
   const hash = (location.hash || '#/overview').replace('#/', '') || 'overview';
   if (hash.startsWith('share/')) { await renderShare(hash.slice(6)); return; }
   document.body.classList.remove('share-mode');
@@ -780,10 +782,70 @@ function instSelected() {
   return S.selected.instIds;
 }
 
+let INST_TIMER = null;
+
+function instStopPoll() {
+  if (INST_TIMER) {
+    clearInterval(INST_TIMER);
+    INST_TIMER = null;
+  }
+}
+
+// 状态格单独抽出来：轮询时只换这一格，不重绘整页，否则每 3s 滚动位置和焦点都会跳回顶部。
+function instStatusCell(i) {
+  return `${statusPill(i.status)}${i.error ? `<details style="margin-top:4px"><summary class="hint" style="cursor:pointer">错误</summary>
+    <div class="small" style="color:var(--err);max-width:420px;word-break:break-all">${esc(i.error)}</div></details>` : ''}`;
+}
+
+function instStartPoll(view, q) {
+  instStopPoll();
+  const qs = new URLSearchParams({ limit: String(q.limit), offset: String(q.offset) });
+  if (q.pipeline) qs.set('pipeline', q.pipeline);
+  if (q.status) qs.set('status', q.status);
+  if (q.from) qs.set('from', q.from);
+  if (q.to) qs.set('to', q.to);
+  const live = view.querySelector('#inst-live');
+  if (live) live.style.display = '';
+  INST_TIMER = setInterval(async () => {
+    // 切页、隐藏标签页、旧 view 被替换时都必须停，否则后台一直打接口。
+    if (S.route !== 'instances' || document.hidden || !view.isConnected) { instStopPoll(); return; }
+    try {
+      const res = await api('/instances?' + qs.toString());
+      const items = res.items || [];
+      let active = false;
+      items.forEach(i => {
+        if (i.status === 'queued' || i.status === 'running' || i.status === 'pending') active = true;
+        const tr = view.querySelector(`tr[data-id="${CSS.escape(i.id)}"]`);
+        if (!tr) return;
+        const statusTd = tr.querySelector('[data-cell="status"]');
+        if (statusTd && statusTd.dataset.status !== i.status) {
+          statusTd.innerHTML = instStatusCell(i);
+          statusTd.dataset.status = i.status;
+        }
+        const durTd = tr.querySelector('[data-cell="dur"]');
+        if (durTd) durTd.textContent = i.startedAt && i.finishedAt ? fmtDur(new Date(i.finishedAt) - new Date(i.startedAt)) : '—';
+      });
+      if (!active) {
+        instStopPoll();
+        if (live) live.style.display = 'none';
+      }
+    } catch (e) {
+      // 轮询失败不弹 toast：偶发网络抖动不该盖住用户正在看的页面。
+      instStopPoll();
+      if (live) live.style.display = 'none';
+    }
+  }, 3000);
+}
+
 async function pageInstances(view) {
   const q = instQuery();
   const sel = instSelected();
   const pipes = S.cache.pipelines || (S.cache.pipelines = await api('/pipelines').catch(() => []));
+
+  // 矩阵与列表是同一批数据的两种看法，共用管道筛选，不各维护一套状态。
+  if ((S.selected.instView || 'list') === 'matrix') {
+    return pageInstanceMatrix(view, q, pipes);
+  }
 
   const qs = new URLSearchParams({ limit: String(q.limit), offset: String(q.offset) });
   if (q.pipeline) qs.set('pipeline', q.pipeline);
@@ -805,6 +867,8 @@ async function pageInstances(view) {
         <p class="page-desc">一次调度对应一个实例。重跑复用原版本快照与业务日期，已成功的节点会跳过；失败可只重跑单个节点。</p>
       </div>
       <div class="row">
+        ${instViewSwitch('list')}
+        <span id="inst-live" class="pill info" style="display:none" title="存在运行中的实例，每 3 秒自动更新">自动刷新</span>
         <button class="ghost" data-act="inst-refresh">刷新</button>
         <button class="primary" data-act="run-once">执行一轮</button>
       </div>
@@ -853,13 +917,11 @@ async function pageInstances(view) {
           <td>${esc(i.pipelineName || '—')}</td>
           <td class="mono">${esc(i.bizDate)}</td>
           <td><span class="pill mute">${esc(i.triggerType)}</span></td>
-          <td>
-            ${statusPill(i.status)}
-            ${i.error ? `<details style="margin-top:4px"><summary class="hint" style="cursor:pointer">错误</summary>
-              <div class="small" style="color:var(--err);max-width:420px;word-break:break-all">${esc(i.error)}</div></details>` : ''}
+          <td data-cell="status" data-status="${esc(i.status)}">
+            ${instStatusCell(i)}
           </td>
           <td class="dim small">${fmtTime(i.startedAt || i.createdAt)}</td>
-          <td class="dim small">${i.startedAt && i.finishedAt ? fmtDur(new Date(i.finishedAt) - new Date(i.startedAt)) : '—'}</td>
+          <td class="dim small" data-cell="dur">${i.startedAt && i.finishedAt ? fmtDur(new Date(i.finishedAt) - new Date(i.startedAt)) : '—'}</td>
           <td>
             <div class="row" style="gap:6px;justify-content:flex-end">
               <button class="sm ghost" data-act="open-instance" data-id="${esc(i.id)}">详情</button>
@@ -878,6 +940,11 @@ async function pageInstances(view) {
         </div>`
       : `<div class="empty"><b>${filtered ? '没有符合条件的实例' : '还没有实例'}</b>${filtered ? '换个状态或日期范围再试' : '触发一条管道即可看到节点级执行过程'}</div>`}
     </div>`;
+
+  // 只在确实有实例在跑时开轮询：静止页面不该每 3 秒打一次接口。
+  if (insts.some(i => i.status === 'queued' || i.status === 'running' || i.status === 'pending')) {
+    instStartPoll(view, q);
+  }
 }
 
 // 筛选变化：重置到第一页，避免停在越界页码上看到空白
@@ -900,6 +967,125 @@ async function instBatch(action) {
     instSelected().clear();
     await render();
   } catch (e) { toast(e.message, 'err'); }
+}
+
+/**
+ * 运行矩阵：横轴是最近 N 次运行，纵轴是节点。
+ *
+ * 为什么值得单独一个视图：列表回答「这次运行成功了吗」，矩阵回答「这个节点最近稳不稳」。
+ * 后者是排查「偶发失败」「某天开始变慢」的主要入口，靠翻列表一次一次点进去是做不到的。
+ */
+async function pageInstanceMatrix(view, q, pipes) {
+  const limit = S.selected.matrixLimit || 20;
+  const qs = new URLSearchParams({ limit: String(limit) });
+  if (q.pipeline) qs.set('pipeline', q.pipeline);
+
+  let data = null, err = '';
+  try { data = await api('/instances/matrix?' + qs.toString()); }
+  catch (e) { err = e.message; }
+
+  view.innerHTML = `
+    <div class="page-head">
+      <div>
+        <h2 class="page-title">运行实例</h2>
+        <p class="page-desc">按节点看最近几次运行：横轴是运行、纵轴是节点，颜色即状态。点格子打开那次实例。</p>
+      </div>
+      <div class="row">
+        ${instViewSwitch('matrix')}
+        <button class="ghost" data-act="inst-refresh">刷新</button>
+        <button class="primary" data-act="run-once">执行一轮</button>
+      </div>
+    </div>
+
+    <div class="card" style="padding:10px 12px;margin-bottom:14px">
+      <div class="filter-bar">
+        <select id="fq-pipeline">
+          <option value="">全部管道</option>
+          ${pipes.map(p => `<option value="${esc(p.name)}" ${p.name === q.pipeline ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}
+        </select>
+        <span class="hint">最近</span>
+        <select id="mx-limit" style="width:96px">
+          ${[10, 20, 30, 50].map(n => `<option value="${n}" ${n === limit ? 'selected' : ''}>${n} 次</option>`).join('')}
+        </select>
+        <span class="spacer"></span>
+        ${data ? `<span class="hint">${data.nodes.length} 个节点 × ${data.runs.length} 次运行</span>` : ''}
+      </div>
+    </div>
+
+    ${err ? `<div class="card"><div class="err-box">${esc(err)}</div></div>`
+      : `<div class="card">${renderMatrix(data)}</div>`}`;
+
+  const pipeSel = view.querySelector('#fq-pipeline');
+  if (pipeSel) pipeSel.onchange = () => { q.pipeline = pipeSel.value; q.offset = 0; render(); };
+  const limSel = view.querySelector('#mx-limit');
+  if (limSel) limSel.onchange = () => { S.selected.matrixLimit = Number(limSel.value) || 20; render(); };
+
+  // 格子和列头都能点：列头看整次运行，格子看该次里的这个节点（都会打开同一个抽屉）。
+  view.querySelectorAll('[data-inst]').forEach(n => {
+    n.addEventListener('click', () => openInstance(n.dataset.inst));
+  });
+}
+
+function instViewSwitch(active) {
+  const btn = (v, label) => `<button class="sm ${active === v ? 'primary' : 'ghost'}" data-act="inst-view" data-view="${v}">${label}</button>`;
+  return `<div class="row" style="gap:4px">${btn('list', '列表')}${btn('matrix', '矩阵')}</div>`;
+}
+
+function renderMatrix(d) {
+  if (!d) return '<div class="empty">加载中…</div>';
+  if (!d.runs || !d.runs.length) {
+    return '<div class="empty"><b>还没有运行记录</b>执行一轮后，这里会按节点列出每次运行的状态</div>';
+  }
+  if (!d.nodes || !d.nodes.length) {
+    return '<div class="empty">这些实例还没有节点记录</div>';
+  }
+  const head = d.runs.map(r => {
+    // 列宽只有 20 多像素，`11-13` 横排必然重叠；拆成月/日两行，
+    // 完整日期放 title。跨月时看月份，不跨月时看日，都读得出来。
+    const [mm, dd] = (r.bizDate || '').split('-').slice(1);
+    return `
+    <th class="mx-run" data-inst="${esc(r.id)}" title="${esc(r.bizDate + ' · ' + statusLabel(r.status))}">
+      <span class="mx-date"><span>${esc(mm || '')}</span><span>${esc(dd || '')}</span></span>
+      <span class="mx-dot ${mxClass(r.status)}"></span>
+    </th>`;
+  }).join('');
+
+  const body = d.nodes.map(n => `
+    <tr>
+      <th class="mx-node mono" title="${esc(n)}">${esc(n)}</th>
+      ${d.runs.map((r, i) => {
+        const c = (d.cells[n] || [])[i];
+        if (!c) return '<td><span class="mx-cell none" title="该次运行没有这个节点"></span></td>';
+        const tip = [n, r.bizDate, statusLabel(c.status),
+          c.durationMs ? c.durationMs + 'ms' : '',
+          c.attempt > 1 ? '第 ' + c.attempt + ' 次尝试' : '',
+          c.error].filter(Boolean).join(' · ');
+        return `<td><span class="mx-cell ${mxClass(c.status)}" data-inst="${esc(r.id)}" title="${esc(tip)}"></span></td>`;
+      }).join('')}
+    </tr>`).join('');
+
+  return `<div class="table-wrap"><table class="mx-grid">
+    <thead><tr><th class="mx-corner">节点 / 运行</th>${head}</tr></thead>
+    <tbody>${body}</tbody></table></div>`;
+}
+
+function mxClass(s) {
+  switch (s) {
+    case 'success': return 'ok';
+    case 'failed': case 'error': return 'err';
+    case 'running': return 'running';
+    case 'queued': return 'queued';
+    case 'canceled': return 'canceled';
+    default: return 'pending';
+  }
+}
+
+function statusLabel(s) {
+  const m = {
+    success: '成功', ok: '正常', failed: '失败', error: '异常', running: '运行中',
+    queued: '排队中', pending: '待执行', canceled: '已取消', skipped: '跳过',
+  };
+  return m[s] || s || '未知';
 }
 
 /**
@@ -929,8 +1115,10 @@ async function openInstance(id) {
 /* ---------------- 血缘 ---------------- */
 
 async function pageLineage(view) {
-  const g = await api('/lineage');
+  const pipe = S.selected.lineagePipeline || '';
+  const g = await api('/lineage' + (pipe ? '?pipeline=' + encodeURIComponent(pipe) : ''));
   const models = await api('/models');
+  const pipes = S.cache.pipelines || (S.cache.pipelines = await api('/pipelines').catch(() => []));
   const anchor = S.selected.lineageTable || '';
   const dir = S.selected.lineageDir || 'both';
 
@@ -964,10 +1152,16 @@ async function pageLineage(view) {
         <h2 class="page-title">血缘</h2>
         <p class="page-desc">表级来自 depends_on，列级来自 SQL 解析。点表看字段，点字段追整条链路。</p>
       </div>
-      <select id="lg-table" style="width:240px">
-        <option value="">选择模型开始下钻</option>
-        ${models.map(m => `<option value="${esc(m.name)}" ${m.name === anchor ? 'selected' : ''}>${esc(m.name)}</option>`).join('')}
-      </select>
+      <div class="row">
+        <select id="lg-pipe" style="width:200px" title="按管道过滤血缘图">
+          <option value="">全部管道</option>
+          ${pipes.map(p => `<option value="${esc(p.name)}" ${p.name === pipe ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}
+        </select>
+        <select id="lg-table" style="width:240px">
+          <option value="">选择模型开始下钻</option>
+          ${models.map(m => `<option value="${esc(m.name)}" ${m.name === anchor ? 'selected' : ''}>${esc(m.name)}</option>`).join('')}
+        </select>
+      </div>
     </div>
 
     <div class="card">
@@ -1103,6 +1297,22 @@ async function pageLineage(view) {
     }
   }
 
+  // 大图裁剪后必须跟着滚动补画，否则滚出初始视口就是一片空白。
+  const lineWrap = document.querySelector('#lineage-svg')?.parentElement;
+  if (lineWrap && gv.nodes.length > 300) {
+    let raf = 0;
+    lineWrap.onscroll = () => {
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(paint);
+    };
+  }
+
+  const pipeSel = document.getElementById('lg-pipe');
+  if (pipeSel) pipeSel.onchange = () => {
+    S.selected.lineagePipeline = pipeSel.value;
+    S.selected.lineageFocusNode = '';
+    render();
+  };
   const t = document.getElementById('lg-table');
   if (t) t.onchange = () => {
     S.selected.lineageTable = t.value;
@@ -1476,10 +1686,22 @@ function drawLineage(svg, g, opts) {
   });
 
   const ns = 'http://www.w3.org/2000/svg';
+  // 大图只画可视区域：1000 节点全量塞进 DOM 会拖慢首屏，滚动时再按需补画。
+  // 小图不启用，避免为了省几十个节点引入滚动重绘的复杂度。
+  const wrap = svg.parentElement;
+  const cull = wrap && nodes.length > 300;
+  const cullPad = 240;
+  const vb = cull ? {
+    x1: wrap.scrollLeft - cullPad, y1: wrap.scrollTop - cullPad,
+    x2: wrap.scrollLeft + wrap.clientWidth + cullPad,
+    y2: wrap.scrollTop + wrap.clientHeight + cullPad,
+  } : null;
+  const inView = p => !vb || (p.x < vb.x2 && p.x + w > vb.x1 && p.y < vb.y2 && p.y + h > vb.y1);
   // 正交折线而不是贝塞尔：多上游汇聚时曲线会互相穿，折线一眼能看出「从哪来、到哪去」。
   edges.forEach(e => {
     const a = pos[e.source], b = pos[e.target];
     if (!a || !b) return;
+    if (vb && !inView(a) && !inView(b)) return;
     const path = document.createElementNS(ns, 'path');
     path.setAttribute('class', 'edge');
     const x1 = a.x + w, y1 = a.y + h / 2, x2 = b.x, y2 = b.y + h / 2, mx = (x1 + x2) / 2;
@@ -1489,7 +1711,7 @@ function drawLineage(svg, g, opts) {
 
   nodes.forEach(n => {
     const p = pos[n];
-    if (!p) return;
+    if (!p || !inView(p)) return;
     const layer = lineageLayer(n);
     const meta = LINEAGE_LAYERS[layer];
     const hit = !!query && String(n).toLowerCase().includes(query);
@@ -1703,17 +1925,6 @@ function metricEditor() {
 
 /* ---------------- 看板 ---------------- */
 
-const DASH_TPL = `name: ops_overview
-description: 经营总览
-cards:
-  - title: 成交总额
-    metric: gmv
-    days: 30
-  - title: 订单量
-    metric: order_cnt
-    days: 30
-`;
-
 /* ---------------- 看板 ---------------- */
 
 // 卡片宽度是「看」的偏好，不是看板定义的一部分，所以存 localStorage 而不是改 YAML
@@ -1737,7 +1948,7 @@ async function pageDashboards(view) {
       <div class="page-head">
         <div>
           <h2 class="page-title">看板</h2>
-          <p class="page-desc">把指标组合成一页。卡片只引用指标，口径仍在语义层统一定义。</p>
+          <p class="page-desc">把指标与 BI 图表组合成一页。口径仍在语义层统一定义，看板只负责排布。</p>
         </div>
         <button class="primary" data-act="new-dashboard">新建看板</button>
       </div>
@@ -1776,6 +1987,7 @@ async function pageDashboards(view) {
       </div>
       <div class="row">
         <select id="d-pick" style="width:200px">${picker}</select>
+        <button class="ghost" data-act="edit-dashboard">编辑当前</button>
         <button class="primary" data-act="new-dashboard">新建看板</button>
       </div>
     </div>
@@ -1799,27 +2011,39 @@ async function pageDashboards(view) {
     ${err ? `<div class="card"><div class="err-box">${esc(err)}</div></div>` : ''}
     <div class="grid c2" id="dash-grid">
       ${data ? data.cards.map((c, i) => {
-        const span = dashSpan(cur, c.metric, c.span || 1);
-        const empty = !c.points || !c.points.length;
+        // 两类卡片共用同一格栅：kind=metric 走交互折线，kind=chart 按保存的图表类型渲染。
+        const isChart = c.kind === 'chart';
+        const spanKey = isChart ? 'chart:' + c.chart : c.metric;
+        const span = dashSpan(cur, spanKey, c.span || 1);
+        const empty = isChart ? !(c.series || []).length : !(c.points || []).length;
+        const meta = isChart
+          ? `${esc(c.chart)} · ${esc(c.chartType || '')}`
+          : `${esc(c.metric)} · ${c.days}天${c.dimension ? ' · ' + esc(c.dimension) : ''}`;
         return `
         <div class="card" style="${span === 2 ? 'grid-column: 1 / -1;' : ''}">
           <div class="card-head" style="gap:8px;flex-wrap:wrap">
-            <div class="card-title" style="flex:1">${esc(c.title || c.metric)}${c.unit ? ` <span class="mute small">${esc(c.unit)}</span>` : ''}</div>
-            <span class="hint mono">${esc(c.metric)} · ${c.days}天${c.dimension ? ' · ' + esc(c.dimension) : ''}</span>
+            <div class="card-title" style="flex:1">${esc(c.title || c.chart || c.metric)}${c.unit ? ` <span class="mute small">${esc(c.unit)}</span>` : ''}</div>
+            <span class="hint mono">${meta}</span>
             <button class="sm ghost" data-act="dash-full" data-i="${i}" title="放大查看">全屏</button>
             <button class="sm ghost" data-act="dash-span" data-i="${i}" title="切换卡片宽度">${span === 2 ? '半宽' : '整行'}</button>
           </div>
           ${c.error ? `<div class="err-box">${esc(c.error)}</div>`
             : empty ? `<div class="empty" style="padding:34px 0"><b>${dim ? '该维度值下没有数据' : '这段时间没有数据'}</b>换个时间范围或维度再试</div>`
-            : `<svg class="chart" id="dc-${i}" height="220"></svg>`}
+            : `<svg class="chart" id="dc-${i}" height="${isChart ? 260 : 220}"></svg>`}
         </div>`;
       }).join('') : ''}
     </div>`;
 
   if (data) {
     data.cards.forEach((c, i) => {
+      const svg = document.getElementById('dc-' + i);
+      if (!svg) return;
+      if (c.kind === 'chart') {
+        drawChart(svg, c.chartType || 'line', c.series || [], c.chartPoints || []);
+        return;
+      }
       if (c.error || !c.points || !c.points.length) return;
-      drawLineChart(document.getElementById('dc-' + i), c.points, c.unit);
+      drawLineChart(svg, c.points, c.unit);
     });
   }
   const pick = document.getElementById('d-pick');
@@ -1835,28 +2059,231 @@ async function pageDashboards(view) {
   };
 }
 
-// 单卡片全屏：用同一份数据重画一张大图，缩放与图例交互都还在
+// 单卡片全屏：用同一份数据重画一张大图。指标卡保留缩放与图例交互，
+// 图表卡按保存时的类型重绘（饼图放大看扇区比折线更有用）。
 function dashFullscreen(i) {
   const d = S.cache.dashCur;
   const c = d && d.cards && d.cards[Number(i)];
   if (!c) return toast('图表数据还没加载', 'err');
-  modal((c.title || c.metric) + ' · ' + c.days + ' 天', `
+  const isChart = c.kind === 'chart';
+  const title = (c.title || c.chart || c.metric) + (isChart ? ' · ' + (c.chartType || '') : ' · ' + c.days + ' 天');
+  modal(title, `
     <div class="chart-wrap"><svg class="chart" id="fs-chart" height="420"></svg></div>
-    <div class="hint" style="margin-top:10px">拖拽选择时间区间可缩放，双击复位；点图例可只看某条线。</div>`);
-  drawLineChart(document.getElementById('fs-chart'), c.points, c.unit);
+    <div class="hint" style="margin-top:10px">${isChart
+      ? '图表按保存时的类型渲染，与看板页共用同一份筛选条件。'
+      : '拖拽选择时间区间可缩放，双击复位；点图例可只看某条线。'}</div>`);
+  const svg = document.getElementById('fs-chart');
+  if (isChart) drawChart(svg, c.chartType || 'line', c.series || [], c.chartPoints || []);
+  else drawLineChart(svg, c.points, c.unit);
 }
 
 
-function dashboardEditor() {
-  modal('看板定义', `
+/* 看板编辑器：卡片列表是主界面，YAML 退为「高级」页签。
+ *
+ * 为什么不直接做自由拖拽网格：看板只有 1–2 列的分栏语义，拖拽带来的收益
+ * 抵不上回归面积（嵌套滚动、触摸、键盘可达都要重做一遍）。上下移 + 宽度
+ * 两个动作已经能表达全部布局。
+ */
+async function dashboardEditor(forceNew) {
+  // forceNew 为真时忽略当前看板：同一个弹窗既做新建也做编辑，
+  // 靠调用方明确意图，不靠「当前有没有选中」猜。
+  const cur = forceNew ? null : S.cache.dashCur;
+  const editing = !!(cur && cur.name);
+  let charts = [], metrics = [];
+  try {
+    const [cs, ms] = await Promise.all([api('/charts'), api('/metrics')]);
+    charts = cs || []; metrics = ms || [];
+  } catch (e) {
+    return toast('加载图表/指标失败：' + e.message, 'err');
+  }
+  if (!charts.length && !metrics.length) {
+    return toast('先定义指标或图表，再来组合看板', 'err');
+  }
+
+  // 编辑时只保留 Card 自己的字段：接口返回的卡片还带着 series/points，
+  // 原样回传会让看板定义里混进一堆数据。
+  const model = {
+    name: editing ? cur.name : '',
+    description: editing ? (cur.description || '') : '',
+    cards: editing ? (cur.cards || []).map(c => ({
+      title: c.title || '', metric: c.metric || '', chart: c.chart || '',
+      days: c.days || (c.chart ? 0 : 30), dimension: c.dimension || '', span: c.span || 1,
+    })) : [],
+  };
+
+  modal(editing ? '编辑看板 · ' + cur.name : '新建看板', `
     <div class="stack">
-      <textarea id="dash-yaml" rows="14">${esc(DASH_TPL)}</textarea>
-      <div class="hint">cards 里每一项引用一个已存在的指标；span=2 表示独占一行。</div>
+      <input id="d-name" placeholder="看板名（标识符，如 ops_overview）" value="${esc(model.name)}"
+        ${editing ? 'readonly' : ''}>
+      <input id="d-desc" placeholder="描述（可选）" value="${esc(model.description)}">
+      <div class="card-title" style="margin-top:2px">卡片</div>
+      <div id="d-cards" class="stack" style="gap:6px"></div>
+      <div class="row">
+        <button class="sm ghost" data-act="d-add" data-kind="metric">+ 指标卡</button>
+        <button class="sm ghost" data-act="d-add" data-kind="chart">+ 图表卡</button>
+      </div>
+      <details id="d-adv">
+        <summary class="hint" style="cursor:pointer">高级：YAML</summary>
+        <textarea id="d-yaml" rows="10" style="margin-top:8px"></textarea>
+        <div class="hint">与上面的列表是同一份定义；保存时以展开的 YAML 为准。</div>
+      </details>
       <div class="row" style="justify-content:flex-end">
         <button class="ghost" data-act="close-modal">取消</button>
-        <button class="primary" data-act="save-dashboard">保存</button>
+        <button class="primary" data-act="d-save">保存</button>
       </div>
     </div>`);
+
+  const rerender = () => dRenderCards(model, charts, metrics);
+  rerender();
+
+  document.querySelectorAll('[data-act="d-add"]').forEach(btn => {
+    btn.onclick = () => {
+      const isChart = btn.dataset.kind === 'chart';
+      model.cards.push(isChart
+        ? { title: '', metric: '', chart: charts[0] ? charts[0].name : '', days: 0, dimension: '', span: 1 }
+        : { title: '', metric: metrics[0] ? metrics[0].name : '', chart: '', days: 30, dimension: '', span: 1 });
+      rerender();
+    };
+  });
+
+  const host = document.getElementById('d-cards');
+  host.oninput = (e) => {
+    const row = e.target.closest('[data-i]');
+    const f = e.target.dataset.f;
+    if (!row || !f) return;
+    const c = model.cards[Number(row.dataset.i)];
+    if (!c) return;
+    // 切类型必须换掉引用对象：指标名和图表名是两套命名空间。
+    if (f === 'kind') {
+      const isChart = e.target.value === 'chart';
+      c.metric = isChart ? '' : (metrics[0] ? metrics[0].name : '');
+      c.chart = isChart ? (charts[0] ? charts[0].name : '') : '';
+      c.days = isChart ? 0 : (c.days || 30);
+      rerender();
+      return;
+    }
+    if (f === 'ref') {
+      if (c.chart) c.chart = e.target.value; else c.metric = e.target.value;
+    } else if (f === 'days') {
+      c.days = Number(e.target.value) || 30;
+    } else if (f === 'span') {
+      c.span = Number(e.target.value);
+    } else {
+      c[f] = e.target.value;
+    }
+  };
+  host.onclick = (e) => {
+    const btn = e.target.closest('button');
+    const row = btn && btn.closest('[data-i]');
+    if (!row) return;
+    const i = Number(row.dataset.i);
+    if (btn.hasAttribute('data-del')) {
+      model.cards.splice(i, 1);
+    } else {
+      const j = i + Number(btn.dataset.move);
+      if (j < 0 || j >= model.cards.length) return;
+      [model.cards[i], model.cards[j]] = [model.cards[j], model.cards[i]];
+    }
+    rerender();
+  };
+
+  const adv = document.getElementById('d-adv');
+  adv.addEventListener('toggle', () => {
+    if (adv.open) document.getElementById('d-yaml').value = dashToYaml(model);
+  });
+
+  document.querySelector('[data-act="d-save"]').onclick = async () => {
+    let body;
+    if (adv.open) {
+      body = { yaml: document.getElementById('d-yaml').value };
+    } else {
+      model.name = document.getElementById('d-name').value.trim();
+      model.description = document.getElementById('d-desc').value.trim();
+      if (!model.name) return toast('看板名不能为空', 'err');
+      if (!model.cards.length) return toast('至少加一张卡片', 'err');
+      const bad = model.cards.findIndex(c => !c.chart && !c.metric);
+      if (bad >= 0) return toast(`第 ${bad + 1} 张卡片还没选引用对象`, 'err');
+      body = {
+        dashboard: {
+          name: model.name,
+          description: model.description,
+          cards: model.cards.map(dCleanCard),
+        },
+      };
+    }
+    try {
+      const d = await api('/dashboards', { method: 'POST', body });
+      closeModal();
+      S.selected.dashboard = d.name;
+      toast('已保存', 'ok');
+      render();
+    } catch (e) { toast(e.message, 'err'); }
+  };
+}
+
+// dRenderCards 重画卡片列表。行内控件全部走事件委托，避免每次重排都重绑监听。
+function dRenderCards(model, charts, metrics) {
+  const host = document.getElementById('d-cards');
+  if (!host) return;
+  if (!model.cards.length) {
+    host.innerHTML = '<div class="hint" style="padding:6px">还没有卡片，从下面加一张（指标卡看趋势，图表卡能放饼图/柱状/指标卡）。</div>';
+    return;
+  }
+  host.innerHTML = model.cards.map((c, i) => {
+    const isChart = !!c.chart;
+    const ref = isChart ? c.chart : c.metric;
+    const pool = isChart ? charts : metrics;
+    const opts = pool.map(x => `<option value="${esc(x.name)}" ${x.name === ref ? 'selected' : ''}>${esc(x.name)}</option>`).join('')
+      || '<option value="">（无可选项）</option>';
+    return `<div class="row" data-i="${i}" style="gap:6px;align-items:center;padding:6px 8px;border:1px solid var(--line-soft);border-radius:var(--r-sm)">
+      <span class="mono dim" style="flex:none;width:14px">${i + 1}</span>
+      <select data-f="kind" style="flex:none;width:72px">
+        <option value="metric" ${isChart ? '' : 'selected'}>指标</option>
+        <option value="chart" ${isChart ? 'selected' : ''}>图表</option>
+      </select>
+      <select data-f="ref" style="flex:1;min-width:80px">${opts}</select>
+      <input data-f="title" value="${esc(c.title || '')}" placeholder="标题" style="flex:1;min-width:80px">
+      ${isChart ? '' : `<input data-f="days" type="number" min="1" value="${c.days || 30}" title="天数" style="flex:none;width:64px">`}
+      <select data-f="span" style="flex:none;width:72px">
+        <option value="1" ${(c.span || 1) === 1 ? 'selected' : ''}>半宽</option>
+        <option value="2" ${c.span === 2 ? 'selected' : ''}>整行</option>
+      </select>
+      <button class="sm ghost" data-move="-1" ${i === 0 ? 'disabled' : ''} title="上移">↑</button>
+      <button class="sm ghost" data-move="1" ${i === model.cards.length - 1 ? 'disabled' : ''} title="下移">↓</button>
+      <button class="sm ghost" data-del title="删除">×</button>
+    </div>`;
+  }).join('');
+}
+
+// 提交前清掉临时字段：days 只属于指标卡，空 dimension 不写进 YAML。
+function dCleanCard(c) {
+  const o = { title: c.title || '', span: c.span || 1 };
+  if (c.chart) {
+    o.chart = c.chart;
+  } else {
+    o.metric = c.metric;
+    o.days = c.days || 30;
+    if (c.dimension) o.dimension = c.dimension;
+  }
+  return o;
+}
+
+// 把手写的结构还原成 YAML。只覆盖 Dashboard 用到的字段，不追求通用序列化。
+function dashToYaml(d) {
+  const q = s => {
+    const v = String(s == null ? '' : s);
+    return /^[A-Za-z0-9_\u4e00-\u9fa5][A-Za-z0-9_\-. \u4e00-\u9fa5]*$/.test(v) ? v : JSON.stringify(v);
+  };
+  const lines = [`name: ${q(d.name)}`, `description: ${q(d.description || '')}`, 'cards:'];
+  (d.cards || []).forEach(c => {
+    lines.push(`  - title: ${q(c.title || '')}`);
+    if (c.chart) lines.push(`    chart: ${q(c.chart)}`);
+    if (c.metric) lines.push(`    metric: ${q(c.metric)}`);
+    if (!c.chart && c.days) lines.push(`    days: ${c.days}`);
+    if (c.dimension) lines.push(`    dimension: ${q(c.dimension)}`);
+    if (c.span && c.span !== 1) lines.push(`    span: ${c.span}`);
+  });
+  return lines.join('\n') + '\n';
 }
 
 /* ---------------- 质量 / 审计 ---------------- */
@@ -2107,7 +2534,8 @@ document.addEventListener('click', async (ev) => {
       case 'profile-table': profileModal(); break;
       case 'run-profile': el.disabled = true; await runProfile(); el.disabled = false; break;
       case 'new-metric': metricEditor(); break;
-      case 'new-dashboard': dashboardEditor(); break;
+      case 'new-dashboard': dashboardEditor(true); break;
+      case 'edit-dashboard': dashboardEditor(false); break;
 
       /* ---- 看板：全局筛选 / 卡片宽度 / 全屏 ---- */
       case 'dash-days': {
@@ -2128,17 +2556,10 @@ document.addEventListener('click', async (ev) => {
         const c = d && d.cards && d.cards[Number(el.dataset.i)];
         if (!c) break;
         const name = d.name;
-        const next = dashSpan(name, c.metric, c.span || 1) === 2 ? 1 : 2;
-        dashSetSpan(name, c.metric, next);
-        await render();
-        break;
-      }
-      case 'save-dashboard': {
-        const yaml = document.getElementById('dash-yaml').value;
-        el.disabled = true;
-        const d = await api('/dashboards', { method: 'POST', body: { yaml } });
-        closeModal(); S.selected.dashboard = d.name;
-        toast('看板 ' + d.name + ' 已保存', 'ok');
+        // 宽度偏好按「卡片引用对象」存：图表卡用 chart: 前缀，避免和同名指标撞 key。
+        const key = c.kind === 'chart' ? 'chart:' + c.chart : c.metric;
+        const next = dashSpan(name, key, c.span || 1) === 2 ? 1 : 2;
+        dashSetSpan(name, key, next);
         await render();
         break;
       }
@@ -2241,6 +2662,10 @@ document.addEventListener('click', async (ev) => {
 
       /* ---- 实例列表：筛选 / 分页 / 批量 ---- */
       case 'inst-refresh': await render(); break;
+      case 'inst-view':
+        S.selected.instView = el.dataset.view;
+        await render();
+        break;
       case 'inst-reset': instApplyFilter({ pipeline: '', status: '', from: '', to: '' }); break;
       case 'inst-clear-sel': instSelected().clear(); await render(); break;
       case 'batch-retry': await instBatch('retry'); break;
