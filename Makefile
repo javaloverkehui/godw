@@ -3,7 +3,7 @@ BIN := bin
 CONFIG ?= config.dev.yaml
 GO ?= go
 
-.PHONY: help build test test-integration lint run migrate doctor seed demo up down reset smoke image clean fmt bench-canvas dag-fixture cover cover-html
+.PHONY: help build test test-integration test-ui lint run migrate doctor seed demo up down reset smoke image clean fmt bench-canvas dag-fixture cover cover-html
 
 help:
 	@echo "GoDW 常用命令"
@@ -12,6 +12,7 @@ help:
 	@echo "  make cover     全量覆盖率 + 95% 门禁（需本机 postgres）"
 	@echo "  make cover-html  覆盖率报告并生成 cover.html"
 	@echo "  make test-integration  真实引擎集成测试（起 pg/mysql/ch，验建表与查询）"
+	@echo "  make test-ui   控制台 UI 自动化（交互 + 数据库双断言，需服务在跑）"
 	@echo "  make lint      go vet + gofmt 检查"
 	@echo "  make run       本地启动控制面（需先 make up && make migrate）"
 	@echo "  make migrate   执行数据库迁移"
@@ -45,6 +46,11 @@ cover-html:
 # 真实引擎集成测试：会起 postgres/mysql/clickhouse，验完即止不会清理数据卷。
 test-integration:
 	bash scripts/integration.sh
+
+# 控制台 UI 自动化：需要服务已在跑（默认 :8080）且元数据库可连。
+# 用例同时断言页面交互与库内数据，见 test/ui/docs/测试用例.md。
+test-ui:
+	cd test/ui && npm install --silent && npx playwright test
 
 lint:
 	$(GO) vet ./...
