@@ -266,7 +266,12 @@ async function pageModelDesign(view) {
       <div class="card" id="m-side">${UI.empty({ title: '属性', desc: '选中模型后可编辑分区、TTL、物化方式' })}</div>
     </div>`;
 
-  await loadModels(view);
+  await Promise.all([
+    loadModels(view),
+    // 属性面板的「数据源」下拉要用它。不并进来会变成直接进模型页时只有「未指定」，
+    // 先从表结构页逛过来才正常——这种「看路径决定功能」的 bug 最难复现。
+    loadDesignerDatasources(),
+  ]);
   view.querySelector('#m-search').addEventListener('input', () => renderModelTree(view));
   view.querySelector('[data-act="m-new"]').addEventListener('click', () => newModelModal(view));
   view.querySelector('[data-act="m-check"]').addEventListener('click', () => checkCurrentModel());
@@ -284,6 +289,18 @@ async function loadModels(view) {
     return;
   }
   renderModelTree(view);
+}
+
+async function loadDesignerDatasources() {
+  try {
+    const dss = await api('/datasources');
+    if (!Array.isArray(dss)) return;
+    DESIGN.datasources = dss;
+    DESIGN.dsMap = {};
+    dss.forEach(d => { DESIGN.dsMap[d.id] = d.name; });
+  } catch (e) {
+    // 数据源拉不到不该拦住建模：下拉退化成「未指定」，保存时后端仍会校验。
+  }
 }
 
 function renderModelTree(view) {
@@ -309,6 +326,7 @@ function renderModelTree(view) {
         <span class="tw"></span><span class="ti">▢</span>
         <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis" title="${esc(m.name)}">${esc(m.name)}</span>
         <span class="tag sm" style="flex:none">v${m.activeVersion}</span>
+        <button class="tree-del" data-mdel="${esc(m.name)}" title="删除模型 ${esc(m.name)}">×</button>
       </div>`).join('')}
     </div>`).join('');
   tree.querySelectorAll('[data-toggle-m]').forEach(n => {
@@ -322,6 +340,63 @@ function renderModelTree(view) {
   tree.querySelectorAll('[data-model]').forEach(n => {
     n.addEventListener('click', () => openModel(view, n.dataset.model));
   });
+  // 删除键在行内，点它不能顺带把模型打开——stopPropagation 是必须的，不是保险。
+  tree.querySelectorAll('[data-mdel]').forEach(n => {
+    n.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      deleteModelFlow(view, n.dataset.mdel);
+    });
+  });
+}
+
+/** 删除前先查引用面，再走危险确认：删模型是元数据操作，物理表不动。 */
+async function deleteModelFlow(view, name) {
+  let refs = { metrics: [], pipelines: [] };
+  try {
+    refs = (await api('/models/' + encodeURIComponent(name) + '/refs')) || refs;
+  } catch (e) {
+    // 查不到引用也允许删：后端在 DELETE 时会再校验一次，不会真的留下悬空引用。
+  }
+  const metrics = refs.metrics || [];
+  const pipelines = refs.pipelines || [];
+  const hit = [];
+  if (metrics.length) hit.push(`${metrics.length} 个指标：${metrics.join('、')}`);
+  if (pipelines.length) hit.push(`${pipelines.length} 条管道：${pipelines.join('、')}`);
+
+  ConfirmDanger({
+    title: '删除模型',
+    danger: `将删除模型 <b>${esc(name)}</b> 及其全部版本快照（含 DDL 历史），不可撤销。
+      线上物理表不会被删除，需要清理数据请走保留策略。<br>
+      ${hit.length
+        ? `<b style="color:#ff7b72">以下对象仍引用它，删除后将失效：</b><br>${hit.map(h => esc(h)).join('<br>')}`
+        : '当前没有指标或管道引用该模型。'}`,
+    resource: name,
+    onOK: async () => {
+      await api('/models/' + encodeURIComponent(name) + '?force=' + (hit.length ? '1' : '0'), { method: 'DELETE' });
+      toast('已删除模型 ' + name, 'ok');
+      if (DESIGN.curModel === name) {
+        DESIGN.curModel = '';
+        DESIGN.spec = null;
+        DESIGN.ddl = '';
+        resetModelPanels();
+      }
+      await loadModels(view);
+    },
+  });
+}
+
+/** 清空中栏/右栏，回到「没选模型」的样子；删除当前模型后不能继续显示它的属性。 */
+function resetModelPanels() {
+  const main = document.getElementById('m-main');
+  if (main) {
+    main.innerHTML = UI.empty({
+      icon: '▤',
+      title: '选择一个模型开始',
+      desc: '分层顺序：ODS 原样落地 → DWD 清洗明细 → DWS 主题汇总 → ADS 对外口径。左侧点一个模型，或右上角「新建模型」。',
+    });
+  }
+  const side = document.getElementById('m-side');
+  if (side) side.innerHTML = UI.empty({ title: '属性', desc: '选中模型后可编辑分区、TTL、物化方式' });
 }
 
 function openModel(view, name) {
@@ -351,6 +426,7 @@ function renderModelMain(view) {
       </div>
       <div class="row">
         <span class="hint" id="m-dirty">${DESIGN.dirty ? '有未保存改动' : '已同步'}</span>
+        <button class="sm ghost danger" data-act="m-del" title="删除当前模型">删除</button>
       </div>
     </div>
     <div class="tabs">
@@ -365,6 +441,9 @@ function renderModelMain(view) {
       renderModelMain(view);
     });
   });
+  // 用已保存的模型名（curModel）而不是表单里的 name：属性面板可能被改成新名字，
+  // 那还没落库，按它删会 404。
+  main.querySelector('[data-act="m-del"]')?.addEventListener('click', () => deleteModelFlow(view, DESIGN.curModel || s.name));
 
   const body = main.querySelector('#m-tab-body');
   if (DESIGN.tab === 'fields') renderFieldTab(body);
@@ -380,16 +459,17 @@ function renderFieldTab(body) {
   body.innerHTML = `
     <div class="row" style="margin-bottom:10px">
       <button class="sm ghost" data-act="f-add">+ 添加字段</button>
-      <span class="hint">拖动手柄可调整顺序；主键列不可为空。</span>
+      <span class="hint">拖动手柄可调整顺序；主键列不可为空；描述会写进列注释（PostgreSQL / ClickHouse 生效）。</span>
     </div>
-    <div class="table-wrap"><div id="f-list">
-      ${cols.length ? cols.map((c, i) => fieldRowHTML(c, i, pk.includes(c.name))).join('')
-        : `<div class="empty">还没有字段，点「添加字段」开始</div>`}
-    </div></div>
-    <datalist id="type-list">
-      ${['string', 'text', 'int', 'bigint', 'decimal(18,2)', 'double', 'bool', 'date', 'datetime', 'timestamp', 'json', 'array<string>']
-        .map(x => `<option value="${x}">`).join('')}
-    </datalist>`;
+    <div class="table-wrap">
+      ${cols.length ? `<div class="field-head">
+        <span></span><span>字段</span><span>类型</span><span>可空</span><span>主键</span><span>描述</span><span></span>
+      </div>` : ''}
+      <div id="f-list">
+        ${cols.length ? cols.map((c, i) => fieldRowHTML(c, i, pk.includes(c.name))).join('')
+          : `<div class="empty">还没有字段，点「添加字段」开始</div>`}
+      </div>
+    </div>`;
 
   body.querySelector('[data-act="f-add"]')?.addEventListener('click', () => {
     DESIGN.spec.columns = DESIGN.spec.columns || [];
@@ -410,9 +490,9 @@ function renderFieldTab(body) {
       markDirty();
     });
   });
-  body.querySelectorAll('[data-f-type]').forEach(inp => {
-    inp.addEventListener('change', () => {
-      DESIGN.spec.columns[Number(inp.dataset.fType)].type = inp.value.trim();
+  body.querySelectorAll('[data-f-type]').forEach(sel => {
+    sel.addEventListener('change', () => {
+      DESIGN.spec.columns[Number(sel.dataset.fType)].type = sel.value.trim();
       markDirty();
       scheduleDDL();
     });
@@ -428,15 +508,26 @@ function renderFieldTab(body) {
       scheduleDDL();
     });
   });
-  body.querySelectorAll('[data-f-pk]').forEach(cb => {
-    cb.addEventListener('change', () => {
-      const name = DESIGN.spec.columns[Number(cb.dataset.fPk)].name;
+  body.querySelectorAll('[data-f-pk]').forEach(sel => {
+    sel.addEventListener('change', () => {
+      const i = Number(sel.dataset.fPk);
+      const name = DESIGN.spec.columns[i].name;
       const set = new Set(DESIGN.spec.primaryKey || []);
-      if (cb.checked) { set.add(name); DESIGN.spec.columns[Number(cb.dataset.fPk)].nullable = false; }
+      if (sel.value === '1') { set.add(name); DESIGN.spec.columns[i].nullable = false; }
       else set.delete(name);
       DESIGN.spec.primaryKey = [...set];
       markDirty();
+      // 主键打开会顺手把可空改成非空，输入框得重画一次才对得上
       renderFieldTab(body);
+    });
+  });
+  body.querySelectorAll('[data-f-comment]').forEach(inp => {
+    inp.addEventListener('input', () => {
+      // 描述不重画整行：一重画光标就丢，边打字边跳是最烦的一种手感
+      const i = Number(inp.dataset.fComment);
+      DESIGN.spec.columns[i].comment = inp.value;
+      markDirty();
+      scheduleDDL();
     });
   });
   body.querySelectorAll('[data-f-del]').forEach(btn => {
@@ -467,18 +558,44 @@ function renderFieldTab(body) {
   });
 }
 
+/**
+ * 字段类型候选：只列编译器认识的逻辑类型。
+ *
+ * 原来这里是 input + datalist——datalist 只是「建议」，手打 `varchar(64)` 这类物理类型
+ * 照样能提交，然后在类型映射矩阵里报「未知逻辑类型」，报错还指不到是哪一列。
+ * 全下拉之后，输入即合法；历史值不在候选里时补一条「自定义」选项，不静默改掉。
+ */
+const FIELD_TYPES = [
+  'string', 'text',
+  'int', 'bigint', 'double',
+  // decimal 不带参数时编译器按 decimal(20,4) 处理，属于合法写法，不该落到「自定义」
+  'decimal', 'decimal(18,2)', 'decimal(38,10)',
+  'bool',
+  'date', 'datetime',
+  'json', 'array<string>', 'array<int>', 'array<bigint>',
+];
+
+function fieldTypeOptions(cur) {
+  const list = FIELD_TYPES.slice();
+  const custom = cur && !list.includes(cur) ? cur : '';
+  return list.map(t => `<option value="${esc(t)}" ${t === cur ? 'selected' : ''}>${esc(t)}</option>`).join('')
+    + (custom ? `<option value="${esc(custom)}" selected>${esc(custom)}（自定义）</option>` : '');
+}
+
 function fieldRowHTML(c, i, isPk) {
   return `<div class="field-row" draggable="true" data-frow="${i}">
     <span class="fh">⋮⋮</span>
     <input data-f-name="${i}" value="${esc(c.name)}" placeholder="字段名">
-    <input data-f-type="${i}" list="type-list" value="${esc(c.type)}" placeholder="类型">
+    <select data-f-type="${i}">${fieldTypeOptions(c.type)}</select>
     <select data-f-null="${i}">
       <option value="1" ${c.nullable ? 'selected' : ''}>可空</option>
       <option value="0" ${c.nullable ? '' : 'selected'}>非空</option>
     </select>
-    <label style="display:flex;align-items:center;gap:5px;margin:0;font-size:11px;color:var(--text-mute)">
-      <input type="checkbox" data-f-pk="${i}" ${isPk ? 'checked' : ''} style="width:auto">主键
-    </label>
+    <select data-f-pk="${i}">
+      <option value="0" ${isPk ? '' : 'selected'}>否</option>
+      <option value="1" ${isPk ? 'selected' : ''}>是</option>
+    </select>
+    <input data-f-comment="${i}" value="${esc(c.comment || '')}" placeholder="描述（可选）">
     <button class="sm ghost danger" data-f-del="${i}" title="删除字段">×</button>
   </div>`;
 }
@@ -673,24 +790,50 @@ function renderModelSide(view) {
     <div class="card-title" style="margin-bottom:12px">属性</div>
     <div id="m-form"></div>`;
 
+  // 数据源：填的是数据源名（逻辑别名），由执行器按环境解析成物理连接，
+  // 因此候选项来自已接入的数据源，手写容易拼错还看不出。
+  const dsNames = (DESIGN.datasources || []).map(d => d.name).filter(Boolean);
+  const dsOpts = [{ value: '', label: '（未指定）' }]
+    .concat(dsNames.map(n => ({ value: n, label: n })));
+  if (s.datasource && !dsNames.includes(s.datasource)) dsOpts.push({ value: s.datasource, label: s.datasource + '（未接入）' });
+
+  // 分区列：候选就是本模型的字段。选一个不存在的列，DDL 必然编译失败，
+  // 与其让用户在预览区读报错，不如从源头只给存在的列。
+  const colNames = (s.columns || []).map(c => c.name).filter(Boolean);
+
+  // TTL：常用档位直接选；历史值不在档位里时补进去，不静默清空。
+  const TTL = [
+    { value: '', label: '永久保留' },
+    { value: '7d', label: '7 天' },
+    { value: '30d', label: '30 天' },
+    { value: '90d', label: '90 天' },
+    { value: '180d', label: '180 天' },
+    { value: '1y', label: '1 年' },
+    { value: '3y', label: '3 年' },
+  ];
+  if (s.ttl && !TTL.some(o => o.value === s.ttl)) TTL.push({ value: s.ttl, label: s.ttl + '（自定义）' });
+
   const form = SchemaForm(side.querySelector('#m-form'), {
     fields: [
       { key: 'name', label: '模型名', required: true, desc: '必须带层前缀，如 dwd_order' },
       { key: 'layer', label: '分层', type: 'select', required: true,
         options: ['ods', 'dim', 'dwd', 'dws', 'ads'] },
-      { key: 'datasource', label: '数据源', desc: '逻辑别名，由环境决定物理指向' },
+      { key: 'datasource', label: '数据源', type: 'select', options: dsOpts,
+        desc: '逻辑别名，由环境决定物理指向' },
       { key: 'description', label: '描述', type: 'textarea', rows: 2 },
-      { key: 'partitionBy', label: '分区列', desc: '逗号分隔；首列通常为 dt' },
-      { key: 'ttl', label: 'TTL', desc: '如 30d / 12m / 3y，留空表示永久' },
+      { key: 'partitionBy', label: '分区列', type: 'multiselect', options: colNames,
+        emptyText: '先在「字段」tab 添加列', desc: '按选择顺序写入 DDL，首列通常为 dt' },
+      { key: 'ttl', label: 'TTL', type: 'select', options: TTL,
+        desc: '到期由 retention 策略清理，留空表示永久' },
       { key: 'materialization', label: '物化方式', type: 'select',
-        options: ['', 'table', 'view', 'mv', 'incremental'] },
+        options: [{ value: '', label: '（默认）' }, 'table', 'view', 'mv', 'incremental'] },
       { key: 'allowLossy', label: '允许有损映射', type: 'switch',
         desc: '开启后跨引擎类型可能丢精度' },
     ],
   }, {
     name: s.name, layer: s.layer, datasource: s.datasource || '',
     description: s.description || '',
-    partitionBy: (s.partitionBy || []).join(','),
+    partitionBy: Array.isArray(s.partitionBy) ? s.partitionBy : [],
     ttl: s.ttl || '', materialization: s.materialization || '',
     allowLossy: !!s.allowLossy,
   });
@@ -700,7 +843,9 @@ function renderModelSide(view) {
       const v = form.value();
       s.name = v.name; s.layer = v.layer; s.datasource = v.datasource;
       s.description = v.description;
-      s.partitionBy = v.partitionBy ? v.partitionBy.split(',').map(x => x.trim()).filter(Boolean) : [];
+      s.partitionBy = Array.isArray(v.partitionBy)
+        ? v.partitionBy
+        : String(v.partitionBy || '').split(',').map(x => x.trim()).filter(Boolean);
       s.ttl = v.ttl; s.materialization = v.materialization; s.allowLossy = v.allowLossy;
       markDirty();
       scheduleDDL();

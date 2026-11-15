@@ -311,6 +311,63 @@ func (r *Repo) ListModels(ctx context.Context, workspaceID string) ([]model.Mode
 	return out, rows.Err()
 }
 
+// ModelRefs 汇总「谁在按名字引用这个模型」。
+// 指标的口径和管道的写入节点都把模型名写死在定义里，模型删掉后它们会指向
+// 一张不存在的表：删除前先把清单摆出来，比事后在运行日志里排查便宜得多。
+type ModelRefs struct {
+	Metrics   []string `json:"metrics"`
+	Pipelines []string `json:"pipelines"`
+}
+
+func (r *Repo) ModelRefs(ctx context.Context, workspaceID, name string) (*ModelRefs, error) {
+	out := &ModelRefs{Metrics: []string{}, Pipelines: []string{}}
+	rows, err := r.DB.Pool.Query(ctx,
+		`SELECT name FROM metric WHERE workspace_id=$1 AND model_name=$2 ORDER BY name`, workspaceID, name)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			return nil, err
+		}
+		out.Metrics = append(out.Metrics, n)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	pipes, err := r.ListPipelines(ctx, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	for _, p := range pipes {
+		if p.Spec == nil {
+			continue
+		}
+		for _, n := range p.Spec.Nodes {
+			if n.Model == name {
+				out.Pipelines = append(out.Pipelines, p.Name)
+				break
+			}
+		}
+	}
+	return out, nil
+}
+
+// DeleteModel 删的是元数据：模型行 + 全部版本快照（FK 级联），物理表不动。
+// 想让线上表跟着消失，那是 retention 策略的职责，不是设计器的一次误点。
+func (r *Repo) DeleteModel(ctx context.Context, workspaceID, name string) error {
+	tag, err := r.DB.Pool.Exec(ctx, `DELETE FROM model WHERE workspace_id=$1 AND name=$2`, workspaceID, name)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return errs.New(errs.CodeNotFound, "模型不存在: "+name)
+	}
+	return nil
+}
+
 // PublishedModelSpec 返回当前生效版本的模型定义，执行器只认这个口径。
 func (r *Repo) PublishedModelSpec(ctx context.Context, workspaceID, name string) (*model.ModelSpec, error) {
 	var specJSON []byte

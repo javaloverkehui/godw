@@ -664,8 +664,40 @@ body[data-env="dev"] .env-banner { background: var(--env-dev-bg); color: var(--e
 .tree-l1 { padding-left: 8px; }
 .tree-l2 { padding-left: 26px; }
 .tree-l3 { padding-left: 44px; }
-/* 字段行：名称给足空间，类型/可空/主键紧凑排列，删除键贴右 */
-.field-row { display: grid; grid-template-columns: 22px minmax(110px, 1.5fr) 104px 78px 60px 26px; gap: 6px; align-items: center; padding: 3px 0; }
+/* 行内删除键：常态淡出，悬浮/键盘聚焦才显形，避免树变成一排红叉 */
+.tree-node .tree-del {
+  flex: none; width: 18px; height: 18px; padding: 0; line-height: 1;
+  border: 1px solid transparent; border-radius: 5px; background: transparent;
+  color: var(--text-mute); font-size: 13px; cursor: pointer; opacity: 0;
+  transition: opacity .12s, color .12s, border-color .12s;
+}
+.tree-node:hover .tree-del, .tree-node .tree-del:focus-visible { opacity: 1; }
+.tree-node .tree-del:hover { color: var(--err-text); border-color: var(--err-line); background: var(--err-bg); }
+@media (hover: none) { .tree-node .tree-del { opacity: .55; } }
+/* 多选：属性面板只有 290px，原生 multiple select 要靠 Ctrl 点选，改成勾选列表 */
+.fmulti {
+  border: 1px solid var(--line); border-radius: 8px; background: var(--bg);
+  max-height: 170px; overflow: auto; padding: 3px; display: grid; gap: 1px; align-content: start;
+}
+.fmulti-item {
+  display: flex; align-items: center; gap: 7px; padding: 4px 6px; margin: 0;
+  border-radius: 5px; font-size: 12px; cursor: pointer; color: var(--text-dim); white-space: nowrap;
+}
+.fmulti-item:hover { background: var(--bg-elev2); color: var(--text); }
+.fmulti-item input { width: auto; margin: 0; flex: none; }
+.fmulti-item span { overflow: hidden; text-overflow: ellipsis; }
+.fmulti-empty { padding: 8px; font-size: 11.5px; color: var(--text-mute); }
+/* 字段行：名称与描述给足空间，类型/可空/主键全下拉，删除键贴右。
+   七列共用同一套轨道，表头才能和行对齐。 */
+.field-row,
+.field-head {
+  display: grid;
+  grid-template-columns: 20px minmax(100px, 1.2fr) 142px 66px 56px minmax(120px, 1.3fr) 26px;
+  gap: 6px;
+  align-items: center;
+}
+.field-row { padding: 3px 0; }
+.field-head { padding: 0 0 6px; font-size: 11px; color: var(--text-mute); }
 .field-row label { white-space: nowrap; margin: 0; }
 .field-row select { padding: 5px 4px; font-size: 12px; }
 .field-row input, .field-row select { padding: 5px 8px; font-size: 12px; }

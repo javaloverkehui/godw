@@ -81,6 +81,10 @@ func (h *Handler) routes() *Router {
 	r.GET("/api/v1/models/{name}/rollback-preview", h.rollbackPreview)
 	r.GET("/api/v1/models/{name}/versions", h.modelVersions)
 	r.POST("/api/v1/models/{name}/rollback", h.rollbackModel)
+	// refs 与 DELETE 都按 {name} 匹配，注册在 /models/preview、/models/check
+	// 之后：那几条是固定路径，靠前缀顺序命中，不能被 {name} 抢走。
+	r.GET("/api/v1/models/{name}/refs", h.modelRefs)
+	r.DELETE("/api/v1/models/{name}", h.deleteModel)
 
 	r.GET("/api/v1/pipelines", h.listPipelines)
 	r.POST("/api/v1/pipelines", h.applyPipeline)
@@ -524,6 +528,46 @@ func (h *Handler) rollbackModel(w http.ResponseWriter, r *http.Request, _ map[st
 	}
 	h.audit(r, "model.rollback", name, map[string]any{"version": body.Version})
 	ok(w, r, map[string]any{"rolledBack": body.Version})
+}
+
+// modelRefs 返回按名字引用该模型的指标与管道。前端拿它填「删除前的影响面」，
+// 不做删除也可以单独调用——排查「这个模型还有人用吗」同样需要。
+func (h *Handler) modelRefs(w http.ResponseWriter, r *http.Request, p map[string]string) {
+	refs, err := h.Svc.Repo.ModelRefs(r.Context(), workspaceOf(r.Context()), p["name"])
+	if err != nil {
+		fail(w, r, err)
+		return
+	}
+	ok(w, r, refs)
+}
+
+// deleteModel 删模型元数据。仍有指标/管道引用时默认拦下，只有显式 force=1 才放行：
+// 解除引用要先改指标口径或管道定义，不该由一次误点顺带完成。
+func (h *Handler) deleteModel(w http.ResponseWriter, r *http.Request, p map[string]string) {
+	if !requireRole(w, r, "admin", "editor") {
+		return
+	}
+	name := p["name"]
+	ws := workspaceOf(r.Context())
+	refs, err := h.Svc.Repo.ModelRefs(r.Context(), ws, name)
+	if err != nil {
+		fail(w, r, err)
+		return
+	}
+	force := r.URL.Query().Get("force") == "1" || r.URL.Query().Get("force") == "true"
+	if !force && (len(refs.Metrics) > 0 || len(refs.Pipelines) > 0) {
+		fail(w, r, errs.New(errs.CodeConflict, "模型仍被指标或管道引用，确认影响后加 force=1 重试").
+			WithMeta("refs", refs))
+		return
+	}
+	if err := h.Svc.Repo.DeleteModel(r.Context(), ws, name); err != nil {
+		fail(w, r, err)
+		return
+	}
+	h.audit(r, "model.delete", name, map[string]any{
+		"force": force, "metrics": refs.Metrics, "pipelines": refs.Pipelines,
+	})
+	ok(w, r, map[string]any{"deleted": name, "refs": refs})
 }
 
 // ---------- pipeline ----------

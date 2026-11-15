@@ -269,6 +269,39 @@ paths:
       responses:
         "200": { description: 已回滚 }
 
+  /api/v1/models/{name}/refs:
+    get:
+      summary: 模型的引用面（按名字引用它的指标与管道）
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: 引用清单
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          metrics: { type: array, items: { type: string } }
+                          pipelines: { type: array, items: { type: string } }
+
+  /api/v1/models/{name}:
+    delete:
+      summary: 删除模型（元数据 + 版本快照，不删物理表）
+      description: 仍有指标或管道引用时返回 10003 并带上 data.refs，显式 force=1 才放行。
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+        - { name: force, in: query, required: false, schema: { type: string, enum: ["1", "true"] } }
+      responses:
+        "200": { description: 已删除，data.deleted 为模型名 }
+        "404": { description: 模型不存在 }
+        "409": { description: 仍被指标或管道引用（data.refs 列出引用方） }
+
   /api/v1/pipelines:
     get:
       summary: 管道列表

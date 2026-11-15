@@ -6,6 +6,17 @@
 ## [未发布]
 
 ### Changed
+- **模型设计器属性面板改为「能选就不让人手写」**：数据源从已接入数据源里选（不再手打逻辑别名）；
+  分区列改为勾选本模型字段（选不存在的列必然编译失败）；TTL 改为常用档位下拉
+  （7d/30d/90d/180d/1y/3y/永久），已有自定义值会补进选项而不是被清空。
+  `SchemaForm` 因此新增 `multiselect` 类型（勾选列表，值统一为数组）。
+- 模型设计页进入时同时拉取数据源列表：此前只有先经过「表结构」页才会加载，
+  直接从侧栏进来时「数据源」下拉是空的。
+- **字段列表补齐描述列，字段属性全下拉**：模型设计器「字段」页签新增表头与「描述」列
+  （写入 `column.comment`，PG/CH 编译成 `COMMENT`）；类型由 `input + datalist` 改为
+  逻辑类型下拉（15 项，含裸 `decimal` 与 `decimal(p,s)` / `array<t>`），主键由勾选框改为「是/否」下拉。
+  历史值不在候选里时补一条「（自定义）」，不静默改写已有模型。
+  → `assets/designer.js`、`assets/app.css`（`.field-head` 与七列轨道）
 - **「开发」菜单改为向导驱动**：新建 ODS / 模型 / 管道 / 指标不再以 YAML 文本框为入口，
   统一走「选 → 看 → 确认」三步向导（`assets/wizard.js`）。YAML 退到「编辑定义」里作为高级视图，
   仍可手工改，但不再是必经之路。
@@ -36,8 +47,19 @@
   （状态/耗时/总行数/错误）。
 - 单测：`test/unit/internal/api/wizard_test.go` 覆盖 spec 入参、管道 spec 回读与指标试算；
   `TestRunOnceWritesStructuredLogs` / `TestRunOnceFailureLogsCarryIDs` 覆盖日志完整性与标识。
+- `GET /api/v1/models/{name}/refs`：列出按名字引用该模型的指标与管道，供删除前查看影响面。
+- `DELETE /api/v1/models/{name}`：删除模型元数据与全部版本快照（`model_version` 级联），
+  物理表不动。仍有指标/管道引用时返回 `10003` 并带上 `refs`，只有显式 `?force=1` 才放行，
+  删除与放行都会写审计（`model.delete`）。
+- 模型设计器：模型树每行与详情页头都提供删除入口，删除前弹出引用清单，
+  必须手输模型名确认（`ConfirmDanger`）。
 
 ### Fixed
+- **指标页整页崩在 `Cannot read properties of null (reading 'length')`**：
+  `semantic.Run` 在区间内没有数据时返回 `Points: nil`，序列化成 JSON `null`，
+  前端 `series.points.length` 直接抛异常，页面白屏。后端改为初始化空切片，
+  前端也把 `null` 归一成 `[]`——「这段时间没有数据」是正常结果，不该表现成报错。
+  → `internal/semantic/metric.go`、`assets/app.js`（`pageMetrics`）。
 - **执行日志「没人看就不记」**：`Service.Logs_` 原先在第一次读日志时才初始化，而 `AppendLog`
   在 nil 时静默返回——实例执行完如果没人打开过日志抽屉，`run_log` 里一行都没有。
   现在日志管理器随 `Service` 构造即就绪，实例开始/结束都能落库。

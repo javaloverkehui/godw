@@ -418,7 +418,10 @@ function ProTable(host, opts) {
  * SchemaForm(host, schema, value) -> {value(), validate(), setValue(v), fields}
  *   schema.fields: [{key, label, type, required, placeholder, desc, options, rows,
  *                    min, max, pattern, patternMsg, visibleIf(v)}]
- *   type: text | textarea | number | select | switch | datetime | password | code
+ *   type: text | textarea | number | select | multiselect | switch | datetime | password | code
+ *
+ * multiselect 的原生 <select multiple> 需要 Ctrl 点选，在属性面板里几乎没人能一次选对；
+ * 这里用勾选列表，值统一是数组。
  *
  * 与模型/管道/质量规则共用同一套表单：字段描述来自后端 JSON Schema，
  * 前端不再为每个表单写一遍 DOM，改字段只改 schema。
@@ -440,6 +443,16 @@ function SchemaForm(host, schema, value) {
           return `<option value="${esc(ov)}" ${String(v) === String(ov) ? 'selected' : ''}>${esc(ol)}</option>`;
         }).join('')}
       </select>`;
+    } else if (f.type === 'multiselect') {
+      const cur = Array.isArray(v) ? v.map(String) : String(v || '').split(',').map(s => s.trim()).filter(Boolean);
+      const opts = f.options || [];
+      inner = `<div class="fmulti" data-f="${esc(f.key)}">
+        ${opts.length ? opts.map(o => {
+          const ov = typeof o === 'string' ? o : o.value;
+          const ol = typeof o === 'string' ? o : (o.label || o.value);
+          return `<label class="fmulti-item"><input type="checkbox" value="${esc(ov)}" ${cur.includes(String(ov)) ? 'checked' : ''}><span>${esc(ol)}</span></label>`;
+        }).join('') : `<div class="fmulti-empty">${esc(f.emptyText || '暂无可选项')}</div>`}
+      </div>`;
     } else if (f.type === 'textarea' || f.type === 'code') {
       inner = `<textarea data-f="${esc(f.key)}" rows="${f.rows || 4}" placeholder="${esc(f.placeholder || '')}"
                 style="${f.type === 'code' ? 'font-family:var(--mono)' : ''}">${esc(v == null ? '' : v)}</textarea>`;
@@ -465,9 +478,20 @@ function SchemaForm(host, schema, value) {
     host.innerHTML = `<div class="sform">${fields.map(fieldHTML).join('')}</div>`;
     host.querySelectorAll('[data-f]').forEach(el => {
       const key = el.dataset.f;
+      const f = fields.find(x => x.key === key);
+      // 多选容器本身没有 value，勾选状态要从内部 checkbox 收集；
+      // 事件在容器上监听，靠 change 冒泡统一处理。
+      if (f && f.type === 'multiselect') {
+        el.addEventListener('change', () => {
+          data[key] = [...el.querySelectorAll('input[type="checkbox"]:checked')].map(x => x.value);
+          const box = host.querySelector(`[data-field="${CSS.escape(key)}"]`);
+          const errBox = host.querySelector(`[data-err="${CSS.escape(key)}"]`);
+          if (box && errBox) { box.classList.remove('invalid'); errBox.textContent = ''; }
+        });
+        return;
+      }
       const ev = el.tagName === 'SELECT' ? 'change' : 'input';
       el.addEventListener(ev, () => {
-        const f = fields.find(x => x.key === key);
         let v = el.value;
         if (f && f.type === 'number') v = v === '' ? '' : Number(v);
         if (f && f.type === 'switch') v = v === 'true';
@@ -483,7 +507,11 @@ function SchemaForm(host, schema, value) {
     fields.forEach(f => { delete errors[f.key]; });
     fields.forEach(f => {
       const v = data[f.key];
-      if (f.required && (v === '' || v == null)) { errors[f.key] = (f.label || f.key) + ' 必填'; return; }
+      if (f.required && (v === '' || v == null || (Array.isArray(v) && !v.length))) {
+        errors[f.key] = (f.label || f.key) + ' 必填';
+        return;
+      }
+      if (Array.isArray(v)) return; // 多选没有 pattern / 区间语义
       if (v !== '' && v != null && f.pattern && !new RegExp(f.pattern).test(String(v))) {
         errors[f.key] = f.patternMsg || '格式不正确';
       }

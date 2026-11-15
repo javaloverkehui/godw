@@ -1834,7 +1834,10 @@ function ymd(d) {
 }
 
 async function pageMetrics(view) {
-  const metrics = await api('/metrics');
+  // 空工作空间的 /metrics 可能返回 null（后端 nil slice → JSON null），
+  // 直接 .length 会抛「Cannot read properties of null」，页面白屏。
+  let metrics = await api('/metrics');
+  if (!Array.isArray(metrics)) metrics = [];
   if (!metrics.length) {
     view.innerHTML = `
       <div class="page-head">
@@ -1856,7 +1859,12 @@ async function pageMetrics(view) {
   const from = new Date(to.getTime() - days * 86400000);
   const qs = `from=${ymd(from)}&to=${ymd(to)}&granularity=day` + (dim ? `&dimension=${encodeURIComponent(dim)}` : '');
   let series = null, qerr = '';
-  try { series = await api('/metrics/' + encodeURIComponent(m.name) + '/query?' + qs); }
+  try {
+    series = await api('/metrics/' + encodeURIComponent(m.name) + '/query?' + qs);
+    // points 为 null 表示「区间内没有数据」，统一成空数组再往下走：
+    // 空结果和查询失败是两种状态，不该都表现成报错。
+    if (series && !Array.isArray(series.points)) series.points = [];
+  }
   catch (e) { qerr = e.message; }
 
   view.innerHTML = `

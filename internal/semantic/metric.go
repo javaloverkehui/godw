@@ -217,7 +217,10 @@ func Run(ctx context.Context, c connector.Connector, m Metric, spec model.ModelS
 	}
 	defer rows.Close()
 
-	out := &Series{Metric: m.Name, Unit: m.Unit, Query: q, SQL: sqlText}
+	// Points 必须初始化成空切片而不是 nil：Go 的 nil slice 序列化成 JSON null，
+	// 前端 series.points.length 会直接抛「Cannot read properties of null」。
+	// 「区间内没有数据」是正常结果，不该表现成页面崩掉。
+	out := &Series{Metric: m.Name, Unit: m.Unit, Query: q, SQL: sqlText, Points: []Point{}}
 	hasDim := q.Dimension != ""
 	for rows.Next() {
 		var ts time.Time
