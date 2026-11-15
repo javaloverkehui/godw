@@ -28,9 +28,28 @@
 ### Added
 - `POST /api/v1/metrics/preview`：用未保存的指标定义直接跑一次聚合，不落库、不读写缓存。
   指标向导「改口径立刻看曲线」依赖它。
-- 单测：`test/unit/internal/api/wizard_test.go` 覆盖 spec 入参、管道 spec 回读与指标试算。
+- **运行日志可追溯**：每行新增 `instanceId` / `taskId`（迁移 `0008_run_log_task.sql` 增加
+  `run_log.task_id`）。节点级日志由执行器直接带上 `task_instance.id`，实例级日志带实例 ID；
+  详情页显示「实例…尾号 · 节点」，悬停看完整标识，并支持按当前筛选复制（TSV，含完整 ID）。
+- 执行日志覆盖完整生命周期：实例开始（管道/版本/业务日期/触发方式/资源组/参数）→ 执行计划
+  （阶段数/节点数/已完成数）→ 阶段开始 → 节点开始/成功/失败/重试/跳过/阻断 → 实例结束
+  （状态/耗时/总行数/错误）。
+- 单测：`test/unit/internal/api/wizard_test.go` 覆盖 spec 入参、管道 spec 回读与指标试算；
+  `TestRunOnceWritesStructuredLogs` / `TestRunOnceFailureLogsCarryIDs` 覆盖日志完整性与标识。
 
 ### Fixed
+- **执行日志「没人看就不记」**：`Service.Logs_` 原先在第一次读日志时才初始化，而 `AppendLog`
+  在 nil 时静默返回——实例执行完如果没人打开过日志抽屉，`run_log` 里一行都没有。
+  现在日志管理器随 `Service` 构造即就绪，实例开始/结束都能落库。
+- **日志被截断导致「筛选 ERROR 显示暂无日志」**：快照接口写死 5000、`Buffer.Since` 又把
+  limit>1000 回退成 200，且只取最早的 200 行；前端只拉 `limit=200`。ERROR 往往在日志末尾，
+  自然永远筛不到。现在快照按 2000 行分页读到耗尽（上限 5 万），前端游标从快照最大 seq 续拉。
+- **自动滚动关不掉**：轮询每秒重绘整个日志盒，浏览器重排把滚动位置带回底部。改为增量追加
+  DOM；关闭自动滚动时保持 `scrollTop` 不变，新日志只显示「↓ N 条新日志」按钮。
+- **日志级别对不上**：下拉值是 `err`，存储层归一成 `error`，筛选永远不匹配。现在选项与
+  归一值一致，并在选项与计数行直接显示各级别条数（打开就知道有没有 ERROR）。
+- **重跑实例日志 seq 撞车**：实例结束后缓冲释放，重跑时新缓冲从 1 重新编号，和库里的旧
+  seq 冲突会让游标读漏行。新增 `SeqReader`，缓冲首行前从 `MAX(seq)` 续号。
 - **MySQL 目标的模型建表必失败**：DDL 编译对 MySQL 跳过了 `CREATE DATABASE`（把「SCHEMA 等同
   DATABASE」当成了「无需创建」），模型只要写了 `schema: dws`，建表和执行写入都会撞上
   `Error 1049 (42000): Unknown database 'dws'`——报错看起来像数据源配错，实际是平台少发了一句建库。

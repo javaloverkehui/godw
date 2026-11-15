@@ -206,16 +206,24 @@ func (s LogSink) WriteBatch(ctx context.Context, instanceID string, lines []logs
 	}
 	batch := &pgx.Batch{}
 	for _, l := range lines {
-		batch.Queue(`INSERT INTO run_log(instance_id,node_id,seq,level,message,created_at)
-		             VALUES($1,$2,$3,$4,$5,$6)`,
-			instanceID, l.NodeID, int(l.Seq), l.Level, l.Message, l.At)
+		batch.Queue(`INSERT INTO run_log(instance_id,task_id,node_id,seq,level,message,created_at)
+		             VALUES($1,$2,$3,$4,$5,$6,$7)`,
+			instanceID, l.TaskID, l.NodeID, int(l.Seq), l.Level, l.Message, l.At)
 	}
 	return s.DB.Pool.SendBatch(ctx, batch).Close()
 }
 
+// MaxSeq 用于实例重跑时续号：新缓冲从库里已有的最大 seq 之后继续。
+func (s LogSink) MaxSeq(ctx context.Context, instanceID string) (int64, error) {
+	var n int64
+	err := s.DB.Pool.QueryRow(ctx,
+		`SELECT COALESCE(MAX(seq),0) FROM run_log WHERE instance_id=$1`, instanceID).Scan(&n)
+	return n, err
+}
+
 func (s LogSink) ReadAfter(ctx context.Context, instanceID string, afterSeq int64, limit int) ([]logstore.Line, error) {
 	rows, err := s.DB.Pool.Query(ctx,
-		`SELECT seq,node_id,level,message,created_at FROM run_log
+		`SELECT seq,task_id,node_id,level,message,created_at FROM run_log
 		 WHERE instance_id=$1 AND seq>$2 ORDER BY seq LIMIT $3`, instanceID, afterSeq, limit)
 	if err != nil {
 		return nil, err
@@ -224,9 +232,10 @@ func (s LogSink) ReadAfter(ctx context.Context, instanceID string, afterSeq int6
 	out := []logstore.Line{}
 	for rows.Next() {
 		var l logstore.Line
-		if err := rows.Scan(&l.Seq, &l.NodeID, &l.Level, &l.Message, &l.At); err != nil {
+		if err := rows.Scan(&l.Seq, &l.TaskID, &l.NodeID, &l.Level, &l.Message, &l.At); err != nil {
 			return nil, err
 		}
+		l.InstanceID = instanceID
 		out = append(out, l)
 	}
 	return out, rows.Err()

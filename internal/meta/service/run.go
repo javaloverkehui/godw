@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -147,8 +148,17 @@ func (s *Service) RetryNode(ctx context.Context, instanceID, nodeID string) (*mo
 	if err := s.Repo.RequeueInstance(ctx, instanceID, ""); err != nil {
 		return nil, err
 	}
-	s.AppendLog(instanceID, nodeID, "info",
-		fmt.Sprintf("从节点 %s 重跑，重置 %d 个节点: %s", nodeID, len(ids), strings.Join(ids, ", ")))
+	taskID := ""
+	if tasks, terr := s.Repo.Tasks(ctx, instanceID); terr == nil {
+		for _, t := range tasks {
+			if t.NodeID == nodeID {
+				taskID = t.ID
+				break
+			}
+		}
+	}
+	s.AppendLogf(instanceID, nodeID, taskID, "info",
+		"从节点 %s 重跑，重置 %d 个节点: %s", nodeID, len(ids), strings.Join(ids, ", "))
 	return s.Repo.GetInstance(ctx, instanceID)
 }
 
@@ -164,7 +174,26 @@ func (s *Service) RunOnce(ctx context.Context, worker string) (bool, error) {
 		return false, nil
 	}
 	s.Log.Info("开始执行实例", "instance", inst.ID, "pipeline", inst.PipelineID, "biz_date", inst.BizDate)
-	s.AppendLog(inst.ID, "", "info", fmt.Sprintf("开始执行 pipeline=%s biz_date=%s", inst.PipelineID, inst.BizDate))
+
+	// 执行日志从「领到实例」这一刻开始记，而不是从第一个节点开始：
+	// 参数、触发方式、资源组恰恰是事后最常被追问的信息。
+	// ClaimInstance 只回实例自身的列，名称/资源组要补一次详情查询。
+	if full, ferr := s.Repo.GetInstance(ctx, inst.ID); ferr == nil {
+		inst.PipelineName, inst.ResourceGroup = full.PipelineName, full.ResourceGroup
+	}
+	s.AppendLogf(inst.ID, "", "", "info",
+		"实例开始：pipeline=%s(%s) version=v%d biz_date=%s trigger=%s worker=%s resource_group=%s",
+		inst.PipelineName, inst.PipelineID, inst.PipelineVer, inst.BizDate,
+		inst.TriggerType, worker, inst.ResourceGroup)
+	if len(inst.Params) > 0 {
+		if raw, jerr := json.Marshal(inst.Params); jerr == nil {
+			s.AppendLogf(inst.ID, "", "", "info", "实例参数：%s", string(raw))
+		}
+	}
+	startedAt := time.Now()
+	if inst.StartedAt != nil {
+		startedAt = *inst.StartedAt
+	}
 
 	// 心跳：租约过半即续期；一旦丢失立即取消执行，避免双写。
 	runCtx, cancel := context.WithCancel(ctx)
@@ -182,16 +211,25 @@ func (s *Service) RunOnce(ctx context.Context, worker string) (bool, error) {
 	if ferr := s.Repo.FinishInstance(ctx, inst.ID, status, errMsg); ferr != nil {
 		s.Log.Error("更新实例状态失败", "instance", inst.ID, "err", ferr)
 	}
-	s.AppendLog(inst.ID, "", map[bool]string{true: "error", false: "info"}[execErr != nil],
-		fmt.Sprintf("实例结束 status=%s %s", status, errMsg))
 
 	// 告警判定在实例结束后进行：此时行数、耗时、状态都已落库。
 	// 取最新实例快照再判定，避免用执行前的旧状态。
-	if fresh, gerr := s.Repo.GetInstance(ctx, inst.ID); gerr == nil {
-		s.EvaluateAlerts(context.WithoutCancel(ctx), inst.WorkspaceID, fresh)
-	} else {
-		s.EvaluateAlerts(context.WithoutCancel(ctx), inst.WorkspaceID, inst)
+	fresh, gerr := s.Repo.GetInstance(ctx, inst.ID)
+	if gerr != nil {
+		fresh = inst
 	}
+	var rows int64
+	for _, t := range fresh.Tasks {
+		rows += t.RowsAffected
+	}
+	level := "info"
+	if execErr != nil {
+		level = "error"
+	}
+	s.AppendLogf(fresh.ID, "", "", level,
+		"实例结束：status=%s 耗时=%s 总行数=%d %s",
+		status, time.Since(startedAt).Round(time.Millisecond), rows, errMsg)
+	s.EvaluateAlerts(context.WithoutCancel(ctx), inst.WorkspaceID, fresh)
 	s.ReleaseLogs(context.WithoutCancel(ctx), inst.ID)
 
 	if execErr != nil {
@@ -243,21 +281,35 @@ func (s *Service) execute(ctx context.Context, inst *model.Instance) error {
 		return err
 	}
 	done := map[string]bool{}
+	taskID := map[string]string{}
 	for _, t := range tasks {
+		taskID[t.NodeID] = t.ID
 		if t.Status == "success" || t.Status == "skipped" {
 			done[t.NodeID] = true
 		}
 	}
 
+	stages := compile.Stages(spec.Nodes)
+	s.AppendLogf(inst.ID, "", "", "info", "执行计划：%d 个阶段 / %d 个节点 / %d 个已完成",
+		len(stages), len(spec.Nodes), len(done))
+
 	blocked := map[string]string{} // nodeID -> 原因
-	for _, stage := range compile.Stages(spec.Nodes) {
+	for si, stage := range stages {
 		if err := ctx.Err(); err != nil {
+			s.AppendLogf(inst.ID, "", "", "error", "执行被取消：%v", err)
 			return errs.Wrap(errs.CodeExecutionFailed, err, "执行被取消")
 		}
 
 		var wg sync.WaitGroup
 		var mu sync.Mutex
 		var stageErr error
+		stageIDs := make([]string, 0, len(stage))
+		for _, n := range stage {
+			stageIDs = append(stageIDs, n.ID)
+		}
+		s.AppendLogf(inst.ID, "", "", "debug", "阶段 %d/%d 开始：%s",
+			si+1, len(stages), strings.Join(stageIDs, ", "))
+
 		for _, n := range stage {
 			if _, isBlocked := blocked[n.ID]; isBlocked {
 				continue
@@ -273,16 +325,18 @@ func (s *Service) execute(ctx context.Context, inst *model.Instance) error {
 			if skipReason != "" {
 				blocked[n.ID] = skipReason
 				_ = s.Repo.FinishTask(ctx, inst.ID, n.ID, "blocked", 0, 0, skipReason)
+				s.AppendLogf(inst.ID, n.ID, taskID[n.ID], "warn", "节点 %s 被阻断：%s", n.ID, skipReason)
 				continue
 			}
 			if done[n.ID] {
+				s.AppendLogf(inst.ID, n.ID, taskID[n.ID], "info", "节点 %s 上次已成功，跳过（保留上次结果）", n.ID)
 				continue
 			}
 
 			wg.Add(1)
 			go func(n model.NodeSpec) {
 				defer wg.Done()
-				if err := s.runNode(ctx, inst, n, vars); err != nil {
+				if err := s.runNode(ctx, inst, n, vars, taskID[n.ID]); err != nil {
 					mu.Lock()
 					blocked[n.ID] = err.Error()
 					if stageErr == nil {
@@ -311,7 +365,7 @@ func (s *Service) execute(ctx context.Context, inst *model.Instance) error {
 	return nil
 }
 
-func (s *Service) runNode(ctx context.Context, inst *model.Instance, n model.NodeSpec, vars map[string]any) error {
+func (s *Service) runNode(ctx context.Context, inst *model.Instance, n model.NodeSpec, vars map[string]any, taskID string) error {
 	retry := n.Retry
 	if retry <= 0 {
 		retry = 0
@@ -320,6 +374,7 @@ func (s *Service) runNode(ctx context.Context, inst *model.Instance, n model.Nod
 	if timeout <= 0 {
 		timeout = 30 * time.Minute
 	}
+	maxAttempts := retry + 1
 
 	var lastErr error
 	for attempt := 0; attempt <= retry; attempt++ {
@@ -327,7 +382,12 @@ func (s *Service) runNode(ctx context.Context, inst *model.Instance, n model.Nod
 			lastErr = err
 			break
 		}
-		_ = s.Repo.StartTask(ctx, inst.ID, n.ID, attempt+1)
+		if err := s.Repo.StartTask(ctx, inst.ID, n.ID, attempt+1); err != nil {
+			s.AppendLogf(inst.ID, n.ID, taskID, "warn", "节点 %s 更新执行状态失败：%v", n.ID, err)
+		}
+		s.AppendLogf(inst.ID, n.ID, taskID, "info",
+			"节点 %s 开始执行：type=%s attempt=%d/%d timeout=%s",
+			n.ID, n.Type, attempt+1, maxAttempts, timeout)
 
 		nodeCtx, cancel := context.WithTimeout(ctx, timeout)
 		stats, err := s.Exec.Run(nodeCtx, inst.WorkspaceID, n, vars)
@@ -335,18 +395,26 @@ func (s *Service) runNode(ctx context.Context, inst *model.Instance, n model.Nod
 
 		if err == nil {
 			_ = s.Repo.FinishTask(ctx, inst.ID, n.ID, "success", stats.RowsAffected, stats.DurationMS, "")
+			// 成功也要留一行：没有这一行，「跑了多久、写了多少行」只能靠节点表反推，
+			// 而节点表在下游节点覆盖后只保留最后一次的结果。
+			doneMsg := fmt.Sprintf("节点 %s 执行成功：%d 行 / %dms（attempt %d/%d）",
+				n.ID, stats.RowsAffected, stats.DurationMS, attempt+1, maxAttempts)
 			if stats.Message != "" {
-				s.AppendLog(inst.ID, n.ID, "info", fmt.Sprintf("%s 完成：%s（%d 行 / %dms）",
-					n.ID, stats.Message, stats.RowsAffected, stats.DurationMS))
+				doneMsg += " · " + stats.Message
 			}
+			s.AppendLogf(inst.ID, n.ID, taskID, "info", "%s", doneMsg)
 			s.saveQuality(ctx, inst, n, stats)
 			return nil
 		}
 		lastErr = err
 		s.Log.Warn("节点执行失败", "node", n.ID, "attempt", attempt+1, "err", err)
-		s.AppendLog(inst.ID, n.ID, "error", fmt.Sprintf("%s 第 %d 次尝试失败：%v", n.ID, attempt+1, err))
+		s.AppendLogf(inst.ID, n.ID, taskID, "error",
+			"节点 %s 第 %d/%d 次尝试失败：%v", n.ID, attempt+1, maxAttempts, err)
 		if attempt < retry {
-			time.Sleep(time.Duration(attempt+1) * 2 * time.Second)
+			wait := time.Duration(attempt+1) * 2 * time.Second
+			s.AppendLogf(inst.ID, n.ID, taskID, "warn",
+				"节点 %s 将在 %s 后重试", n.ID, wait)
+			time.Sleep(wait)
 		}
 	}
 
@@ -355,6 +423,7 @@ func (s *Service) runNode(ctx context.Context, inst *model.Instance, n model.Nod
 		msg = lastErr.Error()
 	}
 	_ = s.Repo.FinishTask(ctx, inst.ID, n.ID, "failed", 0, 0, msg)
+	s.AppendLogf(inst.ID, n.ID, taskID, "error", "节点 %s 最终失败：%s", n.ID, msg)
 	return lastErr
 }
 

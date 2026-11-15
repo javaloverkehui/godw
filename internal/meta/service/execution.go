@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -61,21 +62,37 @@ func (s *Service) groupList() []queue.Group {
 	return out
 }
 
-// Logs 返回实例日志（先热后冷）。
-func (s *Service) Logs(ctx context.Context, instanceID string, afterSeq int64, limit int) ([]logstore.Line, error) {
+// logs 返回日志管理器；零值 Service（测试或旧构造路径）也能安全工作。
+func (s *Service) logs() *logstore.Manager {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.Logs_ == nil {
-		sink := repo.LogSink{DB: s.Repo.DB}
-		s.Logs_ = logstore.NewManager(sink, 2000)
+		s.Logs_ = logstore.NewManager(repo.LogSink{DB: s.Repo.DB}, 5000)
 	}
-	return s.Logs_.Get(instanceID).Since(ctx, afterSeq, limit)
+	return s.Logs_
+}
+
+// Logs 返回实例日志（先热后冷）。
+//
+// 读路径不创建缓冲：否则每看一条历史实例，内存里就多一个永远不会被释放的空缓冲。
+// 正在跑的实例由 RunOnce 提前建好缓冲，历史实例直接回源。
+func (s *Service) Logs(ctx context.Context, instanceID string, afterSeq int64, limit int) ([]logstore.Line, error) {
+	m := s.logs()
+	if b := m.Existing(instanceID); b != nil {
+		return b.Since(ctx, afterSeq, limit)
+	}
+	return m.Cold(ctx, instanceID, afterSeq, limit)
 }
 
 // AppendLog 供执行器写入日志。
-func (s *Service) AppendLog(instanceID, nodeID, level, msg string) {
-	if s.Logs_ == nil {
-		return
-	}
-	s.Logs_.Get(instanceID).Append(nodeID, level, msg)
+// taskID 是该行归属的 task_instance.id；实例级日志（开始/结束）留空。
+func (s *Service) AppendLog(instanceID, nodeID, taskID, level, msg string) {
+	s.logs().Get(instanceID).AppendTask(nodeID, taskID, level, msg)
+}
+
+// AppendLogf 是 AppendLog 的格式化版本，避免每个调用点都写一遍 fmt.Sprintf。
+func (s *Service) AppendLogf(instanceID, nodeID, taskID, level, format string, args ...any) {
+	s.AppendLog(instanceID, nodeID, taskID, level, fmt.Sprintf(format, args...))
 }
 
 // ReleaseLogs 实例结束后刷盘并释放内存。

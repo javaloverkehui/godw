@@ -192,7 +192,7 @@ func TestDatabaseOutagePaths(t *testing.T) {
 	}}, "2026-01-01", nil); err != nil || res.Nodes[0].Error == "" {
 		t.Errorf("DryRun 应把模型不可读降级成节点错误: %v %+v", err, res)
 	}
-	svc.AppendLog("ins", "", "info", "db down")
+	svc.AppendLog("ins", "", "", "info", "db down")
 	svc.ReleaseLogs(ctxBG(), "ins")
 }
 

@@ -4,9 +4,11 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/godw/godw/internal/obs/alert"
+	"github.com/godw/godw/internal/obs/logstore"
 	"github.com/godw/godw/internal/pkg/errs"
 )
 
@@ -211,7 +213,10 @@ func (h *Handler) instanceLogs(w http.ResponseWriter, r *http.Request, p map[str
 			afterSeq = n
 		}
 	}
-	levelFilter := r.URL.Query().Get("level")
+	levelFilter := strings.ToLower(r.URL.Query().Get("level"))
+	if levelFilter == "err" {
+		levelFilter = "error"
+	}
 
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
@@ -237,8 +242,8 @@ func (h *Handler) instanceLogs(w http.ResponseWriter, r *http.Request, p map[str
 				if levelFilter != "" && l.Level != levelFilter {
 					continue
 				}
-				payload := fmt.Sprintf(`{"seq":%d,"nodeId":%q,"level":%q,"message":%q,"at":%q}`,
-					l.Seq, l.NodeID, l.Level, l.Message, l.At.Format(time.RFC3339Nano))
+				payload := fmt.Sprintf(`{"seq":%d,"instanceId":%q,"taskId":%q,"nodeId":%q,"level":%q,"message":%q,"at":%q}`,
+					l.Seq, l.InstanceID, l.TaskID, l.NodeID, l.Level, l.Message, l.At.Format(time.RFC3339Nano))
 				fmt.Fprintf(w, "id: %d\nevent: log\ndata: %s\n\n", l.Seq, payload)
 			}
 			if len(lines) > 0 {
@@ -257,15 +262,38 @@ func (h *Handler) instanceLogs(w http.ResponseWriter, r *http.Request, p map[str
 	}
 }
 
-// instanceLogsSnapshot 返回一次性日志快照，供「复制全部日志」与排查导出。
+// instanceLogsSnapshot 返回一次性日志快照，供详情页、复制与排查导出。
+//
+// 默认把该实例的日志从头捞到尾（分页读到耗尽，上限 5 万行）。
+// 旧实现把 limit 写死 5000、底层又只取 200，导致「日志里有 ERROR 但页面筛不到」。
 func (h *Handler) instanceLogsSnapshot(w http.ResponseWriter, r *http.Request, p map[string]string) {
 	after, _ := strconv.ParseInt(r.URL.Query().Get("after"), 10, 64)
-	lines, err := h.Svc.Logs(r.Context(), p["id"], after, 5000)
-	if err != nil {
-		fail(w, r, err)
-		return
+	level := strings.ToLower(r.URL.Query().Get("level"))
+	if level == "err" {
+		level = "error"
 	}
-	ok(w, r, lines)
+	const (
+		chunk    = 2000
+		maxTotal = 50000
+	)
+	out := make([]logstore.Line, 0, 256)
+	for len(out) < maxTotal {
+		lines, err := h.Svc.Logs(r.Context(), p["id"], after, chunk)
+		if err != nil {
+			fail(w, r, err)
+			return
+		}
+		for _, l := range lines {
+			after = l.Seq
+			if level == "" || l.Level == level {
+				out = append(out, l)
+			}
+		}
+		if len(lines) < chunk {
+			break
+		}
+	}
+	ok(w, r, out)
 }
 
 func isTerminal(status string) bool {

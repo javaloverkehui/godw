@@ -238,9 +238,14 @@ func TestBufferSinceColdMerge(t *testing.T) {
 	if len(lines) != 4 {
 		t.Fatalf("合并结果 %d 条，期望 4: %+v", len(lines), lines)
 	}
-	// DB 优先，内存行用于补齐。
-	if lines[0].Message != "db-2" {
-		t.Fatalf("合并顺序应以 DB 在前: %+v", lines)
+	// 合并后按 seq 升序：前端按 seq 游标继续读，乱序会重复或漏行。
+	for i := 1; i < len(lines); i++ {
+		if lines[i].Seq < lines[i-1].Seq {
+			t.Fatalf("合并结果应按 seq 升序: %+v", lines)
+		}
+	}
+	if lines[0].Seq != 1 || lines[len(lines)-1].Seq != 10 {
+		t.Fatalf("合并结果的首尾 seq 不对: %+v", lines)
 	}
 }
 

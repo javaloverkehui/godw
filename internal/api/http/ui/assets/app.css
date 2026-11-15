@@ -731,15 +731,29 @@ body[data-env="dev"] .env-banner { background: var(--env-dev-bg); color: var(--e
 @media (prefers-reduced-motion: reduce) {
   .mx-cell.running, .mx-dot.running { animation: none; }
 }
-.loglevel { display: inline-block; width: 46px; font-family: var(--mono); font-size: 11px; }
-.loglevel.err { color: #ff7b72; }
+.loglevel { display: inline-block; width: 44px; font-family: var(--mono); font-size: 11px; }
+.loglevel.err, .loglevel.error { color: #ff7b72; }
 .loglevel.warn { color: #e3b341; }
 .loglevel.info { color: #79b8ff; }
-.logbox { font-family: var(--mono); font-size: 12px; line-height: 1.7; background: var(--code-bg); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; max-height: 320px; overflow: auto; }
+.loglevel.debug { color: var(--text-mute); }
+.logbox { font-family: var(--mono); font-size: 12px; line-height: 1.7; background: var(--code-bg); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; max-height: 340px; overflow: auto; overscroll-behavior: contain; }
 :root[data-theme="light"] .logbox { background: #fbfcfe; }
-.logbox .ln { display: grid; grid-template-columns: 78px 46px 1fr; gap: 6px; }
-.logbox .ts { color: var(--text-mute); }
+/* 时间 / 级别 / 实例·节点 / 消息：实例标识每行都在，复制或截图后都能对上号 */
+.logbox .ln { display: grid; grid-template-columns: 72px 44px 152px 1fr; gap: 7px; align-items: start; padding: 1px 0; }
+.logbox .ln:hover { background: var(--bg-elev2); }
+.logbox .ts { color: var(--text-mute); font-variant-numeric: tabular-nums; }
+.logbox .lid { color: var(--text-mute); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.logbox .ln.lv-error .msg { color: #ffb3ae; }
 .logbox .msg { white-space: pre-wrap; word-break: break-all; }
+.logbox .log-empty { padding: 8px 2px; line-height: 1.8; }
+.log-wrap { position: relative; }
+.log-jump {
+  position: absolute; right: 12px; bottom: 12px; z-index: 3;
+  padding: 4px 12px; border-radius: 999px; font-size: 11.5px; cursor: pointer;
+  border: 1px solid var(--accent); background: var(--bg-elev2); color: var(--accent);
+  box-shadow: 0 4px 14px rgba(0,0,0,.35);
+}
+.log-jump:hover { background: var(--accent); color: #fff; }
 
 /* =============================================================================
    BI 看板编辑器（T0909）

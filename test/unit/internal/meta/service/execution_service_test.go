@@ -86,31 +86,35 @@ func TestLogsAppendReleaseAndMask(t *testing.T) {
 		t.Fatalf("触发失败: %v", err)
 	}
 
-	// 未初始化时 Append/Release 是安全的空操作（执行器可能在调度器未启动时被调用）。
-	svc.AppendLog(inst.ID, "", "info", "before-init")
+	// 日志管理器随 Service 构造即就绪：没人打开过日志页时也不能丢日志。
+	svc.AppendLog(inst.ID, "", "", "info", "before-init")
 	svc.ReleaseLogs(ctxBG(), inst.ID)
 
 	lines, err := svc.Logs(ctxBG(), inst.ID, 0, 10)
-	if err != nil || len(lines) != 0 {
-		t.Fatalf("初始化后暂无日志: %v %v", lines, err)
+	if err != nil || len(lines) != 1 || lines[0].InstanceID != inst.ID {
+		t.Fatalf("释放前写入的日志应已落库并带实例标识: %+v %v", lines, err)
 	}
 
-	svc.AppendLog(inst.ID, "src", "info", "开始执行 password=hunter2")
-	svc.AppendLog(inst.ID, "src", "error", "连接失败 token=abc123")
+	svc.AppendLog(inst.ID, "src", "tsk_src", "info", "开始执行 password=hunter2")
+	svc.AppendLog(inst.ID, "src", "tsk_src", "error", "连接失败 token=abc123")
 	lines, err = svc.Logs(ctxBG(), inst.ID, 0, 10)
-	if err != nil || len(lines) != 2 {
-		t.Fatalf("应读到 2 条热日志: %+v %v", lines, err)
+	if err != nil || len(lines) != 3 {
+		t.Fatalf("应读到 3 条（含释放前那条）: %+v %v", lines, err)
 	}
-	if strings.Contains(lines[0].Message, "hunter2") || strings.Contains(lines[1].Message, "abc123") {
+	// 重跑续号：释放后新建的缓冲必须接着库里的 seq，而不是从 1 重来。
+	if lines[1].Seq != 2 || lines[2].Seq != 3 {
+		t.Fatalf("seq 应从库内最大值续号: %+v", lines)
+	}
+	if strings.Contains(lines[1].Message, "hunter2") || strings.Contains(lines[2].Message, "abc123") {
 		t.Fatalf("日志应脱敏: %+v", lines)
 	}
-	if lines[1].Level != "error" || lines[0].NodeID != "src" {
-		t.Fatalf("级别/节点丢失: %+v", lines)
+	if lines[2].Level != "error" || lines[1].NodeID != "src" || lines[1].TaskID != "tsk_src" {
+		t.Fatalf("级别/节点/任务丢失: %+v", lines)
 	}
 
-	// 断点续读：afterSeq=1 只返回第二条。
-	tail, err := svc.Logs(ctxBG(), inst.ID, 1, 10)
-	if err != nil || len(tail) != 1 || tail[0].Seq != 2 {
+	// 断点续读：afterSeq=2 只返回最后一条。
+	tail, err := svc.Logs(ctxBG(), inst.ID, 2, 10)
+	if err != nil || len(tail) != 1 || tail[0].Seq != 3 {
 		t.Fatalf("断点续读不对: %+v %v", tail, err)
 	}
 
@@ -120,8 +124,120 @@ func TestLogsAppendReleaseAndMask(t *testing.T) {
 	if err != nil {
 		t.Fatalf("冷读失败: %v", err)
 	}
-	if len(cold) != 2 {
-		t.Fatalf("刷盘后应仍能读到 2 条: %+v", cold)
+	if len(cold) != 3 {
+		t.Fatalf("刷盘后应仍能读到 3 条: %+v", cold)
+	}
+	if cold[0].InstanceID != inst.ID || cold[1].TaskID != "tsk_src" {
+		t.Fatalf("冷读应恢复实例/任务标识: %+v", cold)
+	}
+}
+
+// 执行日志必须「从开始到结束」完整落库，并且每一行都能对上是哪个实例、哪个任务。
+// 这条用例守住的是排查体验：没人打开日志页时也不能丢日志，taskId 不能空。
+func TestRunOnceWritesStructuredLogs(t *testing.T) {
+	svc, ws := newSvc(t)
+	pipe := model.PipelineSpec{Kind: "Pipeline", Name: "log_full", Nodes: []model.NodeSpec{
+		{ID: "b", Type: model.NodeBranch},
+	}}
+	publishPipeline(t, svc, ws.ID, pipe)
+
+	inst, _, err := svc.Trigger(ctxBG(), ws.ID, "log_full", "2026-09-07", "manual", nil)
+	if err != nil {
+		t.Fatalf("触发失败: %v", err)
+	}
+	if _, err := svc.RunOnce(ctxBG(), "w1"); err != nil {
+		t.Fatalf("执行失败: %v", err)
+	}
+	// 执行结束后缓冲已释放，这里读到的是真正落库的内容。
+	lines, err := svc.Logs(ctxBG(), inst.ID, 0, 1000)
+	if err != nil {
+		t.Fatalf("读日志失败: %v", err)
+	}
+	if len(lines) < 5 {
+		t.Fatalf("日志应覆盖开始/计划/节点开始/节点成功/结束，实际 %d 条: %+v", len(lines), lines)
+	}
+	tasks, err := svc.Repo.Tasks(ctxBG(), inst.ID)
+	if err != nil || len(tasks) != 1 {
+		t.Fatalf("读任务失败: %+v %v", tasks, err)
+	}
+	taskID := tasks[0].ID
+	var hasStart, hasPlan, hasNodeStart, hasNodeOK, hasEnd bool
+	for _, l := range lines {
+		if l.InstanceID != inst.ID {
+			t.Fatalf("每行都要带实例标识: %+v", l)
+		}
+		switch {
+		case strings.Contains(l.Message, "实例开始"):
+			hasStart = true
+			if l.TaskID != "" {
+				t.Fatalf("实例级日志不应带 taskId: %+v", l)
+			}
+		case strings.Contains(l.Message, "执行计划"):
+			hasPlan = true
+		case l.NodeID == "b" && strings.Contains(l.Message, "开始执行"):
+			hasNodeStart = true
+			if l.TaskID != taskID {
+				t.Fatalf("节点日志的 taskId 应等于 task_instance.id: %+v", l)
+			}
+		case l.NodeID == "b" && strings.Contains(l.Message, "执行成功"):
+			hasNodeOK = true
+			if l.TaskID != taskID || l.Level != "info" {
+				t.Fatalf("成功日志级别/任务不对: %+v", l)
+			}
+		case strings.Contains(l.Message, "实例结束"):
+			hasEnd = true
+			if !strings.Contains(l.Message, "status=success") {
+				t.Fatalf("结束日志应带最终状态: %+v", l)
+			}
+		}
+	}
+	if !hasStart || !hasPlan || !hasNodeStart || !hasNodeOK || !hasEnd {
+		t.Fatalf("日志阶段不完整 start=%v plan=%v nodeStart=%v nodeOK=%v end=%v: %+v",
+			hasStart, hasPlan, hasNodeStart, hasNodeOK, hasEnd, lines)
+	}
+}
+
+// 失败路径同样要有 ERROR 行，并且带实例/任务标识——这正是「筛 ERROR 却暂无日志」的反面。
+func TestRunOnceFailureLogsCarryIDs(t *testing.T) {
+	svc, ws := newSvc(t)
+	pipe := model.PipelineSpec{Kind: "Pipeline", Name: "log_fail", Nodes: []model.NodeSpec{
+		{ID: "s", Type: model.NodeSource, Datasource: "missing_ds", SQL: "SELECT 1"},
+	}}
+	publishPipeline(t, svc, ws.ID, pipe)
+
+	inst, _, err := svc.Trigger(ctxBG(), ws.ID, "log_fail", "2026-09-08", "manual", nil)
+	if err != nil {
+		t.Fatalf("触发失败: %v", err)
+	}
+	if _, err := svc.RunOnce(ctxBG(), "w1"); err == nil {
+		t.Fatal("数据源不存在时应执行失败")
+	}
+	lines, err := svc.Logs(ctxBG(), inst.ID, 0, 1000)
+	if err != nil {
+		t.Fatalf("读日志失败: %v", err)
+	}
+	tasks, _ := svc.Repo.Tasks(ctxBG(), inst.ID)
+	if len(tasks) != 1 {
+		t.Fatalf("应有一个任务: %+v", tasks)
+	}
+	var errLines, nodeErrLines int
+	for _, l := range lines {
+		if l.Level != "error" {
+			continue
+		}
+		errLines++
+		if l.InstanceID != inst.ID {
+			t.Fatalf("ERROR 行必须带实例标识: %+v", l)
+		}
+		if l.NodeID != "" {
+			nodeErrLines++
+			if l.TaskID != tasks[0].ID {
+				t.Fatalf("节点 ERROR 行必须带任务标识: %+v", l)
+			}
+		}
+	}
+	if errLines == 0 || nodeErrLines == 0 {
+		t.Fatalf("失败执行应留下 ERROR 日志（含节点级）: %+v", lines)
 	}
 }
 

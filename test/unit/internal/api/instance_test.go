@@ -107,14 +107,18 @@ func TestInstanceReadPaths(t *testing.T) {
 	if lines := list(t, e.ok("GET", "/api/v1/instances/"+id+"/logs", nil)); len(lines) != 0 {
 		t.Fatalf("初始日志应为空，得到 %d", len(lines))
 	}
-	e.svc.AppendLog(id, "src", "info", "开始读取源表")
-	e.svc.AppendLog(id, "load", "error", "写入失败重试中")
+	e.svc.AppendLog(id, "src", "tsk_src", "info", "开始读取源表")
+	e.svc.AppendLog(id, "load", "tsk_load", "error", "写入失败重试中")
 	lines := list(t, e.ok("GET", "/api/v1/instances/"+id+"/logs", nil))
 	if len(lines) != 2 {
 		t.Fatalf("应有 2 条日志，得到 %d", len(lines))
 	}
 	if l := obj(t, lines[1]); field(t, l, "level") != "error" {
 		t.Fatalf("日志内容不对: %v", l)
+	}
+	// 每行都带实例与任务标识：日志导出后还能对上是哪次执行的哪个节点。
+	if l := obj(t, lines[1]); field(t, l, "instanceId") != id || field(t, l, "taskId") != "tsk_load" {
+		t.Fatalf("日志缺少实例/任务标识: %v", l)
 	}
 	// after 参数用于断点续传：跳过第一条后只剩一条。
 	after := list(t, e.ok("GET", "/api/v1/instances/"+id+"/logs?after=1", nil))
@@ -146,7 +150,7 @@ func TestInstanceStreams(t *testing.T) {
 	// 把实例取消成终态，日志流应在推完日志后自己发 done 关闭。
 	e.ok("POST", "/api/v1/instances/"+id+"/cancel", nil)
 	e.ok("GET", "/api/v1/instances/"+id+"/logs", nil) // 初始化日志管理器
-	e.svc.AppendLog(id, "src", "info", "收尾日志")
+	e.svc.AppendLog(id, "src", "tsk_src", "info", "收尾日志")
 
 	status, logs := fxSSE(t, e, "/api/v1/instances/"+id+"/logs/stream?level=info", 5*time.Second)
 	if status == http.StatusOK {

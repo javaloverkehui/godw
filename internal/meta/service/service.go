@@ -46,7 +46,8 @@ type Service struct {
 	Rules modelc.Rules
 	// ResourceGroups 是资源组配置，key 为组名。
 	ResourceGroups map[string]queue.Group
-	// Logs_ 是运行日志管理器，懒加载。
+	// Logs_ 是运行日志管理器。构造时就要建好：AppendLog 曾经在「没人打开过
+	// 日志面板」时静默丢弃全部日志，事后只剩一个空白的执行日志页。
 	Logs_ *logstore.Manager
 	mu    sync.Mutex
 }
@@ -73,6 +74,8 @@ func New(db *repo.DB, cfg config.Config, log *slog.Logger) (*Service, error) {
 			"default": queue.DefaultGroup(),
 			"heavy":   {Name: "heavy", MaxConcurrency: 1, MaxTimeoutSec: 7200, MaxPool: 20},
 		},
+		// 热缓冲只影响「正在看」的实例；完整日志始终批量落库。
+		Logs_: logstore.NewManager(repo.LogSink{DB: db}, 5000),
 	}
 	svc.Exec = &node.Executor{
 		Pool:     pool,

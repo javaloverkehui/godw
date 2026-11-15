@@ -18,6 +18,15 @@ const RUNBOOK = {
   logLevel: 'all',
   logKW: '',
   autoScroll: true,
+  // 日志状态按实例重置；logSeq 是增量拉取的游标。
+  logBuf: [],
+  logIID: '',
+  logSeq: 0,
+  logNew: 0,
+  logTerminal: false,
+  logIdleTicks: 0,
+  logErrors: 0,
+  logKWTimer: null,
   sql: null,
   sqlDiff: false,
 };
@@ -177,7 +186,17 @@ async function openRunDrawer(id) {
     inst = r.instance || r;
     quality = r.quality || [];
   } catch (e) { return toast(e.message, 'err'); }
-  try { const r = await api('/instances/' + encodeURIComponent(id) + '/logs?limit=200'); logs = r.lines || r || []; } catch (e) { logs = []; }
+  try { const r = await api('/instances/' + encodeURIComponent(id) + '/logs'); logs = r.lines || r || []; } catch (e) { logs = []; }
+  // 日志状态随实例一起重置：筛选、游标、未读计数都不能从上一个抽屉继承。
+  RUNBOOK.logIID = id;
+  RUNBOOK.logBuf = logs;
+  RUNBOOK.logSeq = logs.reduce((m, l) => Math.max(m, l.seq || 0), 0);
+  RUNBOOK.logLevel = 'all';
+  RUNBOOK.logKW = '';
+  RUNBOOK.logNew = 0;
+  RUNBOOK.logTerminal = ['success', 'failed', 'canceled'].includes(inst && inst.status);
+  RUNBOOK.logIdleTicks = 0;
+  RUNBOOK.logErrors = 0;
   const RANK = { failed: 0, running: 1, blocked: 2, skipped: 3, pending: 4, success: 5 };
   const tasks = (inst.tasks || []).slice().sort((a, b) => (RANK[a.status] ?? 9) - (RANK[b.status] ?? 9));
   // 节点耗时条：以最慢节点为基准，一眼看出瓶颈在哪一段
@@ -254,20 +273,26 @@ async function openRunDrawer(id) {
           </tr>`).join('')}</tbody>
         </table></div>` : ''}
 
-        <div class="row" style="margin-bottom:8px">
+        <div class="row" style="margin-bottom:8px;flex-wrap:wrap">
           <div class="card-title" style="flex:1">执行日志</div>
           <select id="log-level" style="width:auto">
             <option value="all">全部级别</option>
             <option value="info">INFO</option>
             <option value="warn">WARN</option>
-            <option value="err">ERROR</option>
+            <option value="error">ERROR</option>
+            <option value="debug">DEBUG</option>
           </select>
-          <input id="log-kw" placeholder="关键字过滤" style="width:170px">
+          <input id="log-kw" placeholder="关键字 / 节点 / 任务" style="width:170px">
           <label style="display:flex;align-items:center;gap:5px;margin:0;font-size:12px">
-            <input type="checkbox" id="log-auto" checked style="width:auto">自动滚动
+            <input type="checkbox" id="log-auto" ${RUNBOOK.autoScroll ? 'checked' : ''} style="width:auto">自动滚动
           </label>
+          <button class="sm ghost" data-act="log-copy" title="复制当前筛选下的日志（含实例 / 任务标识）">复制日志</button>
         </div>
-        <div class="logbox" id="log-box">${renderLogLines(logs)}</div>
+        <div class="hint" id="log-counts" style="margin-bottom:6px"></div>
+        <div class="log-wrap">
+          <div class="logbox" id="log-box">${renderLogLines(logs)}</div>
+          <button class="log-jump" id="log-jump" style="display:none">↓ <span id="log-jump-n">0</span> 条新日志</button>
+        </div>
       </div>
     </div>`;
 
@@ -332,18 +357,183 @@ function renderSQL() {
   box.innerHTML = `<pre class="code" id="sql-text">${esc(formatSQL(d.sql))}</pre>`;
 }
 
-function renderLogLines(lines) {
-  const list = (lines || []).filter(l => {
-    if (RUNBOOK.logLevel !== 'all' && (l.level || 'info').toLowerCase() !== RUNBOOK.logLevel) return false;
-    if (RUNBOOK.logKW && !String(l.message || '').toLowerCase().includes(RUNBOOK.logKW.toLowerCase())) return false;
-    return true;
-  });
-  if (!list.length) return '<div class="mute" style="padding:8px">暂无日志</div>';
-  return list.map(l => `<div class="ln">
-    <span class="ts">${(l.ts || '').replace('T', ' ').slice(11, 19)}</span>
-    <span class="loglevel ${(l.level || 'info').toLowerCase()}">${esc((l.level || 'info').toUpperCase())}</span>
+const LOG_LEVEL_LABEL = { debug: 'DEBUG', info: 'INFO', warn: 'WARN', error: 'ERROR' };
+
+/** 级别归一与后端 logstore.normalizeLevel 保持一致。 */
+function logLevelOf(l) {
+  const lv = String((l && l.level) || 'info').toLowerCase();
+  if (lv === 'err' || lv === 'fatal' || lv === 'critical' || lv === 'panic') return 'error';
+  if (lv === 'warning') return 'warn';
+  if (lv === 'trace') return 'debug';
+  return lv;
+}
+
+function logLevelCounts(lines) {
+  const c = { debug: 0, info: 0, warn: 0, error: 0 };
+  (lines || []).forEach(l => { const lv = logLevelOf(l); if (c[lv] != null) c[lv]++; });
+  return c;
+}
+
+function logMatches(l) {
+  if (RUNBOOK.logLevel !== 'all' && logLevelOf(l) !== RUNBOOK.logLevel) return false;
+  if (!RUNBOOK.logKW) return true;
+  const kw = RUNBOOK.logKW.toLowerCase();
+  const hay = [l.message, l.nodeId, l.taskId, l.instanceId].join(' ').toLowerCase();
+  return hay.includes(kw);
+}
+
+/** 实例 ID 太长，列表里只留前缀与尾部；完整值放 title 与复制文本。 */
+function shortIns(id) {
+  const s = String(id || '');
+  if (s.length <= 14) return s;
+  return s.slice(0, 4) + '…' + s.slice(-6);
+}
+
+function logLineHTML(l) {
+  const lv = logLevelOf(l);
+  const iid = l.instanceId || RUNBOOK.logIID || '';
+  const node = l.nodeId || '';
+  const title = [iid, l.taskId ? 'task ' + l.taskId : '', node ? 'node ' + node : ''].filter(Boolean).join(' · ');
+  const tag = shortIns(iid) + (node ? ' · ' + node : '');
+  // 服务端可能跑在任意时区，统一交给浏览器按本地时区展示。
+  const ts = l.at ? fmtTime(l.at).slice(11) : String(l.ts || '').replace('T', ' ').slice(11, 19);
+  return `<div class="ln lv-${lv}">
+    <span class="ts">${esc(ts)}</span>
+    <span class="loglevel ${lv}">${esc(LOG_LEVEL_LABEL[lv] || lv.toUpperCase())}</span>
+    <span class="lid" title="${esc(title)}">${esc(tag)}</span>
     <span class="msg">${esc(l.message)}</span>
-  </div>`).join('');
+  </div>`;
+}
+
+function logEmptyHTML(src) {
+  const all = src || [];
+  if (!all.length) {
+    return '<div class="log-empty mute">该实例还没有日志。日志从实例开始执行时采集：实例开始、每个节点的开始/成功/失败/重试、实例结束都会记录一行。</div>';
+  }
+  const c = logLevelCounts(all);
+  const wanted = RUNBOOK.logLevel === 'all' ? '当前关键字' : RUNBOOK.logLevel.toUpperCase();
+  return `<div class="log-empty mute">没有匹配「${esc(wanted)}」的日志。本实例共 ${all.length} 条：` +
+    `INFO ${c.info} / WARN ${c.warn} / ERROR ${c.error}` +
+    (c.debug ? ` / DEBUG ${c.debug}` : '') +
+    `。<button class="sm ghost" data-act="log-reset" style="margin-left:6px">清除筛选</button></div>`;
+}
+
+function renderLogLines(lines) {
+  const src = lines || RUNBOOK.logBuf || [];
+  const list = src.filter(logMatches);
+  updateLogCounts(src);
+  if (!list.length) return logEmptyHTML(src);
+  return list.map(logLineHTML).join('');
+}
+
+function updateLogCounts(src) {
+  const lines = src || RUNBOOK.logBuf || [];
+  const el = document.getElementById('log-counts');
+  if (el) {
+    const c = logLevelCounts(lines);
+    // 完整实例 ID 放在日志区常驻：截图/选中复制都能直接拿到，不依赖抽屉标题。
+    const bits = [];
+    if (RUNBOOK.logIID) bits.push(`<span class="mono">${esc(RUNBOOK.logIID)}</span>`);
+    bits.push(`共 <b>${lines.length}</b> 条`);
+    if (c.error) bits.push(`<b style="color:#ff7b72">ERROR ${c.error}</b>`);
+    if (c.warn) bits.push(`<b style="color:#e3b341">WARN ${c.warn}</b>`);
+    bits.push(`INFO ${c.info}`);
+    if (c.debug) bits.push(`DEBUG ${c.debug}`);
+    el.innerHTML = bits.join(' · ');
+  }
+  // 下拉里带数量：不用先切过去试一次才知道有没有 ERROR。
+  const sel = document.getElementById('log-level');
+  if (sel && document.activeElement !== sel) {
+    const c = logLevelCounts(lines);
+    Array.from(sel.options).forEach(o => {
+      o.textContent = o.value === 'all' ? `全部级别 (${lines.length})` : `${LOG_LEVEL_LABEL[o.value] || o.value} (${c[o.value] || 0})`;
+    });
+  }
+}
+
+function logBoxEl() { return document.getElementById('log-box'); }
+
+/** 距离底部 24px 内视为「跟随最新」；用户手动上翻后就不再强行拉回。 */
+function logNearBottom(box) {
+  return !box || box.scrollHeight - box.scrollTop - box.clientHeight < 24;
+}
+
+function logHideJump() {
+  const btn = document.getElementById('log-jump');
+  if (btn) btn.style.display = 'none';
+  RUNBOOK.logNew = 0;
+}
+
+function logShowJump(n) {
+  const btn = document.getElementById('log-jump');
+  const num = document.getElementById('log-jump-n');
+  if (!btn || !num) return;
+  RUNBOOK.logNew = (RUNBOOK.logNew || 0) + n;
+  num.textContent = String(RUNBOOK.logNew);
+  btn.style.display = '';
+}
+
+/** 筛选变化后整块重绘；滚动位置只在「自动滚动」开启时回到最新。 */
+function rerenderLogs(toBottom) {
+  const box = logBoxEl();
+  if (!box) return;
+  box.innerHTML = renderLogLines();
+  logHideJump();
+  updateLogCounts();
+  if (toBottom && RUNBOOK.autoScroll) box.scrollTop = box.scrollHeight;
+}
+
+/**
+ * 追加新行而不是整块重绘。
+ *
+ * 旧实现每秒 innerHTML 重绘一次：即使关掉「自动滚动」，滚动位置也会被
+ * 浏览器重排带跑，看起来像一直在滚。追加 DOM 时 scrollTop 不变，关掉就是真的不动。
+ */
+function appendLogLines(lines) {
+  const box = logBoxEl();
+  if (!box) return;
+  const filtered = (lines || []).filter(logMatches);
+  const wasNearBottom = logNearBottom(box);
+  const keepTop = box.scrollTop;
+  const empty = box.querySelector('.log-empty');
+  if (!filtered.length && empty) {
+    // 空状态里的「共 N 条」也要跟着增长，否则看起来像日志没进来。
+    box.innerHTML = logEmptyHTML(RUNBOOK.logBuf);
+    updateLogCounts();
+    return;
+  }
+  if (filtered.length) {
+    if (empty) empty.remove();
+    box.insertAdjacentHTML('beforeend', filtered.map(logLineHTML).join(''));
+    // 极端长日志下只保留最近 4000 个节点，避免滚动越来越卡。
+    while (box.children.length > 4000) box.removeChild(box.firstElementChild);
+    if (RUNBOOK.autoScroll && wasNearBottom) {
+      box.scrollTop = box.scrollHeight;
+      logHideJump();
+    } else {
+      box.scrollTop = keepTop;
+      logShowJump(filtered.length);
+    }
+  }
+  updateLogCounts();
+}
+
+/** 复制当前筛选结果：实例 / 任务 / 节点标识逐行带上，贴到工单里还能对上号。 */
+async function copyLogs() {
+  const lines = (RUNBOOK.logBuf || []).filter(logMatches);
+  if (!lines.length) return toast('当前筛选下没有可复制的日志', 'err');
+  const header = `# instance=${RUNBOOK.logIID || '-'} level=${RUNBOOK.logLevel} keyword=${RUNBOOK.logKW || '-'} count=${lines.length}`;
+  const body = lines.map(l => {
+    const ts = l.at ? fmtTime(l.at) : String(l.ts || '').replace('T', ' ').slice(0, 23);
+    return [ts, (LOG_LEVEL_LABEL[logLevelOf(l)] || 'INFO'), l.instanceId || RUNBOOK.logIID || '-',
+      l.taskId || '-', l.nodeId || '-', l.message || ''].join('\t');
+  }).join('\n');
+  try {
+    await navigator.clipboard.writeText(header + '\n' + body);
+    toast(`已复制 ${lines.length} 条日志`, 'ok');
+  } catch (e) {
+    toast('复制失败：浏览器拒绝了剪贴板权限', 'err');
+  }
 }
 
 function bindDrawer(id, logs) {
@@ -362,13 +552,52 @@ function bindDrawer(id, logs) {
   });
   root.querySelector('#log-level').addEventListener('change', (e) => {
     RUNBOOK.logLevel = e.target.value;
-    document.getElementById('log-box').innerHTML = renderLogLines(RUNBOOK.logBuf || logs);
+    rerenderLogs(true);
   });
   root.querySelector('#log-kw').addEventListener('input', (e) => {
-    RUNBOOK.logKW = e.target.value.trim();
-    document.getElementById('log-box').innerHTML = renderLogLines(RUNBOOK.logBuf || logs);
+    // 5000 行日志逐键重排会卡；180ms 足够让输入看起来是即时的。
+    clearTimeout(RUNBOOK.logKWTimer);
+    RUNBOOK.logKWTimer = setTimeout(() => {
+      RUNBOOK.logKW = e.target.value.trim();
+      rerenderLogs(true);
+    }, 180);
   });
-  root.querySelector('#log-auto').addEventListener('change', (e) => { RUNBOOK.autoScroll = e.target.checked; });
+  root.querySelector('#log-auto').addEventListener('change', (e) => {
+    RUNBOOK.autoScroll = e.target.checked;
+    if (e.target.checked) {
+      const box = logBoxEl();
+      if (box) box.scrollTop = box.scrollHeight;
+      logHideJump();
+    }
+  });
+  root.querySelector('[data-act="log-copy"]').addEventListener('click', copyLogs);
+  const jump = root.querySelector('#log-jump');
+  if (jump) jump.addEventListener('click', () => {
+    const box = logBoxEl();
+    if (box) box.scrollTop = box.scrollHeight;
+    logHideJump();
+  });
+  const logBox = root.querySelector('#log-box');
+  if (logBox) {
+    logBox.addEventListener('scroll', () => {
+      if (logNearBottom(logBox)) logHideJump();
+    });
+  }
+  // 空状态里的「清除筛选」按钮是动态渲染的，走事件委托。
+  root.addEventListener('click', (e) => {
+    if (!e.target.closest('[data-act="log-reset"]')) return;
+    RUNBOOK.logLevel = 'all';
+    RUNBOOK.logKW = '';
+    const sel = root.querySelector('#log-level');
+    if (sel) sel.value = 'all';
+    const kw = root.querySelector('#log-kw');
+    if (kw) kw.value = '';
+    rerenderLogs(true);
+  });
+  // 打开时按用户偏好贴到底部；关掉自动滚动则停在顶部，从执行开始看。
+  const box = logBoxEl();
+  if (box && RUNBOOK.autoScroll) box.scrollTop = box.scrollHeight;
+  updateLogCounts();
 
   // 节点级重跑：只重置这个节点与它的下游，上游成功结果保留。
   root.querySelectorAll('[data-act="task-retry"]').forEach(btn => {
@@ -405,11 +634,11 @@ function bindDrawer(id, logs) {
     renderSQL();
   });
 
-  RUNBOOK.logBuf = logs || [];
 }
 
 function closeDrawer() {
   stopLogStream();
+  clearTimeout(RUNBOOK.logKWTimer);
   const root = document.getElementById('drawer-root');
   if (root) root.innerHTML = '';
   RUNBOOK.drawerId = '';
@@ -418,25 +647,42 @@ function closeDrawer() {
 /**
  * 日志实时刷新用轮询而非 SSE：
  * 浏览器对同一域的 EventSource 有 6 连接上限，多开几个抽屉就会互相饿死。
- * 拉取式带 since 游标，成本可控且不会漏行。
+ * 拉取式带 after 游标（服务端参数名是 after，不是 since），成本可控且不会漏行。
+ *
+ * 游标从初始快照的最大 seq 接着走：旧实现每次从 0 拉 200 行再 concat，
+ * 打开抽屉后第一批日志会被重复追加，且后面的 ERROR 永远轮不到。
  */
 function startLogStream(id) {
   stopLogStream();
-  let seq = 0;
   RUNBOOK.logTimer = setInterval(async () => {
     if (RUNBOOK.drawerId !== id) return stopLogStream();
     try {
-      const r = await api('/instances/' + encodeURIComponent(id) + '/logs?since=' + seq + '&limit=200');
+      const r = await api('/instances/' + encodeURIComponent(id) + '/logs?after=' + (RUNBOOK.logSeq || 0) + '&limit=1000');
       const lines = r.lines || r || [];
-      if (!lines.length) return;
-      seq = Math.max(seq, ...lines.map(l => l.seq || 0));
-      RUNBOOK.logBuf = (RUNBOOK.logBuf || []).concat(lines).slice(-800);
-      const box = document.getElementById('log-box');
-      if (box) {
-        box.innerHTML = renderLogLines(RUNBOOK.logBuf);
-        if (RUNBOOK.autoScroll) box.scrollTop = box.scrollHeight;
+      RUNBOOK.logErrors = 0;
+      if (lines.length) {
+        RUNBOOK.logIdleTicks = 0;
+        RUNBOOK.logSeq = lines.reduce((m, l) => Math.max(m, l.seq || 0), RUNBOOK.logSeq || 0);
+        RUNBOOK.logBuf = (RUNBOOK.logBuf || []).concat(lines).slice(-20000);
+        appendLogLines(lines);
+        return;
       }
-    } catch (e) { /* 实例结束后日志会 404，静默即可 */ }
+      // 终态后还要多等几拍：执行器的最后几行可能还在批量刷盘。
+      RUNBOOK.logIdleTicks = (RUNBOOK.logIdleTicks || 0) + 1;
+      if (!RUNBOOK.logTerminal && RUNBOOK.logIdleTicks % 5 === 0) {
+        // 打开抽屉时还在跑：空闲时顺带确认一次实例状态，跑完就停轮询。
+        try {
+          const d = await api('/instances/' + encodeURIComponent(id));
+          const st = (d.instance || d).status;
+          RUNBOOK.logTerminal = ['success', 'failed', 'canceled'].includes(st);
+        } catch (e) { /* 下一次再试 */ }
+      }
+      if (RUNBOOK.logTerminal && RUNBOOK.logIdleTicks >= 3) stopLogStream();
+    } catch (e) {
+      // 偶发网络抖动不该让日志永久停更；连续失败 5 次才放弃（实例被删/权限变化）。
+      RUNBOOK.logErrors = (RUNBOOK.logErrors || 0) + 1;
+      if (RUNBOOK.logErrors >= 5) stopLogStream();
+    }
   }, 1000);
 }
 

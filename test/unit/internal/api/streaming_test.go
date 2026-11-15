@@ -48,8 +48,8 @@ func TestStreamingHandlersDirect(t *testing.T) {
 
 	// 日志流：初始化内存日志后追加两条，再按 level 过滤消费。
 	e.ok("GET", "/api/v1/instances/"+id+"/logs", nil)
-	e.svc.AppendLog(id, "src", "info", "开始读取源表")
-	e.svc.AppendLog(id, "load", "error", "写入失败")
+	e.svc.AppendLog(id, "src", "tsk_src", "info", "开始读取源表")
+	e.svc.AppendLog(id, "load", "tsk_load", "error", "写入失败")
 
 	rec = httptest.NewRecorder()
 	req := httptest.NewRequest("GET", "/api/v1/instances/"+id+"/logs/stream?level=info&after=0", nil)
