@@ -223,18 +223,35 @@ func TestCompile(t *testing.T) {
 			t.Fatalf("DuckDB 应建 schema:\n%s", ddl)
 		}
 	})
-	t.Run("mysql 不建 schema", func(t *testing.T) {
+	t.Run("mysql 先建库", func(t *testing.T) {
 		spec := baseSpec()
 		spec.Schema = "dw"
 		ddl, err := modelc.Compile(spec, dialect.MySQL{})
 		if err != nil {
 			t.Fatal(err)
 		}
+		// MySQL 的 SCHEMA 就是 DATABASE，但必须显式建：缺库时报 1049 Unknown database，
+		// 而不是把 CREATE TABLE 落到某个默认库里。
+		if !strings.Contains(ddl, "CREATE DATABASE IF NOT EXISTS `dw`;") {
+			t.Fatalf("MySQL 应先建库:\n%s", ddl)
+		}
+		// CREATE SCHEMA 在 MySQL 只是同义词，但混用会让 DDL 可读性变差，统一用 DATABASE。
 		if strings.Contains(ddl, "CREATE SCHEMA") {
-			t.Fatalf("MySQL 不应建 schema:\n%s", ddl)
+			t.Fatalf("MySQL 不应出现 CREATE SCHEMA:\n%s", ddl)
 		}
 		if !strings.Contains(ddl, "`dw`.`dwd_order`") {
 			t.Fatalf("MySQL 引用错误:\n%s", ddl)
+		}
+	})
+	t.Run("mysql 无 schema 不建库", func(t *testing.T) {
+		spec := baseSpec()
+		spec.Schema = ""
+		ddl, err := modelc.Compile(spec, dialect.MySQL{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(ddl, "CREATE DATABASE") {
+			t.Fatalf("未声明 schema 时不应建库:\n%s", ddl)
 		}
 	})
 	t.Run("clickhouse", func(t *testing.T) {

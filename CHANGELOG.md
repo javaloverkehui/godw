@@ -31,6 +31,11 @@
 - 单测：`test/unit/internal/api/wizard_test.go` 覆盖 spec 入参、管道 spec 回读与指标试算。
 
 ### Fixed
+- **MySQL 目标的模型建表必失败**：DDL 编译对 MySQL 跳过了 `CREATE DATABASE`（把「SCHEMA 等同
+  DATABASE」当成了「无需创建」），模型只要写了 `schema: dws`，建表和执行写入都会撞上
+  `Error 1049 (42000): Unknown database 'dws'`——报错看起来像数据源配错，实际是平台少发了一句建库。
+  现在 MySQL 与 ClickHouse 一样先发 `CREATE DATABASE IF NOT EXISTS`。
+  → `internal/modelc/compile.go`、`TestCompile`（`mysql 先建库` 子用例）。
 - **脚手架产出的模型自己过不了校验**：原逻辑「优先用上游第一个日期列当分区，没有才补 dt」，
   遇到只有 `created_at` 的表就不会生成 `dt`，界面弹一条「层 ods 缺少必填列 dt」——
   提示缺列却不补，照着建还一定发布失败。现在分区列默认 `dt`、缺失即补；

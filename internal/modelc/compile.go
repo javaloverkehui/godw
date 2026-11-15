@@ -203,12 +203,14 @@ func Compile(spec model.ModelSpec, d dialect.Dialect) (string, error) {
 
 	// 目标 schema 不存在时建表会失败，先幂等创建。
 	// 注意各引擎的措辞不同：ClickHouse 没有 SCHEMA 关键字（只有 DATABASE），
-	// 写成 CREATE SCHEMA 会在真实集群上直接语法错误；MySQL 的 SCHEMA 等同 DATABASE，跳过。
+	// 写成 CREATE SCHEMA 会在真实集群上直接语法错误；MySQL 的 SCHEMA 与 DATABASE 同义，
+	// 但绝不能跳过——MySQL 不会在 CREATE TABLE 时隐式建库，缺库时报的是
+	// `Error 1049 (42000): Unknown database`，看起来像数据源连错了，很容易误判。
 	if spec.Schema != "" {
 		switch d.Name() {
 		case "postgres", "duckdb":
 			b.WriteString("CREATE SCHEMA IF NOT EXISTS " + d.QuoteIdent(spec.Schema) + ";\n")
-		case "clickhouse":
+		case "clickhouse", "mysql":
 			b.WriteString("CREATE DATABASE IF NOT EXISTS " + d.QuoteIdent(spec.Schema) + ";\n")
 		}
 	}
