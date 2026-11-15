@@ -92,6 +92,11 @@ func (h *Handler) routes() *Router {
 	r.POST("/api/v1/pipelines/sample-run", h.sampleRunPipeline)
 	r.POST("/api/v1/pipelines/{name}/trigger", h.triggerPipeline)
 	r.PUT("/api/v1/pipelines/{name}/enabled", h.togglePipeline)
+	// refs 先给出「删除会带走什么」，前端拿它填确认框；DELETE 再校验一次，
+	// 不能指望调用方先查过——接口是公开的，直接 DELETE 也得被拦住。
+	r.GET("/api/v1/pipelines/{name}/refs", h.pipelineRefs)
+	r.GET("/api/v1/pipelines/{name}/yaml", h.pipelineYAML)
+	r.DELETE("/api/v1/pipelines/{name}", h.deletePipeline)
 	// 选择器：按模型 / tag / 分层触发，一个表达式命中多条管道。
 	r.GET("/api/v1/select/preview", h.selectPreview)
 	r.POST("/api/v1/runs/select", h.selectRun)
@@ -112,6 +117,9 @@ func (h *Handler) routes() *Router {
 	// 指标向导要在「保存前」看到曲线，否则用户得先落一个写错的口径再回头改。
 	r.POST("/api/v1/metrics/preview", h.previewMetric)
 	r.GET("/api/v1/metrics/{name}/query", h.queryMetric)
+	// 指标是看板卡片的引用目标，删除前要告诉用户哪几块看板会空掉。
+	r.GET("/api/v1/metrics/{name}/refs", h.metricRefs)
+	r.DELETE("/api/v1/metrics/{name}", h.deleteMetric)
 
 	r.GET("/api/v1/datasets/semantic", h.listDatasetsSemantic)
 	r.GET("/api/v1/datasets/semantic/{name}", h.getDataset)
@@ -129,6 +137,7 @@ func (h *Handler) routes() *Router {
 	r.GET("/api/v1/dashboards", h.listDashboards)
 	r.POST("/api/v1/dashboards", h.applyDashboard)
 	r.GET("/api/v1/dashboards/{name}", h.queryDashboard)
+	r.DELETE("/api/v1/dashboards/{name}", h.deleteDashboard)
 
 	// 自助查询：只读 + 单语句 + 超时 + 行数上限，仅 admin/editor。
 	r.POST("/api/v1/sql/query", h.rawSQLQuery)
@@ -659,6 +668,79 @@ func (h *Handler) togglePipeline(w http.ResponseWriter, r *http.Request, _ map[s
 	ok(w, r, map[string]any{"enabled": body.Enabled})
 }
 
+// pipelineRefs 返回删除这条管道会连带删掉多少运行历史。
+// 不做删除也能单独调用：排查「这条管道还在用吗」同样需要这个数字。
+func (h *Handler) pipelineRefs(w http.ResponseWriter, r *http.Request, p map[string]string) {
+	refs, err := h.Svc.Repo.PipelineRefs(r.Context(), workspaceOf(r.Context()), p["name"])
+	if err != nil {
+		fail(w, r, err)
+		return
+	}
+	ok(w, r, refs)
+}
+
+// pipelineYAML 返回当前生效版本（没发布过就取最新草稿）的规范化 YAML。
+//
+// 前端「高级」区拿它当编辑起点：从 JSON 在浏览器里手写序列化会丢掉
+// params / defaults / node.config 这些嵌套字段，改一次调度就把参数弄没了。
+// 在服务端序列化，前端看到的与后端认的是同一份。
+func (h *Handler) pipelineYAML(w http.ResponseWriter, r *http.Request, p map[string]string) {
+	spec, version, err := h.Svc.Repo.PipelineSpecForEdit(r.Context(), workspaceOf(r.Context()), p["name"])
+	if err != nil {
+		fail(w, r, err)
+		return
+	}
+	b, err := yaml.Marshal(spec)
+	if err != nil {
+		fail(w, r, errs.Wrap(errs.CodeInternal, err, "管道定义序列化失败"))
+		return
+	}
+	// spec 一起返回：草稿管道在列表接口里没有 spec（列表只读 active_version），
+	// 编辑页要能画出节点表，就不能只给它一段 YAML。
+	ok(w, r, map[string]any{"yaml": string(b), "version": version, "spec": spec})
+}
+
+// deletePipeline 删除管道及其版本与运行历史。
+//
+// 两道刹车：
+//  1. 有排队/运行中的实例时一律拒绝——执行器正拿着这份版本快照，
+//     删掉会让进程和一个不存在的管道对话。
+//  2. 有历史实例时要求 force=1，把「历史一起没了」变成一次显式选择，
+//     而不是误点「删除」的副作用。
+//
+// 只想停止排期请用 PUT /pipelines/{name}/enabled，别删。
+func (h *Handler) deletePipeline(w http.ResponseWriter, r *http.Request, p map[string]string) {
+	if !requireRole(w, r, "admin", "editor") {
+		return
+	}
+	name := p["name"]
+	ws := workspaceOf(r.Context())
+	refs, err := h.Svc.Repo.PipelineRefs(r.Context(), ws, name)
+	if err != nil {
+		fail(w, r, err)
+		return
+	}
+	if refs.Running > 0 {
+		fail(w, r, errs.New(errs.CodeConflict,
+			"管道还有排队或运行中的实例，等它们结束（或先取消）再删除").
+			WithMeta("refs", refs))
+		return
+	}
+	force := r.URL.Query().Get("force") == "1" || r.URL.Query().Get("force") == "true"
+	if !force && refs.Instances > 0 {
+		fail(w, r, errs.New(errs.CodeConflict,
+			"管道已有运行记录，删除会一并清除，确认影响后加 force=1 重试").
+			WithMeta("refs", refs))
+		return
+	}
+	if err := h.Svc.Repo.DeletePipeline(r.Context(), ws, name); err != nil {
+		fail(w, r, err)
+		return
+	}
+	h.audit(r, "pipeline.delete", name, map[string]any{"force": force, "instances": refs.Instances})
+	ok(w, r, map[string]any{"deleted": name, "refs": refs})
+}
+
 // ---------- instance ----------
 
 func (h *Handler) listInstances(w http.ResponseWriter, r *http.Request, _ map[string]string) {
@@ -861,16 +943,27 @@ func (h *Handler) applyMetric(w http.ResponseWriter, r *http.Request, _ map[stri
 	if !requireRole(w, r, "admin", "editor") {
 		return
 	}
+	// 与模型、管道、看板一致：结构化对象是主入口，YAML 是它的另一种写法。
+	// 只收 YAML 会把「改个聚合方式」变成「编辑一段配置文件」，指标页因此没法给不会写 YAML 的人用。
 	var body struct {
-		YAML string `json:"yaml"`
+		YAML   string           `json:"yaml"`
+		Metric *semantic.Metric `json:"metric"`
 	}
 	if err := decodeBody(r, &body); err != nil {
 		fail(w, r, err)
 		return
 	}
 	var m semantic.Metric
-	if err := yamlUnmarshal([]byte(body.YAML), &m); err != nil {
-		fail(w, r, errs.Wrap(errs.CodeInvalidArgument, err, "指标 YAML 解析失败"))
+	switch {
+	case body.Metric != nil:
+		m = *body.Metric
+	case body.YAML != "":
+		if err := yamlUnmarshal([]byte(body.YAML), &m); err != nil {
+			fail(w, r, errs.Wrap(errs.CodeInvalidArgument, err, "指标 YAML 解析失败"))
+			return
+		}
+	default:
+		fail(w, r, errs.New(errs.CodeInvalidArgument, "需要 metric 或 yaml 之一"))
 		return
 	}
 	saved, err := h.Svc.ApplyMetric(r.Context(), workspaceOf(r.Context()), m)
@@ -917,6 +1010,50 @@ func (h *Handler) queryMetric(w http.ResponseWriter, r *http.Request, p map[stri
 		return
 	}
 	ok(w, r, series)
+}
+
+// metricRefs 返回引用了该指标的看板。看板卡片只存指标名，
+// 指标删了卡片会变成一块报错的空壳，所以这个列表要摆给用户看。
+func (h *Handler) metricRefs(w http.ResponseWriter, r *http.Request, p map[string]string) {
+	dashboards, err := h.Svc.Repo.MetricRefs(r.Context(), workspaceOf(r.Context()), p["name"])
+	if err != nil {
+		fail(w, r, err)
+		return
+	}
+	ok(w, r, map[string]any{"dashboards": dashboards})
+}
+
+// deleteMetric 删除指标定义。仍被看板引用时默认拦下：
+// 解除引用要么改卡片、要么删卡片，都不该由一次「删除指标」顺带完成。
+func (h *Handler) deleteMetric(w http.ResponseWriter, r *http.Request, p map[string]string) {
+	if !requireRole(w, r, "admin", "editor") {
+		return
+	}
+	name := p["name"]
+	ws := workspaceOf(r.Context())
+	// 先确认对象存在，再看引用：不存在的指标去查引用面只会查到「某个看板碰巧写了这个名字」，
+	// 报出来的是 409 而不是 404，排查时会误以为指标还在。
+	if _, err := h.Svc.Repo.MetricByName(r.Context(), ws, name); err != nil {
+		fail(w, r, err)
+		return
+	}
+	dashboards, err := h.Svc.Repo.MetricRefs(r.Context(), ws, name)
+	if err != nil {
+		fail(w, r, err)
+		return
+	}
+	force := r.URL.Query().Get("force") == "1" || r.URL.Query().Get("force") == "true"
+	if !force && len(dashboards) > 0 {
+		fail(w, r, errs.New(errs.CodeConflict, "指标仍被看板引用，确认影响后加 force=1 重试").
+			WithMeta("dashboards", dashboards))
+		return
+	}
+	if err := h.Svc.Repo.DeleteMetric(r.Context(), ws, name); err != nil {
+		fail(w, r, err)
+		return
+	}
+	h.audit(r, "metric.delete", name, map[string]any{"force": force, "dashboards": dashboards})
+	ok(w, r, map[string]any{"deleted": name, "dashboards": dashboards})
 }
 
 // ---------- dashboard ----------
@@ -979,6 +1116,21 @@ func (h *Handler) queryDashboard(w http.ResponseWriter, r *http.Request, p map[s
 		return
 	}
 	ok(w, r, data)
+}
+
+// deleteDashboard 删掉一页排布。指标、图表与数据都不动——
+// 「这块看板不要了」和「这些口径不要了」是两件事，别让一次删除同时成立。
+func (h *Handler) deleteDashboard(w http.ResponseWriter, r *http.Request, p map[string]string) {
+	if !requireRole(w, r, "admin", "editor") {
+		return
+	}
+	name := p["name"]
+	if err := h.Svc.Repo.DeleteDashboard(r.Context(), workspaceOf(r.Context()), name); err != nil {
+		fail(w, r, err)
+		return
+	}
+	h.audit(r, "dashboard.delete", name, nil)
+	ok(w, r, map[string]any{"deleted": name})
 }
 
 // ---------- quality / lineage / audit ----------

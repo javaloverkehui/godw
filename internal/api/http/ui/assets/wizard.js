@@ -1819,7 +1819,9 @@ async function metricWizard() {
       },
     ],
 
-    finish: async (s) => api('/metrics', { method: 'POST', body: { yaml: wzMetricYAML(s) } }),
+    // 结构化提交：指标接口与模型/管道/看板一致，接受 {metric}。
+    // 前端不必再把选好的四个下拉拼回一段 YAML 让服务端解析回来。
+    finish: async (s) => api('/metrics', { method: 'POST', body: { metric: wzMetricOf(s) } }),
 
     done: (m, s) => `
       <div class="wiz-done">
@@ -1862,21 +1864,3 @@ function wzMetricOf(s) {
   };
 }
 
-// 指标后端只收 YAML；结构简单，手写序列化比引一个 YAML 库划算。
-function wzMetricYAML(s) {
-  const q = v => {
-    const str = String(v == null ? '' : v);
-    return /[:#{}\[\],&*?|<>=!%@`"']/.test(str) ? JSON.stringify(str) : str;
-  };
-  const L = [
-    'name: ' + q(s.name),
-    'displayName: ' + q(s.displayName || s.name),
-    'model: ' + q(s.model.name),
-    'agg: ' + q(s.agg),
-    'expr: ' + q(s.agg === 'count' ? '' : s.expr),
-    'timeColumn: ' + q(s.timeColumn || 'dt'),
-  ];
-  if (s.dimensions.length) L.push('dimensions: [' + s.dimensions.map(q).join(', ') + ']');
-  if (s.unit) L.push('unit: ' + q(s.unit));
-  return L.join('\n') + '\n';
-}

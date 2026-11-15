@@ -309,19 +309,50 @@ paths:
         "200": { description: 列表 }
     post:
       summary: 提交管道（校验 DAG 与依赖模型）
+      description: yaml 与 spec 二选一。控制台向导与画布提交 spec，CLI 与导入提交 yaml，两者走同一条校验链路。
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              required: [yaml]
               properties:
                 yaml: { type: string }
+                spec: { type: object, additionalProperties: true, description: "结构化管道定义，字段同 PipelineSpec（kind/name/nodes/...）" }
                 publish: { type: boolean, default: false }
       responses:
         "201": { description: 已保存新版本 }
         "400": { description: 存在环、依赖缺失或参数未声明 }
+
+  /api/v1/pipelines/{name}/refs:
+    get:
+      summary: 删除管道的影响面（运行记录数、排队中的实例、最近一次运行时间）
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: "{instances, running, lastRunAt}" }
+        "404": { description: 管道不存在 }
+
+  /api/v1/pipelines/{name}/yaml:
+    get:
+      summary: 当前版本定义的规范化 YAML（草稿管道取最新版本）
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: "{yaml, version, spec}" }
+        "404": { description: 管道不存在或还没有定义 }
+
+  /api/v1/pipelines/{name}:
+    delete:
+      summary: 删除管道（定义 + 版本快照 + 运行历史，不删目标表数据）
+      description: 有排队/运行中的实例时一律 409；有历史记录时需显式 force=1。只停排期请用 enabled 接口。
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+        - { name: force, in: query, required: false, schema: { type: string, enum: ["1", "true"] } }
+      responses:
+        "200": { description: 已删除，data.deleted 为管道名 }
+        "404": { description: 管道不存在 }
+        "409": { description: 仍有运行中实例，或历史记录未确认（data.refs 给出影响面） }
 
   /api/v1/pipelines/{name}/trigger:
     post:
@@ -400,17 +431,41 @@ paths:
         "200": { description: 列表 }
     post:
       summary: 定义指标
+      description: metric 与 yaml 二选一。控制台表单与向导提交 metric，CLI 与导入提交 yaml。
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              required: [yaml]
               properties:
+                metric:
+                  type: object
+                  additionalProperties: true
+                  description: "结构化指标定义（name/displayName/model/agg/expr/timeColumn/dimensions/unit/description）"
                 yaml: { type: string }
       responses:
         "201": { description: 已保存 }
+
+  /api/v1/metrics/{name}/refs:
+    get:
+      summary: 引用该指标的看板
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: "{dashboards: [...]}" }
+
+  /api/v1/metrics/{name}:
+    delete:
+      summary: 删除指标（口径定义，不动数据表）
+      description: 仍被看板卡片引用时返回 10003 并带上 data.dashboards，显式 force=1 才放行。
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+        - { name: force, in: query, required: false, schema: { type: string, enum: ["1", "true"] } }
+      responses:
+        "200": { description: 已删除 }
+        "404": { description: 指标不存在 }
+        "409": { description: 仍被看板引用（data.dashboards 列出引用方） }
 
   /api/v1/metrics/{name}/query:
     get:

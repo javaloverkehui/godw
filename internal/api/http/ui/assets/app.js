@@ -86,7 +86,9 @@ async function api(path, opts) {
   const resp = await fetch(API + path, init);
   let data = null;
   try { data = await resp.json(); } catch (e) { /* 非 JSON */ }
-  if (resp.status === 401) {
+  // 只有「带着令牌还被拒」才是会话过期。登录接口本身返回 401 时不能覆盖成
+  // 「登录已过期」，否则用户输错密码看到的是过期提示，越看越糊涂。
+  if (resp.status === 401 && tk) {
     setToken('');
     throw new Error('登录已过期，请重新登录');
   }
@@ -99,17 +101,20 @@ async function api(path, opts) {
 }
 
 /**
- * modal(title, bodyHTML) —— 打开一个模态框（覆盖式，同时只允许一个）。
+ * modal(title, bodyHTML, cls) —— 打开一个模态框（覆盖式，同时只允许一个）。
+ *
+ * cls 可选，用来选宽度档位（如 'wide' 给带表格的编辑器）。默认 560px 是给
+ * 「确认 / 单表单」用的；把表格塞进 560px 会把每列压成两行字。
  *
  * 关闭路径全部走 document 上的事件委托（data-act），因此这里千万不能在
  * .modal 上写 onclick="event.stopPropagation()"：那会把冒泡掐在 .modal 上，
  * document 收不到点击，弹窗内所有 data-act 按钮（关闭/取消/保存…）集体失效。
  * 遮罩的「点空白关闭」改为在委托里判断 ev.target === 遮罩本身，效果一样且不挡事件。
  */
-function modal(title, bodyHTML) {
+function modal(title, bodyHTML, cls) {
   const root = document.getElementById('modal-root');
   root.innerHTML = `<div class="modal-mask" data-act="mask-close">
-    <div class="modal" role="dialog" aria-modal="true" tabindex="-1" aria-label="${esc(title)}">
+    <div class="modal ${esc(cls || '')}" role="dialog" aria-modal="true" tabindex="-1" aria-label="${esc(title)}">
       <div class="row" style="margin-bottom:16px">
         <h3 style="flex:1">${esc(title)}</h3>
         <button class="sm ghost" data-act="close-modal" title="关闭（Esc）">关闭</button>
@@ -475,7 +480,7 @@ async function pageModels(view) {
     <div class="page-head">
       <div>
         <h2 class="page-title">模型</h2>
-        <p class="page-desc">YAML 是唯一事实来源。发布后生成不可变版本，执行与重跑都锁定版本快照。</p>
+        <p class="page-desc">定义保存在数据库，发布后生成不可变版本；执行与重跑都锁定当时的版本快照。</p>
       </div>
       <button class="primary" data-act="new-model">新建模型</button>
     </div>
@@ -583,27 +588,6 @@ function modelYamlFrom(m) {
 
 /* ---------------- 管道 ---------------- */
 
-const PIPE_TPL = `kind: Pipeline
-name: dwd_order_daily
-description: 订单明细日更
-schedule: "0 2 * * *"
-nodes:
-  - id: src_order
-    type: source
-    datasource: pg_main
-    sql: SELECT * FROM ods."order" WHERE dt = \${biz_date}
-  - id: dwd_order
-    type: sql
-    depends_on: [src_order]
-    model: dwd_order
-    write_mode: upsert
-    datasource: pg_main
-    sql: >
-      SELECT order_id, user_id, amount, status, dt
-      FROM ods."order"
-      WHERE dt = \${biz_date}
-`;
-
 async function pagePipelines(view) {
   const pipes = await api('/pipelines');
   S.cache.pipelines = pipes;
@@ -639,12 +623,13 @@ function pipelineDetail(p) {
       <div class="card-head">
         <div>
           <div class="card-title">${esc(p.name)} ${p.enabled ? '<span class="pill ok">启用</span>' : '<span class="pill mute">停用</span>'}</div>
-          <div class="hint" style="margin-top:4px">${esc(p.description || '无描述')} · cron <span class="mono">${esc(p.schedule || '手动')}</span> · ${esc(p.timezone)}</div>
+          <div class="hint" style="margin-top:4px">${esc(p.description || '无描述')} · <span class="mono">${esc(cronText(p.schedule))}</span> · ${esc(p.timezone)}</div>
         </div>
         <div class="row">
           <button class="sm ghost" data-act="open-canvas" data-name="${esc(p.name)}">可视化编排</button>
           <button class="sm ghost" data-act="toggle-pl" data-name="${esc(p.name)}" data-enabled="${p.enabled}">${p.enabled ? '停用' : '启用'}</button>
           <button class="sm ghost" data-act="edit-pipeline" data-name="${esc(p.name)}">编辑</button>
+          <button class="sm danger" data-act="del-pipeline" data-name="${esc(p.name)}">删除</button>
           <button class="sm primary" data-act="trigger-pl" data-name="${esc(p.name)}">立即运行</button>
         </div>
       </div>
@@ -756,17 +741,193 @@ function drawDAG(svg, nodes) {
   });
 }
 
-function pipelineEditor(yaml) {
-  modal('管道定义 · 高级', `
+/* 管道编辑器：日常只改两件事——描述和「多久跑一次」。
+ *
+ * 旧入口只有一个 YAML 文本框：模块、依赖、变量一个都不能错，不会写 YAML 的人
+ * 连「改成每天早上 6 点」都做不到。节点结构属于编排，交给画布；YAML 收进折叠区，
+ * 给需要整条替换的人用，不再是唯一入口。
+ */
+async function editPipelineFlow(name) {
+  const p = (S.cache.pipelines || []).find(x => x.name === name)
+    || (await api('/pipelines').catch(() => [])).find(x => x.name === name);
+  if (!p) { toast('管道不存在: ' + name, 'err'); return; }
+
+  // 画布/向导保存时会把节点写全（params、defaults、config），前端手写序列化会丢字段；
+  // 让服务端把当前版本序列化一次，高级区里拿到的就是它认的那一份。
+  // 顺带带回了 spec：草稿管道在列表接口里没有 spec，编辑页要能画出节点表。
+  let def = { yaml: '', version: 0, spec: null };
+  try { def = await api('/pipelines/' + encodeURIComponent(name) + '/yaml'); } catch (e) { /* 未发布时可能没有 */ }
+
+  const spec = def.spec || p.spec || { nodes: [] };
+  const nodes = spec.nodes || [];
+  const pick = cronToPicker(p.schedule);
+  const st = { name, spec: JSON.parse(JSON.stringify(spec)), desc: p.description || '', ...pick, touched: false };
+
+  modal('编辑管道 · ' + name, `
     <div class="stack">
-      <div class="hint">直接改 YAML：节点、依赖、变量写错会在发布时被拦下。日常编排用「新建管道」向导或编排画布。</div>
-      <textarea id="pipe-yaml" rows="24">${esc(yaml || PIPE_TPL)}</textarea>
-      <div class="hint">变量语法 <span class="mono">\${biz_date}</span>，运行期替换为实例业务日期。</div>
+      <div class="grid c2" style="gap:14px">
+        <label class="field"><span>管道名</span>
+          <input class="mono" value="${esc(name)}" disabled>
+          <em>运行历史按名字挂在这条管道上，改名等于新建一条。</em>
+        </label>
+        <label class="field"><span>描述（列表里显示这一行）</span>
+          <input id="pe-desc" value="${esc(st.desc)}" placeholder="例如：订单明细日更"></label>
+      </div>
+
+      <div>
+        <div class="card-title" style="margin-bottom:8px">多久跑一次</div>
+        <div class="wiz-choice-row" id="pe-sched">
+          ${[['manual', '手动'], ['hourly', '每小时'], ['daily', '每天'], ['weekly', '每周'], ['monthly', '每月']]
+            .map(([k, t]) => `<div class="wiz-choice sm ${st.kind === k ? 'sel' : ''}" data-sched="${k}"><div class="wiz-choice-t">${t}</div></div>`).join('')}
+        </div>
+        <div class="row" id="pe-time" style="margin-top:10px;gap:8px;flex-wrap:wrap">
+          <span id="pe-time-wrap" class="row" style="margin:0;gap:6px">
+            <select id="pe-hour" style="width:auto"></select>
+            <select id="pe-min" style="width:auto"></select>
+          </span>
+          <select id="pe-week" style="width:auto">
+            ${'日一二三四五六'.split('').map((t, i) => `<option value="${i}" ${String(i) === st.weekday ? 'selected' : ''}>周${t}</option>`).join('')}
+          </select>
+          <span class="hint" id="pe-cron-note"></span>
+        </div>
+      </div>
+
+      <div>
+        <div class="card-title" style="margin-bottom:6px">节点 <span class="hint" style="font-weight:400">共 ${nodes.length} 个，按层并发执行</span></div>
+        <div class="table-wrap" style="max-height:240px;overflow:auto"><table>
+          <thead><tr><th>节点</th><th>类型</th><th>上游</th><th>目标</th><th>写入</th></tr></thead>
+          <tbody>${nodes.length ? nodes.map(n => `<tr>
+            <td class="mono">${esc(n.id)}</td>
+            <td><span class="pill info">${esc(n.type)}</span></td>
+            <td class="mono dim">${esc((n.dependsOn || []).join(', ') || '—')}</td>
+            <td class="mono">${esc(n.model || '—')}</td>
+            <td class="mono dim">${esc(n.writeMode ? writeModeText(n.writeMode) : '—')}</td>
+          </tr>`).join('') : '<tr><td colspan="5" class="hint">这条管道还没有节点</td></tr>'}</tbody>
+        </table></div>
+        <div class="hint" style="margin-top:8px">
+          要加节点、改上游或改 SQL，用上面的「可视化编排」拖一遍；这里只改调度与描述。
+        </div>
+      </div>
+
+      <details id="pe-adv">
+        <summary class="hint" style="cursor:pointer">高级：直接编辑定义（YAML）</summary>
+        <div class="hint" style="margin:8px 0">改这里会整条替换定义，包括节点、参数与默认值。保存时以这段内容为准。</div>
+        ${def.yaml
+          ? `<textarea id="pe-yaml" rows="14" spellcheck="false">${esc(def.yaml)}</textarea>`
+          : '<div class="err-box">没有取到当前版本的定义，可能还没发布过。请用上面的选项保存，或用「可视化编排」。</div>'}
+      </details>
+
       <div class="row" style="justify-content:flex-end">
         <button class="ghost" data-act="close-modal">取消</button>
-        <button class="primary" data-act="save-pipeline">校验并发布</button>
+        <button class="primary" data-act="save-pipeline" data-name="${esc(name)}">保存并发布</button>
       </div>
-    </div>`);
+    </div>`, 'wide');
+
+  const hour = document.getElementById('pe-hour');
+  const min = document.getElementById('pe-min');
+  hour.innerHTML = Array.from({ length: 24 }, (_, h) => {
+    const v = String(h).padStart(2, '0');
+    return `<option value="${v}" ${v === st.hour ? 'selected' : ''}>${v} 时</option>`;
+  }).join('');
+  min.innerHTML = [0, 15, 30, 45].map(m => {
+    const v = String(m).padStart(2, '0');
+    return `<option value="${v}" ${v === st.minute ? 'selected' : ''}>${v} 分</option>`;
+  }).join('');
+
+  const syncSchedule = () => {
+    const wrap = document.getElementById('pe-time-wrap');
+    const week = document.getElementById('pe-week');
+    const note = document.getElementById('pe-cron-note');
+    const known = st.kind !== '';
+    wrap.style.display = (st.kind === 'hourly' || !known) ? 'none' : '';
+    week.style.display = st.kind === 'weekly' ? '' : 'none';
+    if (st.kind === 'manual') {
+      wrap.style.display = 'none';
+      note.textContent = '手动触发，不排期。';
+      return;
+    }
+    if (!known) {
+      note.innerHTML = `当前表达式 <span class="mono">${esc(p.schedule || '')}</span> 不在常见档位里，点上面任一项会覆盖它。`;
+      return;
+    }
+    const c = wzCron(st.kind, st.hour, st.minute, st.weekday);
+    note.innerHTML = `<span class="mono">${esc(c)}</span> · ${esc(wzCronText(c))}`;
+  };
+  document.querySelectorAll('#pe-sched [data-sched]').forEach(el => {
+    el.addEventListener('click', () => {
+      st.kind = el.dataset.sched;
+      st.touched = true;
+      if (!st.hour) st.hour = '02';
+      if (!st.minute) st.minute = '00';
+      document.querySelectorAll('#pe-sched [data-sched]').forEach(x => x.classList.toggle('sel', x.dataset.sched === st.kind));
+      syncSchedule();
+    });
+  });
+  hour.addEventListener('change', () => { st.hour = hour.value; st.touched = true; syncSchedule(); });
+  min.addEventListener('change', () => { st.minute = min.value; st.touched = true; syncSchedule(); });
+  document.getElementById('pe-week').addEventListener('change', ev => { st.weekday = ev.target.value; st.touched = true; syncSchedule(); });
+  document.getElementById('pe-desc').addEventListener('input', ev => { st.desc = ev.target.value; });
+
+  st.yamlDirty = false;
+  const yamlBox = document.getElementById('pe-yaml');
+  if (yamlBox) yamlBox.addEventListener('input', () => { st.yamlDirty = true; });
+
+  window.__pipeEdit = st;
+  syncSchedule();
+}
+
+/* cron → 「多久跑一次」的初值。认不出来的表达式归到「未知档位」：
+ * 直接回落到「每天 02:00」会在用户没碰调度的情况下把别人的排期改掉。 */
+function cronToPicker(cron) {
+  const out = { kind: '', hour: '02', minute: '00', weekday: '1' };
+  const raw = String(cron || '').trim();
+  if (!raw) { out.kind = 'manual'; return out; }
+  const p = raw.split(/\s+/);
+  if (p.length !== 5) return out;
+  const [mi, h, dom, mon, dow] = p;
+  if (!/^\d+$/.test(mi)) return out;
+  out.minute = mi.padStart(2, '0');
+  const allWild = dom === '*' && mon === '*';
+  if (h === '*' && allWild && dow === '*') { out.kind = 'hourly'; return out; }
+  if (!/^\d+$/.test(h)) return out;
+  out.hour = h.padStart(2, '0');
+  if (allWild && dow === '*') { out.kind = 'daily'; return out; }
+  if (allWild && /^\d$/.test(dow)) { out.kind = 'weekly'; out.weekday = dow; return out; }
+  if (dom === '1' && mon === '*' && dow === '*') { out.kind = 'monthly'; return out; }
+  return out;
+}
+
+// cronText 给列表与详情用：能翻译成人话就翻译，翻译不了原样显示。
+function cronText(cron) { return cron ? wzCronText(cron) : '手动'; }
+
+function writeModeText(m) {
+  return { append: '追加', overwrite: '覆盖', upsert: '更新插入', overwrite_partition: '按分区覆盖' }[m] || (m || '追加');
+}
+
+/** 删除管道前先查影响面：历史和版本会跟着级联删除，这个数字必须摆出来。 */
+async function deletePipelineFlow(name) {
+  let refs = { instances: 0, running: 0 };
+  try { refs = (await api('/pipelines/' + encodeURIComponent(name) + '/refs')) || refs; } catch (e) { /* 查不到就让后端在 DELETE 时再拦 */ }
+  const n = refs.instances || 0;
+  if (refs.running > 0) {
+    toast(`这条管道还有 ${refs.running} 个实例在排队或运行，等它们结束再删`, 'err');
+    return;
+  }
+  ConfirmDanger({
+    title: '删除管道',
+    resource: name,
+    danger: `将删除管道 <b>${esc(name)}</b> 及其全部版本快照，不可撤销。<br>` +
+      (n
+        ? `<b style="color:#ff7b72">它的 ${n} 次运行记录（含节点结果与日志）会一并删除</b>，最近一次在 ${esc(refs.lastRunAt || '—')}。<br>`
+        : '这条管道还没有运行记录。<br>') +
+      '已经写入目标表的数据不会被删除。只想停止排期，请用「停用」。',
+    onOK: async () => {
+      await api(`/pipelines/${encodeURIComponent(name)}?force=${n ? 1 : 0}`, { method: 'DELETE' });
+      if (S.selected.pipeline === name) S.selected.pipeline = '';
+      toast('已删除管道 ' + name, 'ok');
+      await render();
+    },
+  });
 }
 
 /* ---------------- 实例 ---------------- */
@@ -1838,6 +1999,7 @@ async function pageMetrics(view) {
   // 直接 .length 会抛「Cannot read properties of null」，页面白屏。
   let metrics = await api('/metrics');
   if (!Array.isArray(metrics)) metrics = [];
+  S.cache.metrics = metrics;
   if (!metrics.length) {
     view.innerHTML = `
       <div class="page-head">
@@ -1874,7 +2036,9 @@ async function pageMetrics(view) {
         <p class="page-desc">${esc(m.displayName || m.name)} · <span class="mono">${esc(m.agg)}(${esc(m.expr)})</span> on ${esc(m.model)}</p>
       </div>
       <div class="row">
-        <button class="ghost" data-act="metric-yaml" title="直接编辑指标定义（高级）">高级 YAML</button>
+        <button class="ghost" data-act="metric-edit" data-name="${esc(m.name)}" title="改口径：模型、字段、聚合方式与维度">编辑</button>
+        <button class="ghost" data-act="metric-yaml" title="整条替换定义（高级）">高级 YAML</button>
+        <button class="danger" data-act="metric-del" data-name="${esc(m.name)}">删除</button>
         <button class="primary" data-act="new-metric">新建指标</button>
       </div>
     </div>
@@ -1923,17 +2087,166 @@ async function pageMetrics(view) {
   if (dm) dm.onchange = () => { S.selected.metricDim = dm.value; render(); };
 }
 
-function metricEditor() {
+function metricEditor(m) {
   modal('指标定义 · 高级', `
     <div class="stack">
-      <div class="hint">直接改 YAML：expr 只能是被聚合的列名，维度必须已声明。用「新建指标」向导可以边改边看曲线。</div>
-      <textarea id="metric-yaml" rows="12">${esc(METRIC_TPL)}</textarea>
+      <div class="hint">整条替换指标定义。日常改口径用「编辑」里的下拉选项，这里给需要批量改或从别处拷定义的人用。</div>
+      <textarea id="metric-yaml" rows="12">${esc(m ? metricYamlOf(m) : METRIC_TPL)}</textarea>
       <div class="hint">expr 只能是被聚合的列名；维度必须已在 dimensions 中声明。</div>
       <div class="row" style="justify-content:flex-end">
         <button class="ghost" data-act="close-modal">取消</button>
         <button class="primary" data-act="save-metric">保存</button>
       </div>
     </div>`);
+}
+
+// 指标是扁平结构，手写序列化不会有嵌套字段的坑；
+// 字符串统一用 JSON 双引号——它同时也是合法的 YAML 标量，省掉一层转义规则。
+function metricYamlOf(m) {
+  const q = v => JSON.stringify(String(v == null ? '' : v));
+  return [
+    `name: ${q(m.name)}`,
+    `displayName: ${q(m.displayName || m.name)}`,
+    `model: ${q(m.model)}`,
+    `agg: ${q(m.agg)}`,
+    `expr: ${q(m.expr)}`,
+    `timeColumn: ${q(m.timeColumn || 'dt')}`,
+    `dimensions: [${(m.dimensions || []).map(q).join(', ')}]`,
+    `unit: ${q(m.unit || '')}`,
+    `description: ${q(m.description || '')}`,
+  ].join('\n') + '\n';
+}
+
+/* 指标编辑：口径就是四个选择题——用哪个模型、哪个字段、怎么聚合、拆不拆维度。
+ * 旧入口只有「高级 YAML」，等于把「改个聚合方式」变成改配置文件。
+ * 保存后页面会立刻按新口径重画曲线，改错当场看得见。
+ */
+async function metricEditFlow(name) {
+  const models = await api('/models').catch(() => []);
+  const published = (models || []).filter(x => (x.activeVersion || 0) > 0 && (x.spec && (x.spec.columns || []).length));
+  if (!published.length) { toast('还没有已发布的模型，指标必须挂在一个已发布模型上', 'err'); return; }
+
+  let cur = { name: '', displayName: '', model: '', agg: 'sum', expr: '', timeColumn: 'dt', dimensions: [], unit: '', description: '' };
+  if (name) {
+    const hit = (S.cache.metrics || []).find(x => x.name === name);
+    if (hit) cur = Object.assign(cur, hit);
+  }
+  if (!cur.model || !published.some(x => x.name === cur.model)) cur.model = published[0].name;
+
+  const st = { ...cur, dimensions: (cur.dimensions || []).slice(), isNew: !name };
+  window.__metricForm = st;
+
+  modal(name ? '编辑指标 · ' + name : '新建指标', `<div id="me-body"></div>
+    <div class="row" style="justify-content:flex-end;margin-top:14px">
+      <button class="ghost" data-act="close-modal">取消</button>
+      <button class="primary" data-act="save-metric-form">保存</button>
+    </div>`, 'wide');
+
+  const cols = () => {
+    const m = published.find(x => x.name === st.model);
+    return (m && m.spec && m.spec.columns) || [];
+  };
+
+  const paint = () => {
+    const cs = cols();
+    const timeCols = cs.filter(c => ['date', 'datetime', 'timestamp'].includes(String(c.type).toLowerCase()));
+    const body = document.getElementById('me-body');
+    body.innerHTML = `
+      <div class="grid c2" style="gap:14px">
+        <label class="field"><span>显示名（看板上显示这个）</span>
+          <input id="me-dn" value="${esc(st.displayName)}" placeholder="例如：成交总额"></label>
+        <label class="field"><span>标识（英文，接口与卡片引用它）</span>
+          <input id="me-name" class="mono" value="${esc(st.name)}" ${st.isNew ? '' : 'disabled'} placeholder="gmv"></label>
+        <label class="field"><span>统计哪张表</span>
+          <select id="me-model">${published.map(x => `<option value="${esc(x.name)}" ${x.name === st.model ? 'selected' : ''}>${esc(x.name)} · ${esc((x.layer || '').toUpperCase())}</option>`).join('')}</select></label>
+        <label class="field"><span>怎么算</span>
+          <select id="me-agg">${Object.entries(WZ_AGG_LABEL).map(([k, t]) =>
+            `<option value="${k}" ${k === st.agg ? 'selected' : ''}>${t}（${k}）</option>`).join('')}</select></label>
+        <label class="field"><span>统计哪个字段</span>
+          <select id="me-expr">
+            <option value="" ${st.expr ? '' : 'selected'}>（全部行 · 只在「计数」时可用）</option>
+            ${cs.map(c => `<option value="${esc(c.name)}" ${c.name === st.expr ? 'selected' : ''}>${esc(c.name)} · ${esc(c.type)}</option>`).join('')}
+          </select></label>
+        <label class="field"><span>按哪个时间列看趋势</span>
+          <select id="me-time">${(timeCols.length ? timeCols : cs).map(c =>
+            `<option value="${esc(c.name)}" ${c.name === st.timeColumn ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select></label>
+        <label class="field"><span>单位</span>
+          <input id="me-unit" value="${esc(st.unit)}" placeholder="元 / 单 / 人（可留空）"></label>
+        <label class="field"><span>备注</span>
+          <input id="me-desc" value="${esc(st.description)}" placeholder="口径说明，例如：按天汇总的成交金额"></label>
+      </div>
+      <div class="field"><span>可拆分的维度（勾谁，看板上就能按谁拆）</span>
+        <div class="fmulti">${cs.length ? cs.map(c => `
+          <label class="fmulti-item"><input type="checkbox" value="${esc(c.name)}" ${st.dimensions.includes(c.name) ? 'checked' : ''}><span>${esc(c.name)}</span></label>`).join('')
+          : '<div class="fmulti-empty">这个模型没有可选字段</div>'}</div>
+      </div>
+      <div class="hint" id="me-preview"></div>`;
+
+    // 换模型要把字段、时间列、维度一起收敛到新模型的列上，
+    // 否则会提交一个「表里不存在的列」，保存时才报错。
+    body.querySelector('#me-model').addEventListener('change', ev => {
+      st.model = ev.target.value;
+      const next = cols().map(c => c.name);
+      if (!next.includes(st.expr)) st.expr = next[0] || '';
+      st.dimensions = st.dimensions.filter(d => next.includes(d));
+      st.timeColumn = '';
+      paint();
+    });
+    body.querySelector('#me-agg').addEventListener('change', ev => { st.agg = ev.target.value; hint(); });
+    body.querySelector('#me-expr').addEventListener('change', ev => { st.expr = ev.target.value; hint(); });
+    body.querySelector('#me-time').addEventListener('change', ev => { st.timeColumn = ev.target.value; hint(); });
+    body.querySelector('#me-unit').addEventListener('input', ev => { st.unit = ev.target.value; });
+    body.querySelector('#me-desc').addEventListener('input', ev => { st.description = ev.target.value; });
+    body.querySelector('#me-dn').addEventListener('input', ev => { st.displayName = ev.target.value; });
+    body.querySelector('#me-name').addEventListener('input', ev => { st.name = ev.target.value; });
+    body.querySelectorAll('.fmulti input[type="checkbox"]').forEach(el => el.addEventListener('change', () => {
+      st.dimensions = [...body.querySelectorAll('.fmulti input:checked')].map(x => x.value);
+      hint();
+    }));
+    if (!st.timeColumn) {
+      const tc = body.querySelector('#me-time');
+      st.timeColumn = tc ? tc.value : 'dt';
+    }
+    // 计数可以不选字段（COUNT(*)），其余聚合必须落到具体列上：
+    // 默认替用户选第一列，比让他提交后才看到「expr 不能为空」友好。
+    if (!st.expr && st.agg !== 'count') {
+      const opt = body.querySelector('#me-expr option[value]:not([value=""])');
+      st.expr = opt ? opt.value : '';
+    }
+    hint();
+  };
+
+  // 一句话把当前口径念回来：比让用户自己核对四个下拉更可靠。
+  const hint = () => {
+    const box = document.getElementById('me-preview');
+    if (!box) return;
+    const ds = WZ_AGG_LABEL[st.agg] || st.agg;
+    box.innerHTML = `口径：在 <span class="mono">${esc(st.model || '—')}</span> 上按 <span class="mono">${esc(st.timeColumn || '—')}</span> 统计，
+      <b>${esc(ds)}</b> <span class="mono">${esc(st.expr || '—')}</span>${st.dimensions.length ? `，可按 ${esc(st.dimensions.join('、'))} 拆分` : '，不拆维度'}。`;
+  };
+
+  paint();
+}
+
+/** 删除指标前先查引用面：卡片只存指标名，删了口径那一格就空了。 */
+async function deleteMetricFlow(name) {
+  let refs = { dashboards: [] };
+  try { refs = (await api('/metrics/' + encodeURIComponent(name) + '/refs')) || refs; } catch (e) { /* 交给后端再拦一次 */ }
+  const ds = refs.dashboards || [];
+  ConfirmDanger({
+    title: '删除指标',
+    resource: name,
+    danger: `将删除指标 <b>${esc(name)}</b> 的口径定义，不可撤销。数据表不受影响。<br>` +
+      (ds.length
+        ? `<b style="color:#ff7b72">以下看板的卡片会变成空壳：</b><br>${ds.map(esc).join('<br>')}`
+        : '当前没有看板引用它。'),
+    onOK: async () => {
+      await api(`/metrics/${encodeURIComponent(name)}?force=${ds.length ? 1 : 0}`, { method: 'DELETE' });
+      if (S.selected.metric === name) S.selected.metric = '';
+      toast('已删除指标 ' + name, 'ok');
+      await render();
+    },
+  });
 }
 
 
@@ -2002,6 +2315,7 @@ async function pageDashboards(view) {
       <div class="row">
         <select id="d-pick" style="width:200px">${picker}</select>
         <button class="ghost" data-act="edit-dashboard">编辑当前</button>
+        <button class="danger" data-act="del-dashboard" data-name="${esc(cur)}">删除</button>
         <button class="primary" data-act="new-dashboard">新建看板</button>
       </div>
     </div>
@@ -2089,6 +2403,24 @@ function dashFullscreen(i) {
   const svg = document.getElementById('fs-chart');
   if (isChart) drawChart(svg, c.chartType || 'line', c.series || [], c.chartPoints || []);
   else drawLineChart(svg, c.points, c.unit);
+}
+
+/** 删除看板只删这一页的排布：指标、图表、数据都不动，所以不需要 force。 */
+async function deleteDashboardFlow(name) {
+  const d = S.cache.dashCur && S.cache.dashCur.name === name ? S.cache.dashCur : null;
+  const n = d && Array.isArray(d.cards) ? d.cards.length : 0;
+  ConfirmDanger({
+    title: '删除看板',
+    resource: name,
+    danger: `将删除看板 <b>${esc(name)}</b>${n ? ` 及其 ${n} 个卡片` : ''}，不可撤销。<br>
+      指标、BI 图表和表里的数据都不会被删除——想复刻可以用「新建看板」重排一次。`,
+    onOK: async () => {
+      await api('/dashboards/' + encodeURIComponent(name), { method: 'DELETE' });
+      if (S.selected.dashboard === name) S.selected.dashboard = '';
+      toast('已删除看板 ' + name, 'ok');
+      await render();
+    },
+  });
 }
 
 
@@ -2548,9 +2880,46 @@ document.addEventListener('click', async (ev) => {
       case 'profile-table': profileModal(); break;
       case 'run-profile': el.disabled = true; await runProfile(); el.disabled = false; break;
       case 'new-metric': metricWizard(); break;
-      case 'metric-yaml': metricEditor(); break;
+      case 'metric-yaml': {
+        const list = S.cache.metrics || [];
+        metricEditor(list.find(x => x.name === S.selected.metric) || list[0]);
+        break;
+      }
+      case 'metric-edit': await metricEditFlow(el.dataset.name); break;
+      case 'metric-del': await deleteMetricFlow(el.dataset.name); break;
+      case 'save-metric-form': {
+        // 结构化提交：页面上选的是下拉，就别让它退化成一段字符串再解析回来。
+        const st = window.__metricForm;
+        if (!st) { toast('编辑内容已过期，请重新打开', 'err'); break; }
+        if (!/^[a-z][a-z0-9_]*$/.test(st.name || '')) {
+          toast('标识只能用小写字母、数字和下划线，且以字母开头', 'err');
+          break;
+        }
+        if (!st.expr && st.agg !== 'count') {
+          toast('还没选要统计的字段（只有「计数」可以不选字段）', 'err');
+          break;
+        }
+        el.disabled = true; el.textContent = '保存中…';
+        const metric = {
+          name: st.name || '',
+          displayName: st.displayName || '',
+          model: st.model,
+          agg: st.agg,
+          expr: st.expr,
+          timeColumn: st.timeColumn,
+          dimensions: st.dimensions,
+          unit: st.unit,
+          description: st.description,
+        };
+        const saved = await api('/metrics', { method: 'POST', body: { metric } });
+        closeModal(); S.selected.metric = saved.name;
+        toast('指标 ' + saved.name + ' 已保存', 'ok');
+        await render();
+        break;
+      }
       case 'new-dashboard': dashboardEditor(true); break;
       case 'edit-dashboard': dashboardEditor(false); break;
+      case 'del-dashboard': await deleteDashboardFlow(el.dataset.name); break;
 
       /* ---- 看板：全局筛选 / 卡片宽度 / 全屏 ---- */
       case 'dash-days': {
@@ -2621,17 +2990,26 @@ document.addEventListener('click', async (ev) => {
 
       case 'sel-pipeline': S.selected.pipeline = el.dataset.name; await render(); break;
       case 'new-pipeline': pipelineWizard(); break;
-      case 'edit-pipeline': {
-        const p = (S.cache.pipelines || []).find(x => x.name === el.dataset.name);
-        pipelineEditor(p && p.spec ? pipelineYamlFrom(p.spec) : '');
-        break;
-      }
+      case 'edit-pipeline': await editPipelineFlow(el.dataset.name); break;
+      case 'del-pipeline': await deletePipelineFlow(el.dataset.name); break;
       case 'save-pipeline': {
-        const yaml = document.getElementById('pipe-yaml').value;
-        el.disabled = true; el.textContent = '发布中…';
-        const p = await api('/pipelines', { method: 'POST', body: { yaml, publish: true } });
+        const st = window.__pipeEdit;
+        if (!st || st.name !== el.dataset.name) { toast('编辑内容已过期，请重新打开', 'err'); break; }
+        el.disabled = true; el.textContent = '保存中…';
+        let p;
+        if (st.yamlDirty) {
+          // 动过高级区就以 YAML 为准：那是用户明确选择要整条替换。
+          p = await api('/pipelines', { method: 'POST', body: { yaml: document.getElementById('pe-yaml').value, publish: true } });
+        } else {
+          const spec = st.spec;
+          spec.description = st.desc;
+          // 没动调度就不写 schedule：认不出的 cron 表达式（如 0 2 * * 1,3）
+          // 原样留在定义里，不能被「默认档位」悄悄改掉。
+          if (st.touched) spec.schedule = wzCron(st.kind, st.hour, st.minute, st.weekday);
+          p = await api('/pipelines', { method: 'POST', body: { spec, publish: true } });
+        }
         closeModal(); S.selected.pipeline = p.name;
-        toast(`管道 ${p.name} 已发布 v${p.activeVersion}`, 'ok');
+        toast(`已发布 ${p.name} v${p.activeVersion}`, 'ok');
         await render();
         break;
       }
@@ -2740,26 +3118,6 @@ document.addEventListener('click', (ev) => {
   if (ev.target.closest('button, input, summary, details, a')) return;
   openInstance(row.dataset.id);
 });
-
-function pipelineYamlFrom(s) {
-  const lines = [`kind: Pipeline`, `name: ${s.name}`];
-  if (s.description) lines.push(`description: ${s.description}`);
-  if (s.schedule) lines.push(`schedule: "${s.schedule}"`);
-  lines.push('nodes:');
-  (s.nodes || []).forEach(n => {
-    lines.push(`  - id: ${n.id}`);
-    lines.push(`    type: ${n.type}`);
-    if (n.dependsOn && n.dependsOn.length) lines.push(`    depends_on: [${n.dependsOn.join(', ')}]`);
-    if (n.datasource) lines.push(`    datasource: ${n.datasource}`);
-    if (n.model) lines.push(`    model: ${n.model}`);
-    if (n.writeMode) lines.push(`    write_mode: ${n.writeMode}`);
-    if (n.sql) {
-      lines.push(`    sql: |`);
-      n.sql.trim().split('\n').forEach(l => lines.push('      ' + l));
-    }
-  });
-  return lines.join('\n') + '\n';
-}
 
 window.addEventListener('hashchange', render);
 async function bootstrapSession() {

@@ -920,9 +920,10 @@ async function publishCurrentModel() {
     return checkCurrentModel();
   }
   const breaking = ((chk.diff && chk.diff.changes) || []).filter(c => c.breaking);
-  const yaml = m_specToYAML(DESIGN.spec);
   const doPublish = async (reason) => {
-    await api('/models', { method: 'POST', body: { yaml, publish: true, force: breaking.length > 0, reason } });
+    // 直接提交 spec：设计器里的对象就是服务端返回的那份，转成 YAML 再解析回来
+    // 只会丢掉序列化没覆盖的字段（unique_key / indexes / tags / bucket_by）。
+    await api('/models', { method: 'POST', body: { spec: DESIGN.spec, publish: true, force: breaking.length > 0, reason } });
     toast('已发布', 'ok');
     DESIGN.dirty = false;
     await loadModels(document.getElementById('view'));
@@ -947,37 +948,6 @@ function newModelModal(view) {
   return newModelWizard();
 }
 
-/** spec → YAML。控制台不引 js-yaml，模型结构固定，手写序列化更可控。 */
-function m_specToYAML(s) {
-  const q = v => {
-    if (v === '' || v == null) return "''";
-    const str = String(v);
-    return /[:#{}\[\],&*?|<>=!%@`"']/.test(str) || /^\s|\s$/.test(str) ? JSON.stringify(str) : str;
-  };
-  const L = [];
-  L.push('kind: ' + (s.kind || 'Model'));
-  L.push('name: ' + q(s.name));
-  L.push('layer: ' + q(s.layer));
-  if (s.description) L.push('description: ' + q(s.description));
-  if (s.datasource) L.push('datasource: ' + q(s.datasource));
-  if (s.schema) L.push('schema: ' + q(s.schema));
-  if (s.table) L.push('table: ' + q(s.table));
-  L.push('columns:');
-  (s.columns || []).forEach(c => {
-    L.push('  - name: ' + q(c.name));
-    L.push('    type: ' + q(c.type));
-    L.push('    nullable: ' + (c.nullable ? 'true' : 'false'));
-    if (c.comment) L.push('    comment: ' + q(c.comment));
-    if (c.default) L.push('    default: ' + q(c.default));
-  });
-  if ((s.primaryKey || []).length) L.push('primary_key: [' + s.primaryKey.map(q).join(', ') + ']');
-  if ((s.partitionBy || []).length) L.push('partition_by: [' + s.partitionBy.map(q).join(', ') + ']');
-  if (s.ttl) L.push('ttl: ' + q(s.ttl));
-  if (s.materialization) L.push('materialization: ' + q(s.materialization));
-  if (s.allowLossy) L.push('allow_lossy: true');
-  if (s.owner) L.push('owner: ' + q(s.owner));
-  return L.join('\n') + '\n';
-}
 
 /* ============================== 打标签与采集 ============================== */
 

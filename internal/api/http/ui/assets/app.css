@@ -281,6 +281,8 @@ pre.code {
 }
 .modal h3 { margin: 0 0 4px; font-size: 16px; }
 .modal:focus { outline: none; }
+/* 带表格的编辑器（管道编辑、指标编辑）：560px 会把「节点/上游/写入」挤成多行。 */
+.modal.wide { width: min(760px, 100%); }
 
 .dag { width: 100%; background: #0b0e13; border: 1px solid var(--line); border-radius: 8px; }
 .dag text { font-family: var(--sans); font-size: 11.5px; fill: #cfe0ff; }

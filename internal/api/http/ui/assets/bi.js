@@ -109,9 +109,46 @@ function renderChartList(view) {
     <span class="tw"></span><span class="ti">▦</span>
     <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis" title="${esc(c.name)}">${esc(c.name)}</span>
     <span class="tag sm" style="flex:none">${esc(c.type || '')}</span>
+    <button class="sm ghost" data-cdel="${esc(c.name)}" title="删除这张图表" style="flex:none;padding:0 5px">×</button>
   </div>`).join('');
   host.querySelectorAll('[data-chart]').forEach(n => {
     n.addEventListener('click', () => openChart(view, n.dataset.chart));
+  });
+  // 删除键在行内：不 stopPropagation 就会连带打开这张要删的图表。
+  host.querySelectorAll('[data-cdel]').forEach(n => {
+    n.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      deleteChartFlow(view, n.dataset.cdel);
+    });
+  });
+}
+
+/** 删除 BI 图表。图表可能被看板当卡片引用，先把引用它的看板说清楚。 */
+async function deleteChartFlow(view, name) {
+  const used = [];
+  try {
+    const dashboards = await api('/dashboards');
+    (dashboards || []).forEach(d => {
+      if ((d.cards || []).some(c => c.chart === name)) used.push(d.name);
+    });
+  } catch (e) { /* 查不到就当没引用，后端仍会拦 */ }
+  ConfirmDanger({
+    title: '删除图表',
+    resource: name,
+    danger: `将删除图表 <b>${esc(name)}</b> 的配置，不可撤销。数据集与数据不受影响。<br>` +
+      (used.length
+        ? `<b style="color:#ff7b72">以下看板把它当卡片用，删掉后那一格会空：</b><br>${used.map(esc).join('<br>')}`
+        : '当前没有看板引用它。'),
+    onOK: async () => {
+      await api('/charts/' + encodeURIComponent(name), { method: 'DELETE' });
+      if (BIE.cur === name) { BIE.cur = ''; BIE.spec = null; }
+      toast('已删除图表 ' + name, 'ok');
+      await loadChartList(view);
+      const canvas = view.querySelector('#bi-canvas');
+      if (canvas && !BIE.cur) canvas.innerHTML = UI.empty({ title: '已删除', desc: '从左侧再选一张，或新建图表' });
+      const cfg = view.querySelector('#bi-config');
+      if (cfg && !BIE.cur) cfg.innerHTML = UI.empty({ title: '配置', desc: '选中图表后配置编码槽' });
+    },
   });
 }
 

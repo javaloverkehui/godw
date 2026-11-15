@@ -184,15 +184,22 @@ func atoiDefault(s string, def int64) (int64, error) {
 // dryRunPipeline 渲染整条管道但不执行，用于上线前确认「将执行什么」。
 func (h *Handler) dryRunPipeline(w http.ResponseWriter, r *http.Request, _ map[string]string) {
 	var body struct {
-		YAML    string         `json:"yaml"`
-		BizDate string         `json:"bizDate"`
-		Params  map[string]any `json:"params"`
+		YAML string `json:"yaml"`
+		// Spec 与 YAML 二选一：画布里的节点本来就是对象，不需要先拼成文本再解析回来。
+		Spec    *model.PipelineSpec `json:"spec"`
+		BizDate string              `json:"bizDate"`
+		Params  map[string]any      `json:"params"`
 	}
 	if err := decodeBody(r, &body); err != nil {
 		fail(w, r, err)
 		return
 	}
-	spec, err := pipelinecompile.Parse([]byte(body.YAML))
+	raw, err := pipelineRaw(body.YAML, body.Spec)
+	if err != nil {
+		fail(w, r, err)
+		return
+	}
+	spec, err := pipelinecompile.Parse(raw)
 	if err != nil {
 		fail(w, r, err)
 		return
@@ -211,16 +218,22 @@ func (h *Handler) dryRunPipeline(w http.ResponseWriter, r *http.Request, _ map[s
 // sampleRunPipeline 只跑 SELECT 并 LIMIT，绝不写目标表。
 func (h *Handler) sampleRunPipeline(w http.ResponseWriter, r *http.Request, _ map[string]string) {
 	var body struct {
-		YAML    string `json:"yaml"`
-		NodeID  string `json:"nodeId"`
-		BizDate string `json:"bizDate"`
-		Limit   int    `json:"limit"`
+		YAML    string              `json:"yaml"`
+		Spec    *model.PipelineSpec `json:"spec"`
+		NodeID  string              `json:"nodeId"`
+		BizDate string              `json:"bizDate"`
+		Limit   int                 `json:"limit"`
 	}
 	if err := decodeBody(r, &body); err != nil {
 		fail(w, r, err)
 		return
 	}
-	spec, err := pipelinecompile.Parse([]byte(body.YAML))
+	raw, err := pipelineRaw(body.YAML, body.Spec)
+	if err != nil {
+		fail(w, r, err)
+		return
+	}
+	spec, err := pipelinecompile.Parse(raw)
 	if err != nil {
 		fail(w, r, err)
 		return
@@ -234,6 +247,22 @@ func (h *Handler) sampleRunPipeline(w http.ResponseWriter, r *http.Request, _ ma
 		return
 	}
 	ok(w, r, res)
+}
+
+// pipelineRaw 把「结构化 spec」与「YAML 文本」统一成解析器认的字节流。
+// 两条入口最终走同一个 Parse，校验规则只有一份。
+func pipelineRaw(yamlText string, spec *model.PipelineSpec) ([]byte, error) {
+	if spec != nil {
+		b, err := yaml.Marshal(spec)
+		if err != nil {
+			return nil, errs.Wrap(errs.CodeInvalidArgument, err, "管道定义序列化失败")
+		}
+		return b, nil
+	}
+	if yamlText == "" {
+		return nil, errs.New(errs.CodeInvalidArgument, "需要 spec 或 yaml 之一")
+	}
+	return []byte(yamlText), nil
 }
 
 // ---------- 血缘图（T0610） ----------

@@ -49,7 +49,7 @@ const CANVAS = {
 };
 
 Object.assign(ROUTES, {
-  canvas: { title: '编排', sub: '可视化编辑管道 DAG（YAML 仍是唯一事实源）', render: pageCanvas },
+  canvas: { title: '编排', sub: '可视化编辑管道 DAG', render: pageCanvas },
 });
 
 /* ---------------- 页面 ---------------- */
@@ -78,7 +78,7 @@ async function pageCanvas(view) {
     <div class="page-head">
       <div>
         <h2 class="page-title">编排</h2>
-        <p class="page-desc">拖拽移动、拖端口连线、滚轮缩放、空格平移。保存时序列化为 YAML 并校验，与手写 YAML 完全等价。</p>
+        <p class="page-desc">拖拽移动、拖端口连线、滚轮缩放、空格平移。保存时按当前画布发布新版本，与「编辑」里改调度是同一份定义。</p>
       </div>
       <div class="row">
         <select id="cv-pipe" style="width:200px">
@@ -189,6 +189,10 @@ function loadCanvasFromSpec(p) {
     return {
       id: n.id, type: n.type, model: n.model || '', datasource: n.datasource || '',
       sql: n.sql || '', writeMode: n.writeMode || '', dependsOn: (n.dependsOn || []).slice(),
+      // raw 是节点原始定义。画布只认位置、连线和 SQL，但 config（质量规则、
+      // 传感器参数）、retry、timeout 这些执行器要用的字段必须原样带回去：
+      // 「进画布改根连线」不该把一条质量门禁的规则抹掉。
+      raw: JSON.parse(JSON.stringify(n)),
       x: pos.x, y: pos.y,
     };
   });
@@ -207,52 +211,20 @@ function specFromCanvas() {
   base.kind = 'Pipeline';
   base.name = p.name;
   base.nodes = CANVAS.nodes.map(n => {
-    const spec = { id: n.id, type: n.type };
-    if (n.dependsOn && n.dependsOn.length) spec.depends_on = n.dependsOn;
-    if (n.datasource) spec.datasource = n.datasource;
-    if (n.model) spec.model = n.model;
-    if (n.writeMode) spec.write_mode = n.writeMode;
-    if (n.sql) spec.sql = n.sql;
+    // 以原始节点为底：画布不认识的字段必须原样带回去（见 loadCanvasFromSpec 的 raw）。
+    const spec = Object.assign({}, n.raw || {});
+    // 旧版画布序列化用的是 YAML 风格键名，遇到就从节点上清掉，避免两份定义并存。
+    delete spec.depends_on; delete spec.write_mode; delete spec.timeout_sec; delete spec.continue_on_failure;
+    spec.id = n.id;
+    spec.type = n.type;
+    if (n.dependsOn && n.dependsOn.length) spec.dependsOn = n.dependsOn.slice(); else delete spec.dependsOn;
+    if (n.datasource) spec.datasource = n.datasource; else delete spec.datasource;
+    if (n.model) spec.model = n.model; else delete spec.model;
+    if (n.writeMode) spec.writeMode = n.writeMode; else delete spec.writeMode;
+    if (n.sql) spec.sql = n.sql; else delete spec.sql;
     return spec;
   });
   return base;
-}
-
-function yamlOf(spec) {
-  // 手写序列化：只覆盖管道 DSL 的字段，避免为前端引入 YAML 库。
-  const lines = ['kind: Pipeline', 'name: ' + spec.name];
-  if (spec.description) lines.push('description: ' + q(spec.description));
-  if (spec.schedule) lines.push('schedule: ' + JSON.stringify(spec.schedule));
-  if (spec.timezone) lines.push('timezone: ' + spec.timezone);
-  if (spec.concurrency) lines.push('concurrency: ' + spec.concurrency);
-  if (spec.params && spec.params.length) {
-    lines.push('params:');
-    spec.params.forEach(pm => {
-      lines.push('  - name: ' + pm.name);
-      if (pm.type) lines.push('    type: ' + pm.type);
-      if (pm.required) lines.push('    required: true');
-      if (pm.default !== undefined) lines.push('    default: ' + JSON.stringify(pm.default));
-      if (pm.description) lines.push('    description: ' + q(pm.description));
-    });
-  }
-  lines.push('nodes:');
-  spec.nodes.forEach(n => {
-    lines.push('  - id: ' + n.id);
-    lines.push('    type: ' + n.type);
-    if (n.depends_on) lines.push('    depends_on: [' + n.depends_on.join(', ') + ']');
-    if (n.datasource) lines.push('    datasource: ' + n.datasource);
-    if (n.model) lines.push('    model: ' + n.model);
-    if (n.write_mode) lines.push('    write_mode: ' + n.write_mode);
-    if (n.sql) {
-      lines.push('    sql: |');
-      n.sql.replace(/\s+$/, '').split('\n').forEach(l => lines.push('      ' + l));
-    }
-  });
-  return lines.join('\n') + '\n';
-}
-
-function q(s) {
-  return /[:#\[\]{}&*!|>'"%@`]/.test(s) ? JSON.stringify(s) : s;
 }
 
 /* ---------------- 渲染 ---------------- */
@@ -1470,7 +1442,8 @@ async function cvDryRun() {
   if (!CANVAS.pipe) return;
   let res;
   try {
-    res = await api('/pipelines/dry-run', { method: 'POST', body: { yaml: yamlOf(specFromCanvas()) } });
+    // 直接提交结构化 spec：画布里的节点本来就是对象，拼回 YAML 只是多一处会拼错的地方。
+    res = await api('/pipelines/dry-run', { method: 'POST', body: { spec: specFromCanvas() } });
   } catch (e) {
     modal('校验未通过', `<div class="err-box">${esc(e.message)}</div>`);
     return;
@@ -1512,17 +1485,19 @@ async function cvSave() {
   const btn = document.querySelector('[data-act="cv-save"]');
   if (btn) btn.disabled = true;
   const spec = specFromCanvas();
-  const yaml = yamlOf(spec);
   try {
-    await api('/pipelines', { method: 'POST', body: { yaml, publish: true } });
+    await api('/pipelines', { method: 'POST', body: { spec, publish: true } });
     CANVAS.dirty = false;
     toast('已保存并发布', 'ok');
     S.selected.canvasPipe = CANVAS.pipe.name;
     await render();
   } catch (err) {
-    modal('校验失败', `<div class="err-box">${esc(err.message)}</div>
-      <div class="hint" style="margin-top:10px">以下是生成的 YAML，可直接修改后保存：</div>
-      <textarea rows="16" style="margin-top:8px">${esc(yaml)}</textarea>`);
+    // 不再把生成的 YAML 甩给用户「自己改」：校验失败要说清是哪个节点、
+    // 哪个字段，改法在画布上。YAML 只有在你明确点「高级」时才出现。
+    modal('保存被拦下', `<div class="err-box">${esc(err.message)}</div>
+      <div class="hint" style="margin-top:10px">
+        画布上的改动还在。按提示改完再点一次「保存」，或点「校验」看每个节点渲染出什么问题。
+      </div>`);
   } finally {
     if (btn) btn.disabled = false;
   }

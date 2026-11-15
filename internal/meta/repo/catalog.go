@@ -626,6 +626,72 @@ func (r *Repo) ListEnabledPipelines(ctx context.Context) ([]model.Pipeline, erro
 	return out, rows.Err()
 }
 
+// PipelineRefs 统计「删掉这条管道会连带失去什么」。
+//
+// instance.pipeline_id 是 ON DELETE CASCADE：删管道会一起删运行历史、节点结果、
+// 质量结果与日志。这不是靠一句「确认删除？」能交代过去的，调用方必须把数字摆出来。
+type PipelineRefs struct {
+	Instances int    `json:"instances"`
+	Running   int    `json:"running"`
+	LastRunAt string `json:"lastRunAt,omitempty"`
+}
+
+func (r *Repo) PipelineRefs(ctx context.Context, workspaceID, name string) (PipelineRefs, error) {
+	var out PipelineRefs
+	err := r.DB.Pool.QueryRow(ctx,
+		`SELECT count(i.id),
+		        count(i.id) FILTER (WHERE i.status IN ('queued','running','waiting')),
+		        COALESCE(to_char(max(i.created_at) AT TIME ZONE 'Asia/Shanghai','YYYY-MM-DD HH24:MI'),'')
+		 FROM pipeline p LEFT JOIN instance i ON i.pipeline_id=p.id
+		 WHERE p.workspace_id=$1 AND p.name=$2
+		 GROUP BY p.id`, workspaceID, name).
+		Scan(&out.Instances, &out.Running, &out.LastRunAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return out, errs.New(errs.CodeNotFound, "管道不存在: "+name)
+	}
+	if err != nil {
+		return out, err
+	}
+	return out, nil
+}
+
+// DeletePipeline 删除管道及其全部版本与运行历史（外键级联）。
+// 只是不再排期/触发，不等于「暂停」——暂停请用 SetPipelineEnabled。
+func (r *Repo) DeletePipeline(ctx context.Context, workspaceID, name string) error {
+	tag, err := r.DB.Pool.Exec(ctx, `DELETE FROM pipeline WHERE workspace_id=$1 AND name=$2`, workspaceID, name)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return errs.New(errs.CodeNotFound, "管道不存在: "+name)
+	}
+	return nil
+}
+
+// PipelineSpecForEdit 取「编辑起点」：当前发布版本优先，没有发布过就取最新草稿。
+// 列表接口只读 active_version，草稿管道因此拿不到 spec；编辑入口不能也这样。
+func (r *Repo) PipelineSpecForEdit(ctx context.Context, workspaceID, name string) (*model.PipelineSpec, int, error) {
+	var specJSON []byte
+	var version int
+	err := r.DB.Pool.QueryRow(ctx,
+		`SELECT v.version, v.spec
+		 FROM pipeline p JOIN pipeline_version v ON v.pipeline_id=p.id
+		 WHERE p.workspace_id=$1 AND p.name=$2
+		 ORDER BY (v.version=p.active_version) DESC, v.version DESC LIMIT 1`, workspaceID, name).
+		Scan(&version, &specJSON)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, 0, errs.New(errs.CodeNotFound, "管道不存在或还没有定义: "+name)
+	}
+	if err != nil {
+		return nil, 0, err
+	}
+	var spec model.PipelineSpec
+	if err := json.Unmarshal(specJSON, &spec); err != nil {
+		return nil, 0, err
+	}
+	return &spec, version, nil
+}
+
 func isUnique(err error) bool {
 	if err == nil {
 		return false
@@ -697,6 +763,42 @@ func (r *Repo) MetricByName(ctx context.Context, wsID, name string) (*semantic.M
 	return &m, nil
 }
 
+// MetricRefs 返回引用了该指标的看板名。
+//
+// 卡片是 dashboard.cards 里的 JSONB，用 jsonb_array_elements 在库内比对，
+// 不把整张看板表拉到内存再反序列化——卡片数量会随看板增长，反序列化是纯浪费。
+func (r *Repo) MetricRefs(ctx context.Context, wsID, name string) ([]string, error) {
+	rows, err := r.DB.Pool.Query(ctx,
+		`SELECT name FROM dashboard
+		 WHERE workspace_id=$1
+		   AND EXISTS (SELECT 1 FROM jsonb_array_elements(cards) c WHERE c->>'metric'=$2)
+		 ORDER BY name`, wsID, name)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []string{}
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			return nil, err
+		}
+		out = append(out, n)
+	}
+	return out, rows.Err()
+}
+
+func (r *Repo) DeleteMetric(ctx context.Context, wsID, name string) error {
+	tag, err := r.DB.Pool.Exec(ctx, `DELETE FROM metric WHERE workspace_id=$1 AND name=$2`, wsID, name)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return errs.New(errs.CodeNotFound, "指标不存在: "+name)
+	}
+	return nil
+}
+
 // ---------- dashboard ----------
 
 func (r *Repo) SaveDashboard(ctx context.Context, wsID string, d semantic.Dashboard) (*semantic.Dashboard, error) {
@@ -752,6 +854,19 @@ func (r *Repo) DashboardByName(ctx context.Context, wsID, name string) (*semanti
 	}
 	_ = json.Unmarshal(cards, &d.Cards)
 	return &d, nil
+}
+
+// DeleteDashboard 只删「一页排布」，不碰指标、图表与数据本身。
+// 因此这里不做引用检查：看板是被引用方，删它不会让别的对象失效。
+func (r *Repo) DeleteDashboard(ctx context.Context, wsID, name string) error {
+	tag, err := r.DB.Pool.Exec(ctx, `DELETE FROM dashboard WHERE workspace_id=$1 AND name=$2`, wsID, name)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return errs.New(errs.CodeNotFound, "看板不存在: "+name)
+	}
+	return nil
 }
 
 // DatasetColumnsByName 按表名（忽略 schema）查询最近采集到的列定义，

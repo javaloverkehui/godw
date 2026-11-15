@@ -847,14 +847,14 @@ function triggerModal() {
         return;
       }
       if (document.getElementById('tg-dry').checked) {
-        // dry-run 接收的是 YAML 而不是管道名：先取已发布版本的定义再渲染，
-        // 保证试跑看到的 SQL 与真正跑的一致。
+        // 试跑走已发布版本的定义，保证看到的 SQL 与真跑一致。
+        // 直接传 spec：它已经是服务端给的结构，再序列化成 YAML 只会丢掉嵌套字段。
         const pipes = await api('/pipelines');
         const p = pipes.find(x => x.name === pipe);
         if (!p || !p.spec) throw new Error('管道未发布，无法试跑');
         const r = await api('/pipelines/dry-run', {
           method: 'POST',
-          body: { yaml: pipelineYamlFrom(p.spec), bizDate: val('tg-date'), params },
+          body: { spec: p.spec, bizDate: val('tg-date'), params },
         });
         modal('试跑结果', `<div class="logbox" style="max-height:420px">${esc(JSON.stringify(r, null, 2))}</div>
           <div class="row" style="justify-content:flex-end;margin-top:12px">

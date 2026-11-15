@@ -6,6 +6,34 @@
 ## [未发布]
 
 ### Added
+- **开发菜单里的对象都能删了**：管道、指标、看板此前只有「新建」，点错了只能在库里手工收拾。
+  - `DELETE /api/v1/pipelines/{name}`：连版本快照与运行历史一起删（外键级联）。
+    有排队/运行中的实例时一律 409——执行器正拿着这份版本快照；
+    有历史记录时要求 `force=1`，让「历史一起没了」成为一次显式选择。
+    `GET /api/v1/pipelines/{name}/refs` 先给出 `{instances, running, lastRunAt}` 供确认框展示。
+  - `DELETE /api/v1/metrics/{name}`：被看板卡片引用时默认拦下并列出看板名（`GET .../refs`）。
+  - `DELETE /api/v1/dashboards/{name}`：只删一页排布，指标、图表与数据都不动。
+  - 三处都写审计，并在界面上走「手输对象名」的危险确认，确认框里写明影响面。
+- `GET /api/v1/pipelines/{name}/yaml`：当前生效版本（没发布过取最新草稿）的规范化 YAML，
+  同时带回 `spec`。编辑页的「高级」区用它做起点——浏览器里手写序列化会丢掉
+  `params` / `defaults` / `node.config`，改一次调度就把质量规则弄没了。
+
+### Changed
+- **管道编辑不再只有 YAML**：改描述和「多久跑一次」是人话选项（手动/每小时/每天/每周/每月 +
+  时间 + cron 预览），节点表只读并提示去「可视化编排」改结构；YAML 收进折叠区。
+  认不出的 cron（如 `0 2 * * 1,3`）不动它——用户没碰调度就不写 `schedule`，不会被默认档位覆盖。
+- **指标编辑补上表单**：模型、聚合方式、字段、时间列、维度全是下拉/勾选，底部实时回读当前口径；
+  「新建指标」向导与编辑表单都改成提交结构化 `{metric}`，YAML 退为高级入口。
+  `POST /api/v1/metrics` 现在接受 `{metric}`（此前只收 `yaml`）。
+- **模型设计器发布改用 `{spec}`**：此前发布前把结构转成 YAML，`unique_key` / `indexes` /
+  `tags` / `bucket_by` 不在序列化范围里，改个注释再发布就会把它们丢掉。
+- **画布保存不再丢节点配置**：`specFromCanvas` 以原始节点为底再覆盖画布能编辑的字段，
+  `config`（质量规则、传感器参数）、`retry`、`timeout` 原样带回去；校验/试跑同样提交 `spec`，
+  不再经手写 YAML。保存失败时给出错误文案与下一步，不再把一段 YAML 甩给用户自己改。
+- `POST /api/v1/pipelines/dry-run` 与 `/sample-run` 接受 `{spec}`，与 `{yaml}` 等价。
+- 管道页移除「YAML 是唯一事实来源」的说法：定义存在数据库里，发布即生成不可变版本。
+
+### Added
 - **质量规则成为独立元数据对象**：规则挂在模型上（`quality_rule` 表），
   读写走 `GET/PUT /api/v1/quality-rules?model=xxx`。任何产出该模型的管道复用同一套规则，
   改阈值不必重发管道；`quality_result` 与豁免可按稳定的规则名对上历史结果。

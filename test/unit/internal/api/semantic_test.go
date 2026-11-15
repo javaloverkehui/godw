@@ -44,8 +44,10 @@ func TestDatasetAndChartFlow(t *testing.T) {
 			map[string]any{"name": "amount_sum", "field": "amount", "agg": "sum", "format": "amount", "unit": "元"},
 		},
 	}
+	// 数据集没有 version：那一列只是原地递增的计数器，没有快照也没有回滚入口，
+	// 已在 7b66468 里删掉，接口不再返回（这里只断言定义本身落库正确）。
 	saved := obj(t, e.ok("POST", "/api/v1/datasets/semantic", map[string]any{"spec": dataset}))
-	if field(t, saved, "name") != "sales" || fxInt(t, saved, "version") != 1 {
+	if field(t, saved, "name") != "sales" || field(t, saved, "baseModel") != "dwd_order" {
 		t.Fatalf("数据集保存结果不对: %v", saved)
 	}
 	if got := obj(t, e.ok("GET", "/api/v1/datasets/semantic/sales", nil)); field(t, got, "baseModel") != "dwd_order" {
