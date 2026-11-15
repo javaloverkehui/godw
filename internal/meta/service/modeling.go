@@ -26,7 +26,11 @@ type ModelCheckResult struct {
 func (s *Service) CheckModel(ctx context.Context, workspaceID string, spec model.ModelSpec) (*ModelCheckResult, error) {
 	out := &ModelCheckResult{Valid: true}
 	out.Violations = append(out.Violations, modelc.ValidateViolations(spec)...)
-	out.Violations = append(out.Violations, s.Rules.Check(spec)...)
+	rules, _, err := s.ModelingRules(ctx, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	out.Violations = append(out.Violations, rules.Check(spec)...)
 
 	engine := "postgres"
 	if c, err := s.dialectFor(ctx, workspaceID, spec.Datasource); err == nil {
@@ -181,17 +185,24 @@ func (s *Service) DictionaryMarkdown(ctx context.Context, workspaceID string) (s
 	return modelc.DictionaryMarkdown(entries), nil
 }
 
-// LayerRules 返回当前生效的规范，供设置页展示。
-func (s *Service) LayerRules() map[string]any {
-	r := s.Rules
-	if len(r.Layers) == 0 {
-		r = modelc.DefaultRules()
+// LayerRules 返回当前生效的规范，供设置页展示与编辑器预校验。
+// immutableRule 告诉前端哪条规则改不了：反向依赖在 CheckRefs 里硬编码。
+func (s *Service) LayerRules(ctx context.Context, workspaceID string) (map[string]any, error) {
+	r, custom, err := s.ModelingRules(ctx, workspaceID)
+	if err != nil {
+		return nil, err
 	}
 	out := map[string]any{}
 	for k, v := range r.Layers {
 		out[k] = v
 	}
-	return map[string]any{"layers": out, "immutableRule": "reverse_dependency"}
+	def := modelc.DefaultRules()
+	return map[string]any{
+		"layers":        out,
+		"immutableRule": "reverse_dependency",
+		"defaults":      def.Layers,
+		"custom":        custom,
+	}, nil
 }
 
 func dedupeStrings(in []string) []string {

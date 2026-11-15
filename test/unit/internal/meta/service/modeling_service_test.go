@@ -194,7 +194,10 @@ func TestDictionaryAndMarkdown(t *testing.T) {
 		t.Fatalf("Markdown 内容不对: %s", md)
 	}
 
-	rules := svc.LayerRules()
+	rules, err := svc.LayerRules(ctxBG(), ws.ID)
+	if err != nil {
+		t.Fatalf("读取分层规范失败: %v", err)
+	}
 	if rules["immutableRule"] != "reverse_dependency" {
 		t.Fatalf("应返回不可变规则说明: %+v", rules)
 	}

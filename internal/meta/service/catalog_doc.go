@@ -123,18 +123,51 @@ func (s *Service) CatalogDocs(ctx context.Context, workspaceID string) (*Catalog
 	if err != nil {
 		return nil, err
 	}
-	// 节点 → 模型：质量规则与最近运行都靠它。
+	// 节点 → 模型：质量结果与最近运行都靠它。
 	pipelineName := map[string]string{}
 	pipelineNodeModel := map[string]map[string]string{}
-	// 规则按「模型 → 有序 key 列表」保存，key 用 (管道, 节点, 规则名)，
-	// 这样重名的规则能各自对上自己的最近结果。
+	qualityNodeModel := map[string]map[string]string{}
+
+	// 规则的主源是模型上的规则表（一次取全工作区，避免按模型 N+1）。
+	// 管道里内联的 config.rules 仍要展示：它是旧写法，且同名以库为准。
+	storedRules, err := s.Repo.ListQualityRulesByWorkspace(ctx, workspaceID)
+	if err != nil {
+		return nil, err
+	}
 	rules := map[string][]CatalogQuality{}
-	ruleKeys := map[string][]string{}
+	ruleSeen := map[string]map[string]bool{}
+	addRule := func(modelName string, q CatalogQuality) {
+		if ruleSeen[modelName] == nil {
+			ruleSeen[modelName] = map[string]bool{}
+		}
+		if ruleSeen[modelName][q.Name] {
+			return
+		}
+		ruleSeen[modelName][q.Name] = true
+		rules[modelName] = append(rules[modelName], q)
+	}
+	for modelName, list := range storedRules {
+		for _, q := range list {
+			// 停用的规则不算契约：文档站展示「现在会拦什么」。
+			if !quality.IsEnabled(q) {
+				continue
+			}
+			cq := CatalogQuality{Name: q.Name, Kind: q.Kind, Column: q.Column, Severity: q.Severity}
+			if cq.Severity == "" {
+				cq.Severity = "error"
+			}
+			if q.Kind == quality.KindFreshness {
+				cq.ThresholdMin, _ = quality.FreshnessWindow(q.Config)
+			}
+			addRule(modelName, cq)
+		}
+	}
 	for _, p := range pipes {
 		if p.Spec == nil {
 			continue
 		}
 		m := map[string]string{}
+		qm := map[string]string{}
 		for _, n := range p.Spec.Nodes {
 			// 只有真正写表的节点才算「这个模型的运行」。质量/分支节点也带 model，
 			// 但它们跑完不代表数据刷新了，拿它们当最近运行会给出错误的时间。
@@ -144,14 +177,14 @@ func (s *Service) CatalogDocs(ctx context.Context, workspaceID string) (*Catalog
 			if n.Type != model.NodeQuality || n.Model == "" {
 				continue
 			}
+			qm[n.ID] = n.Model
 			for _, q := range parseQualityRules(n.Config) {
-				rules[n.Model] = append(rules[n.Model], q)
-				ruleKeys[n.Model] = append(ruleKeys[n.Model],
-					qualityKey(p.ID, n.ID, q.Name))
+				addRule(n.Model, q)
 			}
 		}
 		pipelineName[p.ID] = p.Name
 		pipelineNodeModel[p.ID] = m
+		qualityNodeModel[p.ID] = qm
 	}
 
 	runs, err := s.Repo.LatestNodeRuns(ctx, workspaceID)
@@ -162,10 +195,22 @@ func (s *Service) CatalogDocs(ctx context.Context, workspaceID string) (*Catalog
 	if err != nil {
 		return nil, err
 	}
+	// 结果按「模型 + 规则名」归属：规则可能来自库、也可能内联，
+	// 但执行结果只记 (管道, 节点, 规则名)，模型要从质量节点反查。
 	lastResult := make(map[string]CatalogQuality, len(snapshots))
+	lastResultAt := make(map[string]time.Time, len(snapshots))
 	for _, q := range snapshots {
+		modelName := qualityNodeModel[q.PipelineID][q.NodeID]
+		if modelName == "" {
+			continue
+		}
+		key := modelName + "\x00" + q.RuleName
+		if prev, ok := lastResultAt[key]; ok && !q.At.After(prev) {
+			continue
+		}
+		lastResultAt[key] = q.At
 		passed := q.Passed
-		lastResult[qualityKey(q.PipelineID, q.NodeID, q.RuleName)] = CatalogQuality{
+		lastResult[key] = CatalogQuality{
 			LastPassed: &passed, LastAt: q.At.Format(time.RFC3339), Observed: q.Observed,
 		}
 	}
@@ -226,11 +271,7 @@ func (s *Service) CatalogDocs(ctx context.Context, workspaceID string) (*Catalog
 		}
 		doc.Quality = append(doc.Quality, rules[e.Name]...)
 		for i := range doc.Quality {
-			keys := ruleKeys[e.Name]
-			if i >= len(keys) {
-				break
-			}
-			if snap, ok := lastResult[keys[i]]; ok {
+			if snap, ok := lastResult[e.Name+"\x00"+doc.Quality[i].Name]; ok {
 				doc.Quality[i].LastPassed = snap.LastPassed
 				doc.Quality[i].LastAt = snap.LastAt
 				doc.Quality[i].Observed = snap.Observed
@@ -358,10 +399,6 @@ func round1(f float64) float64 {
 		return 0
 	}
 	return float64(int(f*10+0.5)) / 10
-}
-
-func qualityKey(pipelineID, nodeID, rule string) string {
-	return pipelineID + "\x00" + nodeID + "\x00" + rule
 }
 
 func str(v any) string {

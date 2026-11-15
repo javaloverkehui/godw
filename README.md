@@ -85,7 +85,7 @@ bash scripts/smoke.sh
 | 运维 | 实例按管道/状态/日期筛选 + 服务端分页、批量重跑/取消、**节点级重跑**（重置该节点与下游）、失败行展开错误、实例抽屉（参数/耗时条/质量/实时日志）、**渲染 SQL 按版本快照还原并可对比上次**、**运行矩阵**（节点 × 最近 N 次运行，点格子进实例）、**按模型选择器触发**（先预览命中范围） | `ListInstancesPage`、`Service.RetryNode`、`Service.InstanceNodeSQL`、`Repo.InstanceMatrix` |
 | 触发 | file/table/http 传感器 + 事件去重 | `node/sensor` |
 | 观测 | 环形日志缓冲 + 批量落库 + 脱敏 + SSE 断点续传；6 类告警 + 去重 + 静默窗口 | `obs/logstore`、`obs/alert` |
-| 质量 | 10 类规则 DSL（含 `freshness` 数据新鲜度）、按分区收窄作用域（freshness 除外）、error 阻断 / warn 记录、强制放行、隔离表 | `internal/quality` |
+| 质量 | 11 类规则 DSL（含 `freshness` 数据新鲜度）、规则按模型集中管理（一次配置，所有产出该模型的管道复用，改阈值不必重发管道）、按分区收窄作用域（freshness 除外）、error 阻断 / warn 记录、强制放行、隔离表 | `internal/quality` |
 | 血缘 | SQL 解析（失败降级）、表级图、**列级下钻**（按表泳道 / 逐列聚焦 / 上下游切换）、Focus/Paths/DOT、LRU 缓存；图内**分层着色**（ODS/DWD/DWS/ADS）、搜索、双击聚焦 N 跳、导出 PNG | `internal/lineage`、`lineage_edge`、`lineage_column`、`assets/app.js` |
 | 语义层 | 数据集（禁 ODS/禁无 on join）、全参数化查询构建、9 种图表编码校验 | `internal/semantic` |
 | 图表 | 自研交互式折线（hover 多系列 tooltip、图例开关、刷选缩放）、看板全局时间/维度筛选、卡片全屏 | `assets/chart.js`、`RunCards` |
@@ -177,7 +177,7 @@ bash scripts/smoke.sh
 
 ## 2. 六条通用性设计原则
 
-1. **一切皆元数据**：数据源、模型、管道、质量规则、指标、看板全部是带版本的元数据对象；YAML 可导出、可 `git diff`、可 `apply`。
+1. **一切皆元数据**：数据源、模型、管道、质量规则、指标、看板全部是元数据对象（模型/管道保留版本快照），定义可导出 YAML、可 `git diff`、可 `apply`。
 2. **引擎无关**：`Connector` + `Dialect` + `Capability` 三层抽象，同一份模型/管道可跑在 PostgreSQL、MySQL、ClickHouse、Doris、DuckDB 上，方言差异由能力矩阵降级处理。
 3. **分层内建**：`ODS/DWD/DWS/ADS` 不是命名约定，而是强约束——层间引用规则、命名前缀、分区规范、生命周期由编译器校验。
 4. **插件化**：连接器、算子、质量规则、告警渠道、认证方式均通过注册表扩展，新增一种数据源不改核心代码。

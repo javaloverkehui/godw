@@ -28,7 +28,6 @@ type Dataset struct {
 	Dimensions  []Dimension `json:"dimensions" yaml:"dimensions"`
 	Measures    []Measure   `json:"measures" yaml:"measures"`
 	Filters     []Filter    `json:"filters,omitempty" yaml:"filters,omitempty"`
-	Version     int         `json:"version,omitempty"`
 }
 
 // Join 是一次关联。Type 只允许 left/inner：right/full 会让主表行丢失或膨胀。

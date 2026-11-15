@@ -201,7 +201,7 @@ func BuildQuery(d Dataset, req QueryRequest, models map[string]model.ModelSpec, 
 	}
 	sql += "\n" + dl.LimitOffset(int64(limit), int64(req.Offset))
 
-	comment := fmt.Sprintf("/* dataset=%s v%d */", d.Name, d.Version)
+	comment := fmt.Sprintf("/* dataset=%s */", d.Name)
 	return BuiltQuery{
 		SQL:     comment + "\n" + sql,
 		Args:    args,

@@ -19,10 +19,13 @@ import (
 	"github.com/godw/godw/internal/sqlx"
 )
 
-// Resolver 解耦执行器与元数据存储：执行器只需要「按名字拿到数据源与模型定义」。
+// Resolver 解耦执行器与元数据存储：执行器只需要「按名字拿到数据源、模型定义与质量规则」。
 type Resolver interface {
 	DatasourceSpec(ctx context.Context, workspaceID, name string) (connector.Spec, error)
 	ModelSpec(ctx context.Context, workspaceID, name string) (*model.ModelSpec, error)
+	// QualityRules 返回模型上已启用的规则。规则独立于管道版本，
+	// 改阈值不必重发管道——这是把规则从 YAML 搬进库的主要动机。
+	QualityRules(ctx context.Context, workspaceID, model string) ([]model.QualityRule, error)
 }
 
 type Executor struct {
@@ -214,32 +217,54 @@ func (e *Executor) runQuality(ctx context.Context, workspaceID string, node mode
 	if err != nil {
 		return err
 	}
-	rawRules, ok := node.Config["rules"].([]any)
-	if !ok || len(rawRules) == 0 {
-		return errs.New(errs.CodePipelineInvalid, "质量节点 "+node.ID+" 缺少 config.rules")
-	}
-
 	var rules []quality.Rule
-	for _, raw := range rawRules {
-		m, ok := raw.(map[string]any)
-		if !ok {
-			return errs.New(errs.CodePipelineInvalid, "规则格式错误")
+	if rawRules, ok := node.Config["rules"].([]any); ok && len(rawRules) > 0 {
+		// 内联规则：旧写法，仍支持。适合「这条管道临时多一道校验」，
+		// 但规则不复用、改一个阈值要重发整条管道，长期应迁到模型规则里。
+		for _, raw := range rawRules {
+			m, ok := raw.(map[string]any)
+			if !ok {
+				return errs.New(errs.CodePipelineInvalid, "规则格式错误")
+			}
+			rule := model.QualityRule{
+				Name:     str(m["name"]),
+				Kind:     str(m["kind"]),
+				Column:   str(m["column"]),
+				Severity: str(m["severity"]),
+				Config:   m,
+			}
+			if rule.Severity == "" {
+				rule.Severity = "error"
+			}
+			built, err := quality.BuildWith(rule, spec.Schema, spec.TableName(), c.Dialect())
+			if err != nil {
+				return err
+			}
+			rules = append(rules, built)
 		}
-		rule := model.QualityRule{
-			Name:     str(m["name"]),
-			Kind:     str(m["kind"]),
-			Column:   str(m["column"]),
-			Severity: str(m["severity"]),
-			Config:   m,
-		}
-		if rule.Severity == "" {
-			rule.Severity = "error"
-		}
-		built, err := quality.BuildWith(rule, spec.Schema, spec.TableName(), c.Dialect())
+	} else {
+		// 默认路径：规则挂在模型上，所有产出该模型的管道共用一套。
+		stored, err := e.Resolver.QualityRules(ctx, workspaceID, node.Model)
 		if err != nil {
 			return err
 		}
-		rules = append(rules, built)
+		for _, rule := range stored {
+			if !quality.IsEnabled(rule) {
+				continue
+			}
+			if rule.ModelName == "" {
+				rule.ModelName = node.Model
+			}
+			built, err := quality.BuildWith(rule, spec.Schema, spec.TableName(), c.Dialect())
+			if err != nil {
+				return err
+			}
+			rules = append(rules, built)
+		}
+		if len(rules) == 0 {
+			return errs.New(errs.CodePipelineInvalid,
+				"质量节点 "+node.ID+" 没有可用规则：请先在模型的「质量规则」中配置，或在节点内联 config.rules")
+		}
 	}
 
 	// 只校验本次运行的分区。

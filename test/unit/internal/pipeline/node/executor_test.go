@@ -165,6 +165,9 @@ type fakeResolver struct {
 	models   map[string]*model.ModelSpec
 	dsErr    error
 	modelErr error
+	// rules 是模型上的规则集：质量节点没写内联 config.rules 时走这里。
+	rules    map[string][]model.QualityRule
+	rulesErr error
 }
 
 func (r *fakeResolver) DatasourceSpec(_ context.Context, _, name string) (connector.Spec, error) {
@@ -187,6 +190,13 @@ func (r *fakeResolver) ModelSpec(_ context.Context, _, name string) (*model.Mode
 		return nil, errs.New(errs.CodeNotFound, "模型不存在: "+name)
 	}
 	return m, nil
+}
+
+func (r *fakeResolver) QualityRules(_ context.Context, _, name string) ([]model.QualityRule, error) {
+	if r.rulesErr != nil {
+		return nil, r.rulesErr
+	}
+	return r.rules[name], nil
 }
 
 // ---------- source ----------
@@ -592,6 +602,39 @@ func TestRunQualityQuarantineNoColumn(t *testing.T) {
 	}
 	if !strings.Contains(stats.Message, "已隔离 0 行") {
 		t.Fatalf("无列规则不应隔离数据: %s", stats.Message)
+	}
+}
+
+// 规则不再写死在管道里：节点没配 config.rules 时按模型名从元数据取，
+// 停用的规则不执行，内联规则仍然优先（便于一次性校验）。
+func TestRunQualityUsesStoredRules(t *testing.T) {
+	e := newEnv(t)
+	on, off := true, false
+	e.resolver.rules = map[string][]model.QualityRule{
+		"quality": {
+			{Name: "id_not_null", Kind: "not_null", Column: "id", Enabled: &on},
+			{Name: "id_unique_off", Kind: "unique", Column: "id", Enabled: &off},
+		},
+	}
+
+	n := model.NodeSpec{ID: "q", Type: model.NodeQuality, Model: "quality"}
+	stats, err := e.exec.Run(e.ctx, "ws", n, map[string]any{"biz_date": "2025-11-10"})
+	if err != nil {
+		t.Fatalf("库里的规则应执行: %v", err)
+	}
+	if len(stats.Quality) != 1 || stats.Quality[0].RuleName != "id_not_null" {
+		t.Fatalf("停用的规则不应执行: %+v", stats.Quality)
+	}
+
+	// 内联规则优先，不会与库里的规则叠加。
+	e.resolver.rules["quality"][0].Enabled = &off
+	inline := []any{map[string]any{"name": "inline_id", "kind": "not_null", "column": "id"}}
+	stats, err = e.exec.Run(e.ctx, "ws", e.qualityNode(inline, nil), nil)
+	if err != nil {
+		t.Fatalf("内联规则应执行: %v", err)
+	}
+	if len(stats.Quality) != 1 || stats.Quality[0].RuleName != "inline_id" {
+		t.Fatalf("内联规则应覆盖库里的规则: %+v", stats.Quality)
 	}
 }
 

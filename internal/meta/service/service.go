@@ -260,7 +260,12 @@ func (s *Service) ApplyModelSpec(ctx context.Context, workspaceID, actor string,
 	}
 
 	// 建模规范：分层前缀、必填列、粒度声明。违规直接拒绝，不做「先存后改」。
-	if vs := s.Rules.Check(spec); len(vs) > 0 {
+	// 规范按工作区读：不同团队的前缀与粒度要求不同，写在代码里等于只有一套。
+	rules, _, err := s.ModelingRules(ctx, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	if vs := rules.Check(spec); len(vs) > 0 {
 		return nil, modelc.Enforce(vs)
 	}
 	// 类型映射：引擎不支持或有损未声明时拒绝，避免上线后 DDL 跑不通。

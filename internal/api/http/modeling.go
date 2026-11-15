@@ -111,7 +111,45 @@ func (h *Handler) dictionaryExport(w http.ResponseWriter, r *http.Request, _ map
 }
 
 func (h *Handler) layerRules(w http.ResponseWriter, r *http.Request, _ map[string]string) {
-	ok(w, r, h.Svc.LayerRules())
+	rules, err := h.Svc.LayerRules(r.Context(), workspaceOf(r.Context()))
+	if err != nil {
+		fail(w, r, err)
+		return
+	}
+	ok(w, r, rules)
+}
+
+// saveLayerRules 保存工作区建模规范。
+// 只给 admin：规范是所有模型的准入门槛，editor 改它等于改所有人的提交规则。
+func (h *Handler) saveLayerRules(w http.ResponseWriter, r *http.Request, _ map[string]string) {
+	if !requireRole(w, r, "admin") {
+		return
+	}
+	var body modelc.Rules
+	if err := decodeBody(r, &body); err != nil {
+		fail(w, r, err)
+		return
+	}
+	saved, err := h.Svc.SaveModelingRules(r.Context(), workspaceOf(r.Context()), actorOf(r.Context()), body)
+	if err != nil {
+		fail(w, r, err)
+		return
+	}
+	h.audit(r, "layer-rules.save", "workspace", map[string]any{"layers": saved.CoveredLayers()})
+	ok(w, r, saved)
+}
+
+// resetLayerRules 清掉自定义规范，回到内置默认。
+func (h *Handler) resetLayerRules(w http.ResponseWriter, r *http.Request, _ map[string]string) {
+	if !requireRole(w, r, "admin") {
+		return
+	}
+	if err := h.Svc.ResetModelingRules(r.Context(), workspaceOf(r.Context()), actorOf(r.Context())); err != nil {
+		fail(w, r, err)
+		return
+	}
+	h.audit(r, "layer-rules.reset", "workspace", nil)
+	ok(w, r, map[string]any{"reset": true})
 }
 
 // modelSpecFrom 支持同时接受 YAML 与结构化 JSON，前端设计器用后者，CLI 用前者。

@@ -260,3 +260,89 @@ func sortedKeys(m map[string]bool) []string {
 	sort.Strings(out)
 	return out
 }
+
+// Normalize 校验并规范化工作区自定义规范。
+//
+// 允许改的只有「命名正则」——各公司前缀不同（dwd_ / dw_ / dim_），这个必须可配。
+// 其余三项只允许收紧，不允许放宽：
+//   - 上游白名单：只能在默认集合里删，不能加；
+//   - 必填列：只能加，不能删；
+//   - 主键要求：默认要求的层不能关掉（静默置回 true，而不是报错，
+//     因为前端只改正则时不会显式回传这个字段）。
+//
+// 反向依赖本身在 CheckRefs 里硬编码，改配置绕不过去。
+func (r Rules) Normalize() (Rules, error) {
+	def := DefaultRules()
+	if len(r.Layers) == 0 {
+		return def, nil
+	}
+	out := Rules{Layers: make(map[string]LayerRule, len(r.Layers))}
+	for rawLayer, rule := range r.Layers {
+		layer, ok := layerNorm(rawLayer)
+		if !ok {
+			return Rules{}, errs.New(errs.CodeInvalidArgument, fmt.Sprintf("未知分层 %q", rawLayer))
+		}
+		base := def.Layers[layer]
+		rule.Layer = layer
+
+		if rule.NamePattern == "" {
+			rule.NamePattern = base.NamePattern
+		}
+		if _, err := regexp.Compile(rule.NamePattern); err != nil {
+			return Rules{}, errs.Wrap(errs.CodeInvalidArgument, err,
+				fmt.Sprintf("层 %s 的命名正则非法", layer))
+		}
+
+		// 空切片在 CheckRefs 里等于「不限制」，所以必须先填默认值再判收紧。
+		if len(rule.AllowUpstream) == 0 {
+			rule.AllowUpstream = append([]string(nil), base.AllowUpstream...)
+		} else {
+			allow := map[string]bool{}
+			for _, l := range base.AllowUpstream {
+				allow[l] = true
+			}
+			seen := map[string]bool{}
+			clean := make([]string, 0, len(rule.AllowUpstream))
+			for _, l := range rule.AllowUpstream {
+				up, ok := layerNorm(l)
+				if !ok {
+					return Rules{}, errs.New(errs.CodeInvalidArgument,
+						fmt.Sprintf("层 %s 的上游层 %q 不存在", layer, l))
+				}
+				if !allow[up] {
+					return Rules{}, errs.New(errs.CodeInvalidArgument,
+						fmt.Sprintf("层 %s 不能引用 %s：规范只能收紧不能放宽", layer, up))
+				}
+				if seen[up] {
+					continue
+				}
+				seen[up] = true
+				clean = append(clean, up)
+			}
+			rule.AllowUpstream = clean
+		}
+
+		rule.RequiredColumns = unionColumns(base.RequiredColumns, rule.RequiredColumns)
+		if base.RequireKey {
+			rule.RequireKey = true
+		}
+		out.Layers[layer] = rule
+	}
+	return out, nil
+}
+
+// unionColumns 合并必填列：默认列不可移除，自定义列叠加进来。
+func unionColumns(base, extra []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(base)+len(extra))
+	for _, c := range append(append([]string(nil), base...), extra...) {
+		c = strings.ToLower(strings.TrimSpace(c))
+		if c == "" || seen[c] {
+			continue
+		}
+		seen[c] = true
+		out = append(out, c)
+	}
+	sort.Strings(out)
+	return out
+}

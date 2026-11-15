@@ -137,6 +137,9 @@ func (h *Handler) routes() *Router {
 	r.GET("/api/v1/quality/overview", h.qualityOverview)
 	r.GET("/api/v1/quality/trend", h.qualityTrend)
 	r.POST("/api/v1/quality/profile", h.profileTable)
+	// 规则是模型上的对象，管道执行时按模型名取用；此前的内联写法仍然兼容。
+	r.GET("/api/v1/quality-rules", h.listQualityRules)
+	r.PUT("/api/v1/quality-rules", h.saveQualityRules)
 	r.GET("/api/v1/lineage", h.lineage)
 	r.GET("/api/v1/lineage/graph", h.lineageGraph)
 	r.GET("/api/v1/lineage/focus", h.lineageFocus)
@@ -193,6 +196,9 @@ func (h *Handler) routes() *Router {
 	r.GET("/api/v1/catalog", h.catalogDocs)
 	r.GET("/api/v1/catalog/export", h.catalogExport)
 	r.GET("/api/v1/layer-rules", h.layerRules)
+	// 规范存在 workspace.settings 里，改它影响所有模型提交，仅 admin。
+	r.PUT("/api/v1/layer-rules", h.saveLayerRules)
+	r.DELETE("/api/v1/layer-rules", h.resetLayerRules)
 
 	r.GET("/api/v1/retention", h.listRetention)
 	r.POST("/api/v1/retention", h.saveRetention)

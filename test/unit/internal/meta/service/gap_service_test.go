@@ -565,7 +565,10 @@ func TestModelingEdgeBranches(t *testing.T) {
 	// 规范为空时 LayerRules 返回内置默认值，而不是空 map。
 	saved := svc.Rules
 	svc.Rules = modelc.Rules{}
-	rules := svc.LayerRules()
+	rules, err := svc.LayerRules(ctxBG(), ws.ID)
+	if err != nil {
+		t.Fatalf("读取分层规范失败: %v", err)
+	}
 	svc.Rules = saved
 	layers, _ := rules["layers"].(map[string]any)
 	if len(layers) == 0 {

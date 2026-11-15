@@ -22,7 +22,6 @@ func dataset() semantic.Dataset {
 	return semantic.Dataset{
 		Name:      "ds_sales",
 		BaseModel: "dwd_order",
-		Version:   2,
 		Joins: []semantic.Join{{
 			Model: "dim_user", Alias: "u", Type: "left",
 			On: []semantic.JoinOn{{Left: "dwd_order.user_id", Right: "dim_user.id"}},
@@ -256,7 +255,7 @@ func TestBuildQuery(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, want := range []string{
-			"/* dataset=ds_sales v2 */",
+			"/* dataset=ds_sales */",
 			`"region" AS "region"`,
 			`COALESCE(SUM("dwd_order"."amount"), 0) AS "amount"`,
 			`FROM "dwd"."dwd_order" AS "dwd_order"`,

@@ -27,8 +27,8 @@ func chartSample(name, dataset string) semantic.Chart {
 }
 
 // 语义数据集只保留最新版本，version 在每次保存时自增；
-// 与物理模型不同，这里不保留历史快照（变更是弱破坏性的）。
-func TestSemanticDatasetVersioning(t *testing.T) {
+// 与物理模型不同，这里不保留历史快照：同名保存即覆盖，只留最新定义。
+func TestSemanticDatasetUpsert(t *testing.T) {
 	r, db := newRepoDB(t)
 	ctx := context.Background()
 	ws := seedWorkspace(t, r, "ws")
@@ -38,18 +38,18 @@ func TestSemanticDatasetVersioning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("保存数据集失败: %v", err)
 	}
-	// 结构体里不带 workspace（调用方已经知道），只回填 ID 与版本号。
-	if d.ID == "" || d.Version != 1 {
-		t.Fatalf("首版应回填 ID 并置 version=1: %+v", d)
+	// 结构体里不带 workspace（调用方已经知道），只回填 ID。
+	if d.ID == "" {
+		t.Fatalf("首次保存应回填 ID: %+v", d)
 	}
 
-	// 同名再保存：版本 +1，ID 不变。
+	// 同名再保存：复用 ID，不新增行。
 	d2, err := r.SaveDataset(ctx, ws.ID, datasetSample("trade", "交易数据集 v2"))
 	if err != nil {
 		t.Fatalf("更新数据集失败: %v", err)
 	}
-	if d2.ID != d.ID || d2.Version != 2 {
-		t.Fatalf("更新应复用 ID 并自增版本: %+v", d2)
+	if d2.ID != d.ID {
+		t.Fatalf("更新应复用 ID: %+v", d2)
 	}
 	if n := queryInt(t, db, `SELECT count(*) FROM semantic_dataset WHERE workspace_id=$1`, ws.ID); n != 1 {
 		t.Fatalf("只应保留一行: %d", n)
@@ -65,12 +65,8 @@ func TestSemanticDatasetVersioning(t *testing.T) {
 	if len(got.Dimensions) != 1 || got.Dimensions[0].Name != "dt" || len(got.Measures) != 1 {
 		t.Fatalf("维度与度量应往返: %+v", got)
 	}
-	// 版本号是列上的值，只有在列表里才回填到结构体。
-	if got.Version != 0 {
-		t.Fatalf("GetDataset 只读 spec，版本号不回填: %+v", got.Version)
-	}
 
-	// 另一个数据集用来验证排序与版本号来源。
+	// 另一个数据集用来验证排序。
 	if _, err := r.SaveDataset(ctx, ws.ID, datasetSample("alpha", "先建")); err != nil {
 		t.Fatalf("保存第二个数据集失败: %v", err)
 	}
@@ -80,9 +76,6 @@ func TestSemanticDatasetVersioning(t *testing.T) {
 	}
 	if len(list) != 2 || list[0].Name != "alpha" || list[1].Name != "trade" {
 		t.Fatalf("应按名称排序: %+v", list)
-	}
-	if list[0].Version != 1 || list[1].Version != 2 {
-		t.Fatalf("版本号应取自列: %d %d", list[0].Version, list[1].Version)
 	}
 	if list[1].Description != "交易数据集 v2" {
 		t.Fatalf("描述应为最新: %+v", list[1])
@@ -128,24 +121,24 @@ func TestSemanticChartAndReferenceCount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("保存图表失败: %v", err)
 	}
-	if c.ID == "" || c.Version != 1 {
-		t.Fatalf("首版应回填 ID 并置 version=1: %+v", c)
+	if c.ID == "" {
+		t.Fatalf("首次保存应回填 ID: %+v", c)
 	}
 
 	c2, err := r.SaveChart(ctx, ws.ID, chartSample("gmv_trend", "trade"))
 	if err != nil {
 		t.Fatalf("更新图表失败: %v", err)
 	}
-	if c2.ID != c.ID || c2.Version != 2 {
-		t.Fatalf("更新应复用 ID 并自增版本: %+v", c2)
+	if c2.ID != c.ID {
+		t.Fatalf("更新应复用 ID: %+v", c2)
 	}
 	// 换数据集要生效（图表可能改挂到另一个数据集）。
 	c3, err := r.SaveChart(ctx, ws.ID, chartSample("gmv_trend", "trade_v2"))
 	if err != nil {
 		t.Fatalf("改挂数据集失败: %v", err)
 	}
-	if c3.Version != 3 {
-		t.Fatalf("版本应递增到 3: %+v", c3)
+	if c3.ID != c.ID {
+		t.Fatalf("改挂数据集也应复用 ID: %+v", c3)
 	}
 	if ds := queryStr(t, db, `SELECT dataset FROM chart WHERE id=$1`, c.ID); ds != "trade_v2" {
 		t.Fatalf("数据集应更新: %q", ds)
@@ -172,9 +165,6 @@ func TestSemanticChartAndReferenceCount(t *testing.T) {
 	}
 	if len(charts) != 2 || charts[0].Name != "a_kpi" || charts[1].Name != "gmv_trend" {
 		t.Fatalf("应按名称排序: %+v", charts)
-	}
-	if charts[1].Version != 3 || charts[0].Version != 1 {
-		t.Fatalf("版本号应取自列: %d %d", charts[0].Version, charts[1].Version)
 	}
 
 	// 引用计数：trade 被 a_kpi 引用 1 次，trade_v2 被 gmv_trend 引用 1 次。

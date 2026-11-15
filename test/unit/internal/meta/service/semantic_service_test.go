@@ -46,13 +46,14 @@ func TestApplyDatasetValidation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("合法数据集保存失败: %v", err)
 	}
-	if saved.Version != 1 {
-		t.Fatalf("首版版本号应为 1: %+v", saved)
+	if saved.ID == "" {
+		t.Fatalf("首次保存应回填 ID: %+v", saved)
 	}
-	// 重复保存版本递增，便于排查「口径是什么时候改的」。
+	// 重复保存复用同一个 ID：同名数据集是「同一对象的更新」，不是新对象。
+	id := saved.ID
 	saved, err = svc.ApplyDataset(ctxBG(), ws.ID, datasetFor("ds_ok", "dwd_ok", "dt"))
-	if err != nil || saved.Version != 2 {
-		t.Fatalf("重复保存版本应递增: %+v %v", saved, err)
+	if err != nil || saved.ID != id {
+		t.Fatalf("重复保存应复用 ID: %+v %v", saved, err)
 	}
 
 	// PublishedModels 只返回已发布模型：草稿不应被语义层引用。
@@ -238,8 +239,8 @@ func TestChartSaveQueryAndImpact(t *testing.T) {
 	if err != nil {
 		t.Fatalf("保存图表失败: %v", err)
 	}
-	if saved.Version != 1 || len(impact) != 0 {
-		t.Fatalf("首版无影响面: %+v %+v", saved, impact)
+	if saved.ID == "" || len(impact) != 0 {
+		t.Fatalf("首版应回填 ID 且无影响面: %+v %+v", saved, impact)
 	}
 
 	if _, err := svc.ApplyDashboard(ctxBG(), ws.ID, semantic.Dashboard{

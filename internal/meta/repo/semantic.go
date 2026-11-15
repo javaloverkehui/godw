@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"time"
 
 	"github.com/godw/godw/internal/pkg/errs"
 	"github.com/godw/godw/internal/pkg/ids"
@@ -12,8 +11,11 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// 语义层仓储：数据集与图表。两者都是「定义 + 版本」，但当前只保留最新版本，
-// 因为数据集/图表的变更是弱破坏性的（不像物理表 DDL），保留全量历史价值不高。
+// 语义层仓储：数据集与图表。只保留最新定义，不存历史。
+//
+// 这里曾经有一个 version 计数列：每次保存 +1，但没有历史行、没有回滚入口，
+// 接口却把它当版本号返回，容易让人以为改坏了能退回去。0009 已删除该列。
+// 真正需要版本时按 model_version 的模式补快照表，而不是一个自增数字。
 
 func (r *Repo) SaveDataset(ctx context.Context, workspaceID string, d semantic.Dataset) (*semantic.Dataset, error) {
 	raw, err := json.Marshal(d)
@@ -21,16 +23,14 @@ func (r *Repo) SaveDataset(ctx context.Context, workspaceID string, d semantic.D
 		return nil, err
 	}
 	var existing string
-	var version int
 	err = r.DB.Pool.QueryRow(ctx,
-		`SELECT id,version FROM semantic_dataset WHERE workspace_id=$1 AND name=$2`,
-		workspaceID, d.Name).Scan(&existing, &version)
+		`SELECT id FROM semantic_dataset WHERE workspace_id=$1 AND name=$2`,
+		workspaceID, d.Name).Scan(&existing)
 	if errors.Is(err, pgx.ErrNoRows) {
 		d.ID = ids.New("dsx")
-		d.Version = 1
 		if _, err := r.DB.Pool.Exec(ctx,
-			`INSERT INTO semantic_dataset(id,workspace_id,name,description,spec,version)
-			 VALUES($1,$2,$3,$4,$5,1)`, d.ID, workspaceID, d.Name, d.Description, raw); err != nil {
+			`INSERT INTO semantic_dataset(id,workspace_id,name,description,spec)
+			 VALUES($1,$2,$3,$4,$5)`, d.ID, workspaceID, d.Name, d.Description, raw); err != nil {
 			return nil, err
 		}
 		return &d, nil
@@ -39,10 +39,9 @@ func (r *Repo) SaveDataset(ctx context.Context, workspaceID string, d semantic.D
 		return nil, err
 	}
 	d.ID = existing
-	d.Version = version + 1
 	if _, err := r.DB.Pool.Exec(ctx,
-		`UPDATE semantic_dataset SET description=$3,spec=$4,version=$5,updated_at=now()
-		 WHERE workspace_id=$1 AND name=$2`, workspaceID, d.Name, d.Description, raw, d.Version); err != nil {
+		`UPDATE semantic_dataset SET description=$3,spec=$4,updated_at=now()
+		 WHERE workspace_id=$1 AND name=$2`, workspaceID, d.Name, d.Description, raw); err != nil {
 		return nil, err
 	}
 	return &d, nil
@@ -67,7 +66,7 @@ func (r *Repo) GetDataset(ctx context.Context, workspaceID, name string) (*seman
 
 func (r *Repo) ListDatasetsScoped(ctx context.Context, workspaceID string) ([]semantic.Dataset, error) {
 	rows, err := r.DB.Pool.Query(ctx,
-		`SELECT spec,version,updated_at FROM semantic_dataset WHERE workspace_id=$1 ORDER BY name`, workspaceID)
+		`SELECT spec FROM semantic_dataset WHERE workspace_id=$1 ORDER BY name`, workspaceID)
 	if err != nil {
 		return nil, err
 	}
@@ -75,16 +74,13 @@ func (r *Repo) ListDatasetsScoped(ctx context.Context, workspaceID string) ([]se
 	out := []semantic.Dataset{}
 	for rows.Next() {
 		var raw []byte
-		var version int
-		var at time.Time
-		if err := rows.Scan(&raw, &version, &at); err != nil {
+		if err := rows.Scan(&raw); err != nil {
 			return nil, err
 		}
 		var d semantic.Dataset
 		if err := json.Unmarshal(raw, &d); err != nil {
 			continue
 		}
-		d.Version = version
 		out = append(out, d)
 	}
 	return out, rows.Err()
@@ -102,15 +98,13 @@ func (r *Repo) SaveChart(ctx context.Context, workspaceID string, c semantic.Cha
 		return nil, err
 	}
 	var existing string
-	var version int
 	err = r.DB.Pool.QueryRow(ctx,
-		`SELECT id,version FROM chart WHERE workspace_id=$1 AND name=$2`, workspaceID, c.Name).
-		Scan(&existing, &version)
+		`SELECT id FROM chart WHERE workspace_id=$1 AND name=$2`, workspaceID, c.Name).
+		Scan(&existing)
 	if errors.Is(err, pgx.ErrNoRows) {
 		c.ID = ids.New("cht")
-		c.Version = 1
 		if _, err := r.DB.Pool.Exec(ctx,
-			`INSERT INTO chart(id,workspace_id,name,dataset,spec,version) VALUES($1,$2,$3,$4,$5,1)`,
+			`INSERT INTO chart(id,workspace_id,name,dataset,spec) VALUES($1,$2,$3,$4,$5)`,
 			c.ID, workspaceID, c.Name, c.Dataset, raw); err != nil {
 			return nil, err
 		}
@@ -120,10 +114,9 @@ func (r *Repo) SaveChart(ctx context.Context, workspaceID string, c semantic.Cha
 		return nil, err
 	}
 	c.ID = existing
-	c.Version = version + 1
 	if _, err := r.DB.Pool.Exec(ctx,
-		`UPDATE chart SET dataset=$3,spec=$4,version=$5,updated_at=now()
-		 WHERE workspace_id=$1 AND name=$2`, workspaceID, c.Name, c.Dataset, raw, c.Version); err != nil {
+		`UPDATE chart SET dataset=$3,spec=$4,updated_at=now()
+		 WHERE workspace_id=$1 AND name=$2`, workspaceID, c.Name, c.Dataset, raw); err != nil {
 		return nil, err
 	}
 	return &c, nil
@@ -148,7 +141,7 @@ func (r *Repo) GetChart(ctx context.Context, workspaceID, name string) (*semanti
 
 func (r *Repo) ListCharts(ctx context.Context, workspaceID string) ([]semantic.Chart, error) {
 	rows, err := r.DB.Pool.Query(ctx,
-		`SELECT spec,version FROM chart WHERE workspace_id=$1 ORDER BY name`, workspaceID)
+		`SELECT spec FROM chart WHERE workspace_id=$1 ORDER BY name`, workspaceID)
 	if err != nil {
 		return nil, err
 	}
@@ -156,15 +149,13 @@ func (r *Repo) ListCharts(ctx context.Context, workspaceID string) ([]semantic.C
 	out := []semantic.Chart{}
 	for rows.Next() {
 		var raw []byte
-		var version int
-		if err := rows.Scan(&raw, &version); err != nil {
+		if err := rows.Scan(&raw); err != nil {
 			return nil, err
 		}
 		var c semantic.Chart
 		if err := json.Unmarshal(raw, &c); err != nil {
 			continue
 		}
-		c.Version = version
 		out = append(out, c)
 	}
 	return out, rows.Err()

@@ -1,6 +1,8 @@
 package model
 
-// PipelineSpec 是管道 DSL 的根结构。YAML 是唯一事实来源，画布只是它的图形化编辑态。
+// PipelineSpec 是管道 DSL 的根结构。YAML 是提交格式（CLI apply 与 API 入参），
+// 画布是它的图形化编辑态；两者都经 ApplyPipeline 校验后写入 pipeline_version.spec，
+// 运行期以该版本快照为准——YAML 文件本身不参与调度。
 //
 //	kind: Pipeline
 //	name: dwd_order_daily

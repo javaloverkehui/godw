@@ -239,8 +239,12 @@ type QualityRule struct {
 	Column      string         `json:"column"`
 	Config      map[string]any `json:"config"`
 	Severity    string         `json:"severity"`
-	Enabled     bool           `json:"enabled"`
-	CreatedAt   time.Time      `json:"createdAt"`
+	// Description 给人看的一句话，出现在规则列表与文档站。
+	Description string `json:"description,omitempty"`
+	// Enabled 用指针区分「没传」与「显式关闭」：新建规则不传时应当默认启用，
+	// 否则前端少勾一个框就会得到一条永远不会运行的规则。
+	Enabled   *bool     `json:"enabled,omitempty"`
+	CreatedAt time.Time `json:"createdAt"`
 }
 
 type QualityResult struct {

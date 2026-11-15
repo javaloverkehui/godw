@@ -55,7 +55,7 @@ func (h *Handler) applyDataset(w http.ResponseWriter, r *http.Request, _ map[str
 		fail(w, r, err)
 		return
 	}
-	h.audit(r, "dataset.apply", saved.Name, map[string]any{"version": saved.Version})
+	h.audit(r, "dataset.apply", saved.Name, nil)
 	ok(w, r, saved)
 }
 
@@ -172,7 +172,7 @@ func (h *Handler) applyChart(w http.ResponseWriter, r *http.Request, _ map[strin
 		fail(w, r, err)
 		return
 	}
-	h.audit(r, "chart.apply", saved.Name, map[string]any{"version": saved.Version, "impact": impact})
+	h.audit(r, "chart.apply", saved.Name, map[string]any{"impact": impact})
 	ok(w, r, map[string]any{"chart": saved, "impact": impact})
 }
 

@@ -5,6 +5,22 @@
 
 ## [未发布]
 
+### Added
+- **质量规则成为独立元数据对象**：规则挂在模型上（`quality_rule` 表），
+  读写走 `GET/PUT /api/v1/quality-rules?model=xxx`。任何产出该模型的管道复用同一套规则，
+  改阈值不必重发管道；`quality_result` 与豁免可按稳定的规则名对上历史结果。
+  管道 `quality` 节点未配 `config.rules` 时自动取模型上的规则（停用的跳过），
+  内联 `config.rules` 仍然生效且优先，用于一次性校验。
+- **建模规范可按工作区配置**：存放于 `workspace.settings.modelingRules`，
+  `PUT/DELETE /api/v1/layer-rules`（仅 admin）。命名正则可自定义，
+  上游白名单 / 必填列 / 主键要求只允许收紧，放宽请求会被拒绝。
+- 迁移 `0009`：新增 `workspace.settings`；`quality_rule` 补齐 `description`/`updated_at`/索引，
+  并把 `kind` 白名单从 6 种扩到编译器实际支持的 11 种（此前 `freshness`、`regex` 等落库即被 CHECK 拒绝）。
+
+### Changed
+- 删除 `semantic_dataset.version` 与 `chart.version`：这两列只是原地递增的计数器，
+  没有历史快照也没有回滚入口，接口却当版本号返回。真正需要版本时按 `model_version` 的模式补快照表。
+
 ### Changed
 - **模型设计器属性面板改为「能选就不让人手写」**：数据源从已接入数据源里选（不再手打逻辑别名）；
   分区列改为勾选本模型字段（选不存在的列必然编译失败）；TTL 改为常用档位下拉

@@ -26,7 +26,6 @@ type Chart struct {
 	Encoding    Encoding `json:"encoding" yaml:"encoding"`
 	Style       Style    `json:"style,omitempty" yaml:"style,omitempty"`
 	Filters     []Filter `json:"filters,omitempty" yaml:"filters,omitempty"`
-	Version     int      `json:"version,omitempty"`
 }
 
 // Encoding 把字段映射到视觉通道。
